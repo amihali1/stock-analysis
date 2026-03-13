@@ -1,6 +1,6 @@
 # P0-003: Build data fetcher module
 
-**Status**: todo
+**Status**: done
 **Phase**: 0
 **Dependencies**: P0-002
 **Estimated scope**: medium
