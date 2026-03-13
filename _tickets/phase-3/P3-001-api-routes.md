@@ -1,6 +1,6 @@
 # P3-001: Build FastAPI routes
 
-**Status**: todo
+**Status**: done
 **Phase**: 3
 **Dependencies**: P2-003
 **Estimated scope**: medium

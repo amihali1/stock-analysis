@@ -1,6 +1,6 @@
 # P3-003: Dockerize and deploy to homelab
 
-**Status**: todo
+**Status**: done
 **Phase**: 3
 **Dependencies**: P3-002
 **Estimated scope**: medium

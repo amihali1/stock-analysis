@@ -10,9 +10,9 @@ REMOTE_DIR="/opt/stock-analysis"
 
 echo "Deploying to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}..."
 
-# Sync backend files
+# Sync backend files (include trained models for inference)
 rsync -avz --exclude='.venv' --exclude='__pycache__' --exclude='*.db' \
-    --exclude='trained_models/*.pkl' --exclude='trained_models/*.pt' \
+    --exclude='.pytest_cache' --exclude='notebooks/' \
     backend/ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/backend/"
 
 # Build and restart
