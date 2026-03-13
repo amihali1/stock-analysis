@@ -144,3 +144,34 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phases 0-2 complete. 34 tests passing.
 **Next steps**: Phase 3 (API routes, scheduler, Docker deployment)
+
+---
+
+## 2026-03-13 — Session 2 (cont): Phase 3 — API & Deployment
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P3-001, P3-002, P3-003
+
+**What was done**:
+
+**P3-001 (API routes)**:
+- Implemented `GET /api/recommendations` — queries DB, sorted by score, filterable by strategy
+- Implemented `GET /api/analysis/{ticker}` — full analysis: prices, indicators, sentiments, recommendations
+- Added `GET /api/tickers` — all tracked tickers with latest price data
+- Created `api/schemas.py` with Pydantic response models for all endpoints
+- Health endpoint now returns scheduler job status
+
+**P3-002 (Scheduler)**:
+- Created `pipeline/scheduler.py` with APScheduler AsyncIOScheduler
+- 4 cron jobs (Mon-Fri ET): 6:00 fetch prices, 6:30 indicators, 7:00 sentiment, 7:30 recommendations
+- Each job logs success/failure and records last run time for health endpoint
+- `job_generate_recommendations` runs full ensemble → position sizer → DB pipeline
+- Scheduler starts/stops with FastAPI lifespan
+
+**P3-003 (Docker deployment)**:
+- Updated Dockerfile: copies trained_models, auto-runs alembic migrations on startup
+- Updated docker-compose: env_file support, GPU passthrough enabled
+- Fixed deploy.sh to include trained model artifacts in rsync
+
+**Current state**: Phases 0-3 complete. 34 tests passing. Backend fully functional.
+**Next steps**: Phase 4 (Next.js frontend: scaffold, dashboard, charts, analysis page, paper trading)

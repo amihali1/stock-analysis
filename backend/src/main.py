@@ -1,17 +1,23 @@
+import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import health, recommendations, analysis
+from src.pipeline.scheduler import init_scheduler, shutdown_scheduler
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: initialize scheduler, DB connections
-    # TODO: Initialize APScheduler here (P3-002)
+    # Startup
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    init_scheduler()
     yield
-    # Shutdown: cleanup
-    pass
+    # Shutdown
+    shutdown_scheduler()
 
 
 app = FastAPI(

@@ -1,6 +1,6 @@
 # P3-002: Set up APScheduler cron jobs
 
-**Status**: todo
+**Status**: done
 **Phase**: 3
 **Dependencies**: P3-001, P0-005, P1-002
 **Estimated scope**: small

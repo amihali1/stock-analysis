@@ -31,8 +31,12 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **Ensemble scorer** — Weighted combination of directional, volatility, and sentiment signals into a single bearish score
 - **Position sizer** — Margin-aware short sizing and options contract sizing, both constrained to $5,000 max buy-in with stop-loss and max-loss calculations
 
+### API & Automation (Phase 3)
+- **REST API** — Full CRUD endpoints with Pydantic response models: recommendations (filterable by strategy), per-ticker analysis (prices, indicators, sentiments), ticker listing
+- **Scheduler** — APScheduler with 4 daily cron jobs (Mon-Fri ET): price fetch (6:00), indicators (6:30), sentiment (7:00), recommendations (7:30)
+- **Docker deployment** — Dockerfile with auto-migration, docker-compose with PostgreSQL + GPU passthrough, deploy script for homelab
+
 ### Planned
-- **Phase 3** — REST API, APScheduler for market-hours automation, Docker deployment
 - **Phase 4** — Next.js dashboard with lightweight-charts, analysis pages, paper trading
 - **Phase 5** — Backtesting engine, model retraining, alerts, options spreads
 
@@ -94,9 +98,11 @@ Set via environment variables or a `.env` file in `backend/`:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/health` | Health check (DB + Ollama status) |
-| `GET` | `/api/recommendations` | Top recommendations (filterable by strategy) |
-| `GET` | `/api/analysis/{ticker}` | Full analysis for a single ticker |
+| `GET` | `/api/health` | Health check (DB + Ollama + scheduler status) |
+| `GET` | `/api/recommendations?strategy=short\|options&limit=10` | Top scored recommendations |
+| `GET` | `/api/analysis/{ticker}?days=90` | Full analysis: prices, indicators, sentiments, recommendations |
+| `GET` | `/api/tickers` | All tracked tickers with latest price data |
+| `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ## Running Tests
 
@@ -121,6 +127,7 @@ backend/
       feature_eng.py        # Technical indicator computation
       sentiment.py          # Headline → Ollama → sentiment scores
       runner.py             # Pipeline orchestrator
+      scheduler.py          # APScheduler cron jobs
     services/
       ollama_client.py      # Async Ollama HTTP client with retry
       headline_fetcher.py   # Finviz, NewsAPI, Reddit fetchers
