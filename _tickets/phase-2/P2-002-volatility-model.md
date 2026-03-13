@@ -1,6 +1,6 @@
 # P2-002: Train volatility predictor (options plays)
 
-**Status**: todo
+**Status**: done
 **Phase**: 2
 **Dependencies**: P0-004
 **Estimated scope**: large

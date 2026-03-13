@@ -25,8 +25,13 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **Robust parsing** — Pydantic validation with regex fallback for non-JSON LLM responses
 - **Audit trail** — Raw LLM responses stored for debugging
 
+### ML Models (Phase 2)
+- **Directional classifier** — XGBoost predicting >3% drops in 5 trading days, with walk-forward validation and 17 technical features
+- **Volatility predictor** — PyTorch LSTM (2-layer, 64 hidden) predicting 5-day realized volatility from 60-day lookback sequences
+- **Ensemble scorer** — Weighted combination of directional, volatility, and sentiment signals into a single bearish score
+- **Position sizer** — Margin-aware short sizing and options contract sizing, both constrained to $5,000 max buy-in with stop-loss and max-loss calculations
+
 ### Planned
-- **Phase 2** — XGBoost directional classifier, LSTM volatility predictor, ensemble position sizer
 - **Phase 3** — REST API, APScheduler for market-hours automation, Docker deployment
 - **Phase 4** — Next.js dashboard with lightweight-charts, analysis pages, paper trading
 - **Phase 5** — Backtesting engine, model retraining, alerts, options spreads
@@ -119,7 +124,11 @@ backend/
     services/
       ollama_client.py      # Async Ollama HTTP client with retry
       headline_fetcher.py   # Finviz, NewsAPI, Reddit fetchers
-    models/                 # ML model training/inference (Phase 2)
+    models/
+      directional.py        # XGBoost drop classifier + dataset builder
+      volatility.py         # LSTM volatility predictor
+      ensemble.py           # Weighted signal combiner
+      position_sizer.py     # $5k-constrained position sizing
   alembic/                  # Database migrations
   tests/                    # Integration & unit tests
   trained_models/           # Serialized model artifacts

@@ -1,6 +1,6 @@
 # P2-003: Build ensemble scorer and position sizer
 
-**Status**: todo
+**Status**: done
 **Phase**: 2
 **Dependencies**: P2-001, P2-002, P1-002
 **Estimated scope**: medium

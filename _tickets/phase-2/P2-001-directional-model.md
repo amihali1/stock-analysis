@@ -1,6 +1,6 @@
 # P2-001: Train directional classifier (short candidates)
 
-**Status**: todo
+**Status**: done
 **Phase**: 2
 **Dependencies**: P0-004
 **Estimated scope**: large
