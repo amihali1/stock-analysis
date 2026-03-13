@@ -164,3 +164,31 @@ class PaperTrade(Base):
     score = Column(Float)  # Ensemble score at time of trade
 
     stock = relationship("Stock")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    alert_type = Column(String(20), nullable=False)  # stop_loss, target_hit, high_conviction
+    message = Column(Text, nullable=False)
+    details_json = Column(Text)
+    acknowledged = Column(Integer, default=0)  # 0 = unread, 1 = acknowledged
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AlertSetting(Base):
+    __tablename__ = "alert_settings"
+
+    id = Column(Integer, primary_key=True)
+    channel = Column(String(20), nullable=False)  # discord, telegram
+    webhook_url = Column(String(500))
+    bot_token = Column(String(200))
+    chat_id = Column(String(100))
+    enabled = Column(Integer, default=1)
+    score_threshold = Column(Float, default=0.75)
+    alert_stop_loss = Column(Integer, default=1)
+    alert_target_hit = Column(Integer, default=1)
+    alert_high_conviction = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)

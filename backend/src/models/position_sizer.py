@@ -155,3 +155,19 @@ class PositionSizer:
             strike=strike,
             expiry_days=expiry_days,
         )
+
+    def size_spread(
+        self,
+        score: EnsembleScore,
+        current_price: float,
+        implied_vol: float = 0.30,
+        expiry_days: int = 30,
+    ):
+        """Size an options spread position using SpreadBuilder.
+
+        Returns a SpreadRecommendation or None.
+        """
+        from src.models.options_strategies import SpreadBuilder
+
+        builder = SpreadBuilder(max_position=self.max_position)
+        return builder.suggest_spread(score, current_price, implied_vol, expiry_days)

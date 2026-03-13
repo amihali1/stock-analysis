@@ -216,6 +216,24 @@ def job_generate_recommendations():
         _record_run("recommendations", "error")
 
 
+def job_retrain_models():
+    """First Sunday of each month — Retrain ML models with latest data."""
+    logger.info("Scheduler: starting model retraining")
+    try:
+        from src.models.retrainer import Retrainer
+        retrainer = Retrainer()
+        results = retrainer.retrain_all()
+        summary_parts = []
+        for model_name, result in results.items():
+            summary_parts.append(f"{model_name}={result['status']}")
+        summary = ", ".join(summary_parts)
+        logger.info(f"Scheduler: model retraining complete — {summary}")
+        _record_run("retrain_models", f"ok ({summary})")
+    except Exception:
+        logger.exception("Scheduler: model retraining failed")
+        _record_run("retrain_models", "error")
+
+
 def init_scheduler():
     """Initialize and start the scheduler with market-hours cron jobs (Eastern Time)."""
     # Weekdays only (mon-fri)
@@ -224,8 +242,11 @@ def init_scheduler():
     scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
+    # Monthly model retraining: first Sunday of each month at 2:00 AM ET
+    scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)
+
     scheduler.start()
-    logger.info("Scheduler started with 4 daily jobs (6:00/6:30/7:00/7:30 AM ET, Mon-Fri)")
+    logger.info("Scheduler started with 4 daily jobs (6:00/6:30/7:00/7:30 AM ET, Mon-Fri) + monthly retrain")
 
 
 def shutdown_scheduler():

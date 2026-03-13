@@ -1,6 +1,6 @@
 # P5-002: Automated model retraining pipeline
 
-**Status**: todo
+**Status**: done
 **Phase**: 5
 **Dependencies**: P5-001
 **Estimated scope**: medium
