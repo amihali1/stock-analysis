@@ -140,3 +140,27 @@ class Recommendation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     stock = relationship("Stock", back_populates="recommendations")
+
+
+class PaperTrade(Base):
+    __tablename__ = "paper_trades"
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), ForeignKey("stocks.ticker"), nullable=False)
+    strategy = Column(String(10), nullable=False)  # short, options
+    status = Column(String(10), nullable=False, default="open")  # open, closed
+    entry_price = Column(Float, nullable=False)
+    stop_loss = Column(Float)
+    target_price = Column(Float)
+    position_size = Column(Float)
+    max_loss = Column(Float)
+    contracts = Column(Integer)
+    strike = Column(Float)
+    option_type = Column(String(4))
+    exit_price = Column(Float)
+    pnl = Column(Float)  # Realized P&L in dollars
+    opened_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime)
+    score = Column(Float)  # Ensemble score at time of trade
+
+    stock = relationship("Stock")

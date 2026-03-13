@@ -1,6 +1,6 @@
 # P4-001: Scaffold Next.js frontend
 
-**Status**: todo
+**Status**: done
 **Phase**: 4
 **Dependencies**: P3-001
 **Estimated scope**: medium

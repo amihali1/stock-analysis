@@ -1,6 +1,6 @@
 # P4-003: Build stock chart component
 
-**Status**: todo
+**Status**: done
 **Phase**: 4
 **Dependencies**: P4-001
 **Estimated scope**: medium

@@ -1,6 +1,6 @@
 # P4-004: Build analysis deep-dive page
 
-**Status**: todo
+**Status**: done
 **Phase**: 4
 **Dependencies**: P4-003
 **Estimated scope**: medium
