@@ -61,6 +61,15 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **P&L diagrams** — Canvas-based profit/loss visualization with breakeven markers
 - **Earnings awareness** — Flags spreads with expirations crossing earnings dates
 
+### Planned (Phase 6)
+- **Watchlist management** — UI to add/remove tickers instead of hardcoded config
+- **Backtesting UI** — Configure, run, and visualize backtests with equity curves and trade tables
+- **Alerts UI** — Configure webhook channels and view/acknowledge alert history
+- **Real options chain data** — Pull live premiums, IV, and Greeks from yfinance/CBOE
+- **Portfolio risk management** — Correlation-aware limits, sector exposure tracking, aggregate risk metrics
+- **Authentication** — JWT-based login to protect dashboard and API
+- **E2E deployment validation** — Full pipeline smoke test on homelab
+
 ## Tech Stack
 
 | Layer | Technology |
