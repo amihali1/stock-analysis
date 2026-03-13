@@ -1,6 +1,6 @@
 # P4-005: Add paper trading log
 
-**Status**: todo
+**Status**: done
 **Phase**: 4
 **Dependencies**: P4-002
 **Estimated scope**: medium

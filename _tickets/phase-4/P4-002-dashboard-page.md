@@ -1,6 +1,6 @@
 # P4-002: Build dashboard home page
 
-**Status**: todo
+**Status**: done
 **Phase**: 4
 **Dependencies**: P4-001
 **Estimated scope**: medium

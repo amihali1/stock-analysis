@@ -175,3 +175,41 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phases 0-3 complete. 34 tests passing. Backend fully functional.
 **Next steps**: Phase 4 (Next.js frontend: scaffold, dashboard, charts, analysis page, paper trading)
+
+---
+
+## 2026-03-13 — Session 2 (cont): Phase 4 — Frontend
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P4-001, P4-002, P4-003, P4-004, P4-005
+
+**What was done**:
+
+**P4-001 (Frontend scaffold)**:
+- Set up Next.js 15 with TypeScript, Tailwind v4, PostCSS
+- Created typed API client (`lib/api.ts`) and type definitions (`lib/types.ts`) matching backend schemas
+- Dark-themed layout with navigation (Dashboard, Shorts, Options, Paper Trades)
+
+**P4-002 (Dashboard)**:
+- Sortable recommendations table with strategy filter tabs (All/Shorts/Options)
+- Score color coding, position sizing, max loss display
+- Click-through to per-ticker analysis, auto-refresh every 5 minutes
+
+**P4-003 (Stock charts)**:
+- `StockChart` component using lightweight-charts (TradingView)
+- Candlestick chart with volume histogram
+- SMA 50/200 overlays, Bollinger Band overlays, dark theme
+
+**P4-004 (Analysis page)**:
+- `/analysis/[ticker]` route with full signal breakdown
+- SignalBreakdown, SentimentGauge, PositionDetail components
+- Latest technical indicators summary grid
+
+**P4-005 (Paper trading)**:
+- Added `PaperTrade` model to DB + Alembic migration
+- API: POST /api/paper-trades, POST /api/paper-trades/{id}/close, GET /api/paper-trades
+- Frontend page with summary stats (win rate, total P&L) and trade table
+- Open trades show current price and unrealized P&L
+
+**Current state**: Phases 0-4 complete. 34 backend tests passing. Frontend builds clean.
+**Next steps**: Phase 5 (backtesting, model retraining, alerts, options spreads)

@@ -36,8 +36,13 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **Scheduler** — APScheduler with 4 daily cron jobs (Mon-Fri ET): price fetch (6:00), indicators (6:30), sentiment (7:00), recommendations (7:30)
 - **Docker deployment** — Dockerfile with auto-migration, docker-compose with PostgreSQL + GPU passthrough, deploy script for homelab
 
+### Frontend Dashboard (Phase 4)
+- **Dashboard** — Sortable recommendations table with strategy filter tabs (All/Shorts/Options), color-coded scores, auto-refresh
+- **Stock charts** — Candlestick + volume charts via lightweight-charts with SMA 50/200 and Bollinger Band overlays
+- **Analysis page** — Per-ticker deep dive: chart, signal breakdown, sentiment gauge with headline history, position details, technical indicators
+- **Paper trading** — Take trades from recommendations, track open positions with unrealized P&L, summary stats (win rate, total P&L)
+
 ### Planned
-- **Phase 4** — Next.js dashboard with lightweight-charts, analysis pages, paper trading
 - **Phase 5** — Backtesting engine, model retraining, alerts, options spreads
 
 ## Tech Stack
@@ -102,6 +107,9 @@ Set via environment variables or a `.env` file in `backend/`:
 | `GET` | `/api/recommendations?strategy=short\|options&limit=10` | Top scored recommendations |
 | `GET` | `/api/analysis/{ticker}?days=90` | Full analysis: prices, indicators, sentiments, recommendations |
 | `GET` | `/api/tickers` | All tracked tickers with latest price data |
+| `POST` | `/api/paper-trades` | Open a paper trade |
+| `POST` | `/api/paper-trades/{id}/close` | Close a paper trade with exit price |
+| `GET` | `/api/paper-trades?status=open\|closed` | List paper trades with summary stats |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ## Running Tests
@@ -139,7 +147,20 @@ backend/
   alembic/                  # Database migrations
   tests/                    # Integration & unit tests
   trained_models/           # Serialized model artifacts
-frontend/                   # Next.js dashboard (Phase 4)
+frontend/
+  src/
+    app/
+      page.tsx              # Dashboard with recommendations table
+      analysis/[ticker]/    # Per-ticker analysis deep dive
+      paper-trades/         # Paper trading log
+    components/
+      StockChart.tsx        # Candlestick + volume + overlays
+      SignalBreakdown.tsx   # Ensemble signal bars
+      SentimentGauge.tsx    # Sentiment score + headlines
+      PositionDetail.tsx    # Position sizing details
+    lib/
+      api.ts                # Typed API client
+      types.ts              # TypeScript interfaces
 ```
 
 ## Design Constraints
