@@ -109,3 +109,38 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phase 0 + Phase 1 complete. 20 tests passing.
 **Next steps**: Phase 2 (ML models: directional XGBoost, volatility LSTM, ensemble)
+
+---
+
+## 2026-03-13 — Session 2 (cont): Phase 2 — ML Models
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P2-001, P2-002, P2-003
+
+**What was done**:
+
+**P2-001 (Directional XGBoost)**:
+- Created `models/directional.py` with `DirectionalModel` class
+- `build_dataset()` joins prices + indicators, creates binary label (drop >3% in 5 days)
+- 17 features including lagged returns, price/SMA ratios, 20d realized vol
+- Walk-forward validation (3 folds), time-based splits
+- Test: acc=0.633, AUC=0.549 — beats random baseline
+- Model serialized to `trained_models/directional_xgb_v1.pkl`
+
+**P2-002 (Volatility LSTM)**:
+- Created `models/volatility.py` with `VolatilityLSTM` (2-layer, 64 hidden)
+- 60-day lookback sequences, 4 features (return, volume, RSI, hist vol)
+- Predicts 5-day annualized realized volatility
+- Test: MAE=0.1085, Corr=0.3264
+- Early stopping, gradient clipping, LR scheduling
+- Model serialized to `trained_models/volatility_lstm_v1.pt`
+
+**P2-003 (Ensemble + Position Sizer)**:
+- Created `models/ensemble.py` — weighted combination of directional/vol/sentiment signals
+- Created `models/position_sizer.py` — short and options sizing with $5,000 constraint
+- Shorts: margin-aware share calculation, stop-loss, target
+- Options: contract sizing, premium budget, strike calculation
+- 14 tests covering edge cases (expensive stocks, zero price, confidence scaling)
+
+**Current state**: Phases 0-2 complete. 34 tests passing.
+**Next steps**: Phase 3 (API routes, scheduler, Docker deployment)
