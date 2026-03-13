@@ -1,6 +1,6 @@
 # P1-002: Build sentiment analysis pipeline
 
-**Status**: todo
+**Status**: done
 **Phase**: 1
 **Dependencies**: P1-001, P0-002
 **Estimated scope**: medium

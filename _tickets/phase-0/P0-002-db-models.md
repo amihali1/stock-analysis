@@ -1,6 +1,6 @@
 # P0-002: Finalize and test database models
 
-**Status**: todo
+**Status**: done
 **Phase**: 0
 **Dependencies**: P0-001
 **Estimated scope**: medium

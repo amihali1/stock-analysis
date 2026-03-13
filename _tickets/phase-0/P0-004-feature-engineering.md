@@ -1,6 +1,6 @@
 # P0-004: Build feature engineering module
 
-**Status**: todo
+**Status**: done
 **Phase**: 0
 **Dependencies**: P0-003
 **Estimated scope**: medium

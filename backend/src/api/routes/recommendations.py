@@ -9,7 +9,7 @@ router = APIRouter()
 
 @router.get("/recommendations")
 def get_recommendations(
-    strategy: Optional[str] = Query(None, regex="^(short|options)$"),
+    strategy: Optional[str] = Query(None, pattern="^(short|options)$"),
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):

@@ -1,6 +1,6 @@
 # P1-001: Build Ollama client service
 
-**Status**: todo
+**Status**: done
 **Phase**: 1
 **Dependencies**: P0-001
 **Estimated scope**: small

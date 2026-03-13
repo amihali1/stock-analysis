@@ -1,6 +1,6 @@
 # P0-005: End-to-end pipeline integration test
 
-**Status**: todo
+**Status**: done
 **Phase**: 0
 **Dependencies**: P0-004
 **Estimated scope**: small

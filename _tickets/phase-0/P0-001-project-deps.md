@@ -1,6 +1,6 @@
 # P0-001: Install and verify Python dependencies
 
-**Status**: todo
+**Status**: done
 **Phase**: 0
 **Dependencies**: none
 **Estimated scope**: small
