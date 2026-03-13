@@ -1,6 +1,6 @@
 # P1-003: Add Reddit sentiment source
 
-**Status**: todo
+**Status**: done
 **Phase**: 1
 **Dependencies**: P1-002
 **Estimated scope**: small

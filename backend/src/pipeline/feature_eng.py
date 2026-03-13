@@ -1,5 +1,7 @@
 """Compute technical indicators from price history and store in technical_indicators table."""
 
+from __future__ import annotations
+
 import logging
 from datetime import date
 

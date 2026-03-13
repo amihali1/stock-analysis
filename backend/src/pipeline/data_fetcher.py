@@ -1,5 +1,7 @@
 """Fetch daily OHLCV data from yfinance and store in price_history table."""
 
+from __future__ import annotations
+
 import logging
 from datetime import date
 

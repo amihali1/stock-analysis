@@ -74,3 +74,38 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phase 0 complete. All pipeline infrastructure working.
 **Next steps**: Phase 1 (P1-001 Ollama client, P1-002 sentiment pipeline, P1-003 Reddit sentiment)
+
+---
+
+## 2026-03-13 — Session 2 (cont): Phase 1 — Sentiment Analysis
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P1-001, P1-002, P1-003
+
+**What was done**:
+
+**P1-001 (Ollama client)**:
+- Created `services/ollama_client.py` — async httpx client with retry (3 attempts, exponential backoff)
+- `generate()`, `generate_json()`, `is_available()` methods
+- JSON extraction fallback for markdown code blocks / embedded JSON
+- 9 unit tests with mocked HTTP, all passing
+
+**P1-002 (Sentiment pipeline)**:
+- Created `services/headline_fetcher.py` — FinvizFetcher, NewsApiFetcher classes
+- Created `pipeline/sentiment.py` — SentimentAnalyzer with structured prompts
+- Pydantic validation of Ollama responses + regex fallback
+- Confidence-weighted composite scoring
+- Stores raw LLM responses in `sentiment_scores` table for debugging
+- 7 tests including full integration test with mocked Ollama
+
+**P1-003 (Reddit sentiment)**:
+- Added RedditFetcher to `headline_fetcher.py` — searches r/wallstreetbets, r/stocks, r/options
+- Extracts post titles + top comments
+- Integrated into SentimentAnalyzer fetcher chain
+- Gracefully skips when Reddit credentials not configured
+
+**Fixes**:
+- Added `from __future__ import annotations` to all new modules (Python 3.10 `X | None` syntax)
+
+**Current state**: Phase 0 + Phase 1 complete. 20 tests passing.
+**Next steps**: Phase 2 (ML models: directional XGBoost, volatility LSTM, ensemble)
