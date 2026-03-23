@@ -1,17 +1,34 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { runBacktest, getWatchlist } from "@/lib/api";
+import { useEffect, useRef, useState, useMemo } from "react";
+import { runBacktest, compareStrategies, getWatchlist } from "@/lib/api";
+import {
+  createChart,
+  type IChartApi,
+  type LineData,
+  type Time,
+  ColorType,
+} from "lightweight-charts";
 import EquityCurveChart from "@/components/EquityCurveChart";
 import type {
   BacktestConfig,
   BacktestResponse,
+  BacktestCompareResponse,
   BacktestTrade,
   WatchlistItem,
+  DailyEquityPoint,
 } from "@/lib/types";
 
 type SortKey = "entry_date" | "ticker" | "pnl" | "return_pct";
 type SortDir = "asc" | "desc";
+type Tab = "single" | "compare";
+
+const STRATEGIES = ["short", "options", "combined"] as const;
+const STRATEGY_COLORS: Record<string, string> = {
+  short: "#ef4444",
+  options: "#a855f7",
+  combined: "#3b82f6",
+};
 
 function pnlColor(val: number): string {
   if (val > 0) return "text-green-400";
@@ -57,7 +74,27 @@ function formatMetric(
   }
 }
 
+function metricColor(label: string, value: number | string | undefined): string {
+  if (value === undefined) return "text-white";
+  if (typeof value === "string") return "text-white";
+  if (label === "Total P&L" || label === "Avg P&L") return pnlColor(value);
+  if (label === "Win Rate") return value >= 0.5 ? "text-green-400" : "text-red-400";
+  if (label === "Sharpe Ratio") return value >= 1 ? "text-green-400" : value >= 0 ? "text-yellow-400" : "text-red-400";
+  return "text-white";
+}
+
+const METRIC_ROWS: { label: string; key: string; higher_is_better: boolean }[] = [
+  { label: "Total P&L", key: "total_pnl", higher_is_better: true },
+  { label: "Num Trades", key: "num_trades", higher_is_better: true },
+  { label: "Win Rate", key: "win_rate", higher_is_better: true },
+  { label: "Sharpe Ratio", key: "sharpe_ratio", higher_is_better: true },
+  { label: "Max Drawdown", key: "max_drawdown", higher_is_better: false },
+  { label: "Profit Factor", key: "profit_factor", higher_is_better: true },
+];
+
 export default function BacktestPage() {
+  const [tab, setTab] = useState<Tab>("single");
+
   // Watchlist tickers for the multi-select
   const [watchlistTickers, setWatchlistTickers] = useState<string[]>([]);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
@@ -72,10 +109,16 @@ export default function BacktestPage() {
   const [maxConcurrent, setMaxConcurrent] = useState(10);
   const [maxPosition, setMaxPosition] = useState(5000);
 
-  // Results
+  // Single strategy results
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Compare results
+  const [compareResult, setCompareResult] = useState<BacktestCompareResponse | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null);
 
   // Sort state for trade table
   const [sortKey, setSortKey] = useState<SortKey>("entry_date");
@@ -111,6 +154,29 @@ export default function BacktestPage() {
       setError(err instanceof Error ? err.message : "Backtest failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleCompare() {
+    setCompareLoading(true);
+    setCompareError(null);
+    setCompareResult(null);
+    setExpandedStrategy(null);
+    try {
+      const res = await compareStrategies({
+        tickers: allSelected ? null : selectedTickers,
+        start_date: startDate || null,
+        end_date: endDate || null,
+        max_position: maxPosition,
+        hold_days: holdDays,
+        score_threshold: scoreThreshold,
+        max_concurrent: maxConcurrent,
+      });
+      setCompareResult(res);
+    } catch (err) {
+      setCompareError(err instanceof Error ? err.message : "Comparison failed");
+    } finally {
+      setCompareLoading(false);
     }
   }
 
@@ -158,6 +224,7 @@ export default function BacktestPage() {
   }
 
   const metrics = result?.metrics;
+  const isLoading = tab === "single" ? loading : compareLoading;
 
   const metricCards: { label: string; key: string }[] = [
     { label: "Total P&L", key: "total_pnl" },
@@ -168,37 +235,54 @@ export default function BacktestPage() {
     { label: "Num Trades", key: "num_trades" },
   ];
 
-  function metricColor(label: string, value: number | string | undefined): string {
-    if (value === undefined) return "text-white";
-    if (typeof value === "string") return "text-white";
-    if (label === "Total P&L" || label === "Avg P&L") return pnlColor(value);
-    if (label === "Win Rate") return value >= 0.5 ? "text-green-400" : "text-red-400";
-    if (label === "Sharpe Ratio") return value >= 1 ? "text-green-400" : value >= 0 ? "text-yellow-400" : "text-red-400";
-    return "text-white";
-  }
-
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Backtest</h1>
 
+      {/* Tab Toggle */}
+      <div className="flex gap-1 mb-6 bg-gray-900 rounded-lg p-1 w-fit">
+        <button
+          onClick={() => setTab("single")}
+          className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+            tab === "single"
+              ? "bg-blue-600 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          Single Strategy
+        </button>
+        <button
+          onClick={() => setTab("compare")}
+          className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+            tab === "compare"
+              ? "bg-blue-600 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          Compare Strategies
+        </button>
+      </div>
+
       {/* Config Form */}
       <div className="bg-gray-900 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-          {/* Strategy */}
-          <div>
-            <label className="block text-gray-400 text-xs uppercase tracking-wider mb-1">
-              Strategy
-            </label>
-            <select
-              value={strategy}
-              onChange={(e) => setStrategy(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100"
-            >
-              <option value="combined">Combined</option>
-              <option value="short">Short</option>
-              <option value="options">Options</option>
-            </select>
-          </div>
+          {/* Strategy - only shown in single tab */}
+          {tab === "single" && (
+            <div>
+              <label className="block text-gray-400 text-xs uppercase tracking-wider mb-1">
+                Strategy
+              </label>
+              <select
+                value={strategy}
+                onChange={(e) => setStrategy(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100"
+              >
+                <option value="combined">Combined</option>
+                <option value="short">Short</option>
+                <option value="options">Options</option>
+              </select>
+            </div>
+          )}
 
           {/* Start Date */}
           <div>
@@ -323,23 +407,27 @@ export default function BacktestPage() {
 
         {/* Run button */}
         <button
-          onClick={handleRun}
-          disabled={loading || (!allSelected && selectedTickers.length === 0)}
+          onClick={tab === "single" ? handleRun : handleCompare}
+          disabled={isLoading || (!allSelected && selectedTickers.length === 0)}
           className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white px-6 py-2 rounded text-sm font-medium transition-colors"
         >
-          {loading ? "Running..." : "Run Backtest"}
+          {isLoading
+            ? "Running..."
+            : tab === "single"
+              ? "Run Backtest"
+              : "Compare All Strategies"}
         </button>
       </div>
 
       {/* Error */}
-      {error && (
+      {(tab === "single" ? error : compareError) && (
         <div className="bg-red-900/30 border border-red-800 rounded-lg p-4 mb-6 text-red-300 text-sm">
-          {error}
+          {tab === "single" ? error : compareError}
         </div>
       )}
 
-      {/* Results */}
-      {result && (
+      {/* Single Strategy Results */}
+      {tab === "single" && result && (
         <>
           {/* Metric Cards */}
           {metrics && (
@@ -392,37 +480,11 @@ export default function BacktestPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-gray-400 border-b border-gray-800 text-left">
-                      <SortHeader
-                        label="Date"
-                        sortKey="entry_date"
-                        current={sortKey}
-                        dir={sortDir}
-                        onClick={handleSort}
-                      />
-                      <SortHeader
-                        label="Ticker"
-                        sortKey="ticker"
-                        current={sortKey}
-                        dir={sortDir}
-                        onClick={handleSort}
-                      />
+                      <SortHeader label="Date" sortKey="entry_date" current={sortKey} dir={sortDir} onClick={handleSort} />
+                      <SortHeader label="Ticker" sortKey="ticker" current={sortKey} dir={sortDir} onClick={handleSort} />
                       <th className="py-3 px-3">Exit Date</th>
-                      <SortHeader
-                        label="P&L"
-                        sortKey="pnl"
-                        current={sortKey}
-                        dir={sortDir}
-                        onClick={handleSort}
-                        align="right"
-                      />
-                      <SortHeader
-                        label="Return %"
-                        sortKey="return_pct"
-                        current={sortKey}
-                        dir={sortDir}
-                        onClick={handleSort}
-                        align="right"
-                      />
+                      <SortHeader label="P&L" sortKey="pnl" current={sortKey} dir={sortDir} onClick={handleSort} align="right" />
+                      <SortHeader label="Return %" sortKey="return_pct" current={sortKey} dir={sortDir} onClick={handleSort} align="right" />
                       <th className="py-3 px-3 text-right">Entry</th>
                       <th className="py-3 px-3 text-right">Exit</th>
                       <th className="py-3 px-3 text-center">Stop/Target</th>
@@ -430,54 +492,7 @@ export default function BacktestPage() {
                   </thead>
                   <tbody>
                     {sortedTrades.map((trade, i) => (
-                      <tr
-                        key={`${trade.ticker}-${trade.entry_date}-${i}`}
-                        className={`border-b border-gray-800/50 ${
-                          trade.pnl > 0
-                            ? "hover:bg-green-900/10"
-                            : trade.pnl < 0
-                              ? "hover:bg-red-900/10"
-                              : "hover:bg-gray-900/50"
-                        }`}
-                      >
-                        <td className="py-2 px-3 text-gray-400 text-xs">
-                          {trade.entry_date}
-                        </td>
-                        <td className="py-2 px-3 font-mono font-bold">
-                          {trade.ticker}
-                        </td>
-                        <td className="py-2 px-3 text-gray-400 text-xs">
-                          {trade.exit_date}
-                        </td>
-                        <td
-                          className={`py-2 px-3 text-right font-mono font-bold ${pnlColor(trade.pnl)}`}
-                        >
-                          {dollar(trade.pnl)}
-                        </td>
-                        <td
-                          className={`py-2 px-3 text-right font-mono ${pnlColor(trade.return_pct)}`}
-                        >
-                          {pct(trade.return_pct)}
-                        </td>
-                        <td className="py-2 px-3 text-right font-mono text-gray-400">
-                          ${trade.entry_price.toFixed(2)}
-                        </td>
-                        <td className="py-2 px-3 text-right font-mono text-gray-400">
-                          ${trade.exit_price.toFixed(2)}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          {trade.hit_stop && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 border border-red-800">
-                              Stop
-                            </span>
-                          )}
-                          {trade.hit_target && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/50 text-green-300 border border-green-800">
-                              Target
-                            </span>
-                          )}
-                        </td>
-                      </tr>
+                      <TradeRow key={`${trade.ticker}-${trade.entry_date}-${i}`} trade={trade} />
                     ))}
                   </tbody>
                 </table>
@@ -486,8 +501,246 @@ export default function BacktestPage() {
           </div>
         </>
       )}
+
+      {/* Compare Results */}
+      {tab === "compare" && compareResult && (
+        <>
+          {/* Side-by-side Metrics Table */}
+          <div className="bg-gray-900 rounded-lg p-4 mb-6 overflow-x-auto">
+            <h2 className="text-lg font-semibold mb-4">Strategy Comparison</h2>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-400 border-b border-gray-800">
+                  <th className="py-3 px-3 text-left">Metric</th>
+                  {STRATEGIES.map((s) => (
+                    <th key={s} className="py-3 px-3 text-right capitalize">
+                      {s}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {METRIC_ROWS.map(({ label, key, higher_is_better }) => {
+                  const values = STRATEGIES.map((s) => {
+                    const v = compareResult.summary[s]?.[key as keyof typeof compareResult.summary.short];
+                    return typeof v === "string" && v === "inf" ? Infinity : (v as number);
+                  });
+                  const best = higher_is_better
+                    ? Math.max(...values.filter((v) => isFinite(v)))
+                    : Math.min(...values.filter((v) => isFinite(v)));
+
+                  return (
+                    <tr key={key} className="border-b border-gray-800/50">
+                      <td className="py-3 px-3 text-gray-400">{label}</td>
+                      {STRATEGIES.map((s, i) => {
+                        const raw = compareResult.summary[s]?.[key as keyof typeof compareResult.summary.short];
+                        const isBest = values[i] === best;
+                        return (
+                          <td
+                            key={s}
+                            className={`py-3 px-3 text-right font-mono ${
+                              isBest ? "text-green-400 font-bold" : "text-gray-300"
+                            }`}
+                          >
+                            {formatMetric(label, raw)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Overlaid Equity Curves */}
+          <CompareEquityChart strategies={compareResult.strategies} />
+
+          {/* Collapsible Per-Strategy Trade Tables */}
+          {STRATEGIES.map((s) => {
+            const stratResult = compareResult.strategies[s];
+            if (!stratResult) return null;
+            const isExpanded = expandedStrategy === s;
+            return (
+              <div key={s} className="bg-gray-900 rounded-lg mb-4">
+                <button
+                  onClick={() => setExpandedStrategy(isExpanded ? null : s)}
+                  className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-800/50 rounded-lg transition-colors"
+                >
+                  <span className="font-semibold capitalize">
+                    {s} Trades ({stratResult.trades.length})
+                  </span>
+                  <span className="text-gray-500 text-sm">
+                    {isExpanded ? "\u25B2" : "\u25BC"}
+                  </span>
+                </button>
+                {isExpanded && (
+                  <div className="px-4 pb-4 overflow-x-auto">
+                    {stratResult.trades.length === 0 ? (
+                      <div className="text-gray-500 text-center py-6">
+                        No trades for this strategy.
+                      </div>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-gray-400 border-b border-gray-800 text-left">
+                            <th className="py-3 px-3">Date</th>
+                            <th className="py-3 px-3">Ticker</th>
+                            <th className="py-3 px-3">Exit Date</th>
+                            <th className="py-3 px-3 text-right">P&L</th>
+                            <th className="py-3 px-3 text-right">Return %</th>
+                            <th className="py-3 px-3 text-right">Entry</th>
+                            <th className="py-3 px-3 text-right">Exit</th>
+                            <th className="py-3 px-3 text-center">Stop/Target</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stratResult.trades.map((trade, i) => (
+                            <TradeRow key={`${trade.ticker}-${trade.entry_date}-${i}`} trade={trade} />
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
+}
+
+function TradeRow({ trade }: { trade: BacktestTrade }) {
+  return (
+    <tr
+      className={`border-b border-gray-800/50 ${
+        trade.pnl > 0
+          ? "hover:bg-green-900/10"
+          : trade.pnl < 0
+            ? "hover:bg-red-900/10"
+            : "hover:bg-gray-900/50"
+      }`}
+    >
+      <td className="py-2 px-3 text-gray-400 text-xs">{trade.entry_date}</td>
+      <td className="py-2 px-3 font-mono font-bold">{trade.ticker}</td>
+      <td className="py-2 px-3 text-gray-400 text-xs">{trade.exit_date}</td>
+      <td className={`py-2 px-3 text-right font-mono font-bold ${pnlColor(trade.pnl)}`}>
+        {dollar(trade.pnl)}
+      </td>
+      <td className={`py-2 px-3 text-right font-mono ${pnlColor(trade.return_pct)}`}>
+        {pct(trade.return_pct)}
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-gray-400">
+        ${trade.entry_price.toFixed(2)}
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-gray-400">
+        ${trade.exit_price.toFixed(2)}
+      </td>
+      <td className="py-2 px-3 text-center">
+        {trade.hit_stop && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 border border-red-800">
+            Stop
+          </span>
+        )}
+        {trade.hit_target && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/50 text-green-300 border border-green-800">
+            Target
+          </span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function CompareEquityChart({
+  strategies,
+}: {
+  strategies: Record<string, BacktestResponse>;
+}) {
+  const hasData = STRATEGIES.some(
+    (s) => strategies[s]?.daily_equity && strategies[s].daily_equity!.length > 0
+  );
+  if (!hasData) return null;
+
+  // Merge all equity data into a single dataset keyed by date for the chart
+  // We'll use EquityCurveChart-like rendering but with 3 series
+  return (
+    <div className="bg-gray-900 rounded-lg p-4 mb-6">
+      <h2 className="text-lg font-semibold mb-3">Equity Curves</h2>
+      <div className="flex gap-4 mb-2">
+        {STRATEGIES.map((s) => (
+          <div key={s} className="flex items-center gap-1.5 text-xs text-gray-400">
+            <div
+              className="w-3 h-0.5 rounded"
+              style={{ backgroundColor: STRATEGY_COLORS[s] }}
+            />
+            <span className="capitalize">{s}</span>
+          </div>
+        ))}
+      </div>
+      <MultiEquityChart strategies={strategies} />
+    </div>
+  );
+}
+
+function MultiEquityChart({
+  strategies,
+}: {
+  strategies: Record<string, BacktestResponse>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: "#0a0a0a" },
+        textColor: "#9ca3af",
+      },
+      grid: {
+        vertLines: { color: "#1f2937" },
+        horzLines: { color: "#1f2937" },
+      },
+      width: containerRef.current.clientWidth,
+      height: 300,
+      crosshair: { mode: 0 },
+      timeScale: { borderColor: "#374151" },
+    });
+
+    for (const s of STRATEGIES) {
+      const equity = strategies[s]?.daily_equity;
+      if (!equity || equity.length === 0) continue;
+      const series = chart.addLineSeries({
+        color: STRATEGY_COLORS[s],
+        lineWidth: 2,
+        title: s,
+      });
+      const lineData: LineData[] = equity.map((d) => ({
+        time: d.date as Time,
+        value: d.total_equity,
+      }));
+      series.setData(lineData);
+    }
+
+    chart.timeScale().fitContent();
+
+    const handleResize = () => {
+      if (containerRef.current) {
+        chart.applyOptions({ width: containerRef.current.clientWidth });
+      }
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      chart.remove();
+    };
+  }, [strategies]);
+
+  return <div ref={containerRef} className="w-full rounded-lg overflow-hidden" />;
 }
 
 function SortHeader({
