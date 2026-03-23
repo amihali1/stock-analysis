@@ -114,6 +114,17 @@ export interface PaperTradeListResponse {
   };
 }
 
+export interface WatchlistItem {
+  ticker: string;
+  sector: string | null;
+  added_at: string | null;
+}
+
+export interface WatchlistResponse {
+  tickers: WatchlistItem[];
+  count: number;
+}
+
 export interface AnalysisResponse {
   ticker: string;
   name: string | null;

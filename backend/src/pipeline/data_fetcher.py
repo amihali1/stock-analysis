@@ -42,7 +42,8 @@ class DataFetcher:
     ) -> dict[str, int]:
         """Fetch daily OHLCV for tickers. Returns {ticker: rows_inserted} counts."""
         if tickers is None:
-            tickers = get_settings().default_watchlist
+            from src.db.watchlist import get_watchlist_tickers
+            tickers = get_watchlist_tickers(self.db)
 
         results: dict[str, int] = {}
 

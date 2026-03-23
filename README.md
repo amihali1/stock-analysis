@@ -33,7 +33,7 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 
 ### API & Automation (Phase 3)
 - **REST API** — Full CRUD endpoints with Pydantic response models: recommendations (filterable by strategy), per-ticker analysis (prices, indicators, sentiments), ticker listing
-- **Scheduler** — APScheduler with 4 daily cron jobs (Mon-Fri ET): price fetch (6:00), indicators (6:30), sentiment (7:00), recommendations (7:30)
+- **Scheduler** — APScheduler with 4 daily cron jobs (Mon-Fri ET): price fetch (6:00), indicators (6:30), sentiment (7:00), recommendations (7:30) + monthly model retraining
 - **Docker deployment** — Dockerfile with auto-migration, docker-compose with PostgreSQL + GPU passthrough, deploy script for homelab
 
 ### Frontend Dashboard (Phase 4)
@@ -42,8 +42,33 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **Analysis page** — Per-ticker deep dive: chart, signal breakdown, sentiment gauge with headline history, position details, technical indicators
 - **Paper trading** — Take trades from recommendations, track open positions with unrealized P&L, summary stats (win rate, total P&L)
 
-### Planned
-- **Phase 5** — Backtesting engine, model retraining, alerts, options spreads
+### Backtesting & Retraining (Phase 5)
+- **Backtesting engine** — Replay historical signals with configurable strategies (short/options/combined), position limits, and hold periods
+- **Portfolio metrics** — Sharpe ratio, win rate, max drawdown, profit factor, daily equity curve, stop-loss/target hit rates
+- **Strategy comparison** — Side-by-side backtest of short-only, options-only, and combined strategies
+- **Walk-forward retraining** — Periodic model retraining during backtests for realistic evaluation
+- **Automated retraining** — Monthly champion/challenger comparison for both XGBoost and LSTM models, auto-deploy only if metrics improve
+
+### Alerts (Phase 5)
+- **Webhook notifications** — Discord and Telegram support for stop-loss hits, target hits, and high-conviction signals
+- **Alert history** — Full audit trail in database with acknowledge workflow
+- **Configurable preferences** — Per-channel settings for alert types and score thresholds
+
+### Options Spreads (Phase 5)
+- **Spread builder** — Signal-driven strategy selection: bear call spreads, bear put spreads, iron condors
+- **Black-Scholes pricing** — Simplified premium and delta estimation for position sizing
+- **Greeks display** — Delta, theta, vega exposure on all spread positions
+- **P&L diagrams** — Canvas-based profit/loss visualization with breakeven markers
+- **Earnings awareness** — Flags spreads with expirations crossing earnings dates
+
+### Planned (Phase 6)
+- **Watchlist management** — UI to add/remove tickers instead of hardcoded config
+- **Backtesting UI** — Configure, run, and visualize backtests with equity curves and trade tables
+- **Alerts UI** — Configure webhook channels and view/acknowledge alert history
+- **Real options chain data** — Pull live premiums, IV, and Greeks from yfinance/CBOE
+- **Portfolio risk management** — Correlation-aware limits, sector exposure tracking, aggregate risk metrics
+- **Authentication** — JWT-based login to protect dashboard and API
+- **E2E deployment validation** — Full pipeline smoke test on homelab
 
 ## Tech Stack
 
@@ -110,6 +135,12 @@ Set via environment variables or a `.env` file in `backend/`:
 | `POST` | `/api/paper-trades` | Open a paper trade |
 | `POST` | `/api/paper-trades/{id}/close` | Close a paper trade with exit price |
 | `GET` | `/api/paper-trades?status=open\|closed` | List paper trades with summary stats |
+| `POST` | `/api/backtest` | Run a backtest with configurable parameters |
+| `POST` | `/api/backtest/compare` | Compare all three strategies side-by-side |
+| `GET` | `/api/alerts` | Alert history with optional acknowledged filter |
+| `POST` | `/api/alerts/{id}/acknowledge` | Acknowledge an alert |
+| `GET` | `/api/alert-settings` | Get alert channel settings |
+| `POST` | `/api/alert-settings` | Create/update alert channel settings |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ## Running Tests
@@ -128,7 +159,7 @@ backend/
     config.py               # Settings (env vars, watchlist)
     api/routes/             # REST endpoints
     db/
-      models.py             # SQLAlchemy models (6 core tables)
+      models.py             # SQLAlchemy models (9 tables)
       session.py            # Database session management
     pipeline/
       data_fetcher.py       # yfinance OHLCV ingestion
@@ -139,11 +170,15 @@ backend/
     services/
       ollama_client.py      # Async Ollama HTTP client with retry
       headline_fetcher.py   # Finviz, NewsAPI, Reddit fetchers
+      alerting.py           # Discord/Telegram webhook alerts
     models/
       directional.py        # XGBoost drop classifier + dataset builder
       volatility.py         # LSTM volatility predictor
       ensemble.py           # Weighted signal combiner
       position_sizer.py     # $5k-constrained position sizing
+      backtester.py         # Historical strategy replay engine
+      retrainer.py          # Champion/challenger model retraining
+      options_strategies.py # Spread strategies (bear call, bear put, iron condor)
   alembic/                  # Database migrations
   tests/                    # Integration & unit tests
   trained_models/           # Serialized model artifacts
@@ -158,6 +193,8 @@ frontend/
       SignalBreakdown.tsx   # Ensemble signal bars
       SentimentGauge.tsx    # Sentiment score + headlines
       PositionDetail.tsx    # Position sizing details
+      PLDiagram.tsx         # Options spread P&L chart
+      GreeksDisplay.tsx     # Options Greeks display
     lib/
       api.ts                # Typed API client
       types.ts              # TypeScript interfaces

@@ -213,3 +213,55 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phases 0-4 complete. 34 backend tests passing. Frontend builds clean.
 **Next steps**: Phase 5 (backtesting, model retraining, alerts, options spreads)
+
+---
+
+## 2026-03-13 — Session 3: Phase 5 — Backtesting, Retraining, Alerts, Spreads
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P5-001, P5-002, P5-003, P5-004
+
+**What was done**:
+
+**P5-001 (Backtesting engine)**:
+- Created `models/backtester.py` — `Backtester` class replaying signals on historical data
+- Supports short, options, and combined strategies
+- Walk-forward retraining with configurable interval
+- Metrics: Sharpe ratio, win rate, max drawdown, profit factor, stop-loss/target hit rates
+- Daily equity curve tracking with unrealized P&L
+- `compare_strategies()` for side-by-side strategy comparison
+- API: POST /api/backtest, POST /api/backtest/compare
+- 14 tests covering all execution paths
+
+**P5-002 (Model retraining)**:
+- Created `models/retrainer.py` — champion/challenger comparison for both models
+- Directional: compares AUC-ROC, deploys only if improved beyond threshold
+- Volatility: compares MAE (lower is better), same threshold logic
+- Backs up current champion before deploying challenger
+- Metrics persisted to `trained_models/{model}_metrics.json`
+- Scheduler job: first Sunday of each month at 2:00 AM ET
+
+**P5-003 (Alerting system)**:
+- Created `services/alerting.py` — `AlertService` with Discord and Telegram webhook support
+- Alert types: stop_loss, target_hit, high_conviction, position_closed
+- `check_paper_trade_alerts()` monitors open trades for stop/target hits
+- `check_high_conviction_alerts()` flags high-score recommendations
+- DB models: `Alert` (history), `AlertSetting` (configurable preferences)
+- Alembic migration for alerts + alert_settings tables
+- API: GET/POST /api/alerts, POST /api/alerts/{id}/acknowledge, CRUD /api/alert-settings
+
+**P5-004 (Options spreads)**:
+- Created `models/options_strategies.py` — `SpreadBuilder` with three strategy types
+- Bear call spread (credit): high directional + low vol signals
+- Bear put spread (debit): high directional + high vol signals
+- Iron condor (credit): high vol + neutral directional signals
+- Simplified Black-Scholes pricing for premium/delta estimation
+- Greeks: delta, theta, vega exposure on all spreads
+- Earnings-aware: flags if expiry crosses earnings date
+- Position sizing respects $5,000 max constraint
+- Extended `PositionSizer.size_spread()` method
+- Frontend: `PLDiagram.tsx` (canvas-based P&L chart), `GreeksDisplay.tsx`
+- 15 tests covering all spread types and BS estimates
+
+**Current state**: Phases 0-5 complete. 63 tests passing.
+**Next steps**: All planned tickets done. Future work: live trading integration, more spread strategies.

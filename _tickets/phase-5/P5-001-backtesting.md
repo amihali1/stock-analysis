@@ -1,6 +1,6 @@
 # P5-001: Build backtesting framework
 
-**Status**: todo
+**Status**: done
 **Phase**: 5
 **Dependencies**: P2-003
 **Estimated scope**: large

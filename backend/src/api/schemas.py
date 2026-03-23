@@ -86,6 +86,21 @@ class SentimentEntry(BaseModel):
     reasoning: str | None = None
 
 
+class WatchlistItem(BaseModel):
+    ticker: str
+    sector: str | None = None
+    added_at: datetime | None = None
+
+
+class WatchlistResponse(BaseModel):
+    tickers: list[WatchlistItem]
+    count: int
+
+
+class WatchlistAddRequest(BaseModel):
+    tickers: list[str]
+
+
 class AnalysisResponse(BaseModel):
     ticker: str
     name: str | None = None

@@ -1,6 +1,6 @@
 # P5-003: Add alerting system
 
-**Status**: todo
+**Status**: done
 **Phase**: 5
 **Dependencies**: P4-005
 **Estimated scope**: medium

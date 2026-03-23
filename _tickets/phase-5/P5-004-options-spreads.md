@@ -1,6 +1,6 @@
 # P5-004: Expand to options spread strategies
 
-**Status**: todo
+**Status**: done
 **Phase**: 5
 **Dependencies**: P2-003, P4-004
 **Estimated scope**: large

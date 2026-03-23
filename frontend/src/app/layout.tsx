@@ -38,6 +38,12 @@ function Nav() {
         >
           Paper Trades
         </Link>
+        <Link
+          href="/watchlist"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Watchlist
+        </Link>
       </div>
     </nav>
   );
