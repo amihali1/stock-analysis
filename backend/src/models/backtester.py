@@ -70,6 +70,7 @@ class BacktestResult:
                 }
                 for t in self.trades
             ],
+            "daily_equity": self.daily_equity,
         }
 
 
