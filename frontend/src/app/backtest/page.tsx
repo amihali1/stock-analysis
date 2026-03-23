@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { runBacktest, getWatchlist } from "@/lib/api";
+import EquityCurveChart from "@/components/EquityCurveChart";
 import type {
   BacktestConfig,
   BacktestResponse,
@@ -358,6 +359,14 @@ export default function BacktestPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Equity Curve */}
+          {result.daily_equity && result.daily_equity.length > 0 && (
+            <div className="bg-gray-900 rounded-lg p-4 mb-6">
+              <h2 className="text-lg font-semibold mb-3">Equity Curve</h2>
+              <EquityCurveChart data={result.daily_equity} />
             </div>
           )}
 
