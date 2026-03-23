@@ -6,6 +6,9 @@ import type {
   PaperTrade,
   PaperTradeListResponse,
   WatchlistResponse,
+  BacktestConfig,
+  BacktestResponse,
+  BacktestCompareResponse,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -99,5 +102,23 @@ export async function addToWatchlist(
 export async function removeFromWatchlist(ticker: string): Promise<void> {
   return fetchAPI<void>(`/api/watchlist/${encodeURIComponent(ticker)}`, {
     method: "DELETE",
+  });
+}
+
+export async function runBacktest(
+  config: BacktestConfig
+): Promise<BacktestResponse> {
+  return fetchAPI<BacktestResponse>("/api/backtest", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+
+export async function compareStrategies(
+  config: Omit<BacktestConfig, "strategy">
+): Promise<BacktestCompareResponse> {
+  return fetchAPI<BacktestCompareResponse>("/api/backtest/compare", {
+    method: "POST",
+    body: JSON.stringify(config),
   });
 }

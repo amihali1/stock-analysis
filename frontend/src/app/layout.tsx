@@ -44,6 +44,12 @@ function Nav() {
         >
           Watchlist
         </Link>
+        <Link
+          href="/backtest"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Backtest
+        </Link>
       </div>
     </nav>
   );

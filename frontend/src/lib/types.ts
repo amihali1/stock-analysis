@@ -135,3 +135,80 @@ export interface AnalysisResponse {
   sentiments: SentimentEntry[];
   recommendations: Recommendation[];
 }
+
+// Backtesting types
+
+export interface BacktestConfig {
+  tickers: string[] | null;
+  strategy: string;
+  start_date: string | null;
+  end_date: string | null;
+  max_position: number;
+  hold_days: number;
+  score_threshold: number;
+  max_concurrent: number;
+}
+
+export interface BacktestTrade {
+  ticker: string;
+  strategy: string;
+  entry_date: string;
+  exit_date: string;
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  return_pct: number;
+  score: number;
+  hit_stop: boolean;
+  hit_target: boolean;
+}
+
+export interface BacktestMetrics {
+  total_pnl: number;
+  num_trades: number;
+  win_rate: number;
+  sharpe_ratio: number;
+  max_drawdown: number;
+  profit_factor: number | string;
+  avg_pnl: number;
+  best_trade: number;
+  worst_trade: number;
+  avg_return_pct: number;
+  avg_hold_days: number;
+  total_position_value: number;
+  return_on_capital: number;
+  max_concurrent_used: number;
+}
+
+export interface DailyEquityPoint {
+  date: string;
+  cumulative_pnl: number;
+  unrealized: number;
+  total_equity: number;
+  open_positions: number;
+}
+
+export interface BacktestResponse {
+  strategy: string;
+  start_date: string;
+  end_date: string;
+  num_trades: number;
+  metrics: BacktestMetrics;
+  trades: BacktestTrade[];
+  daily_equity?: DailyEquityPoint[];
+}
+
+export interface BacktestCompareResponse {
+  strategies: Record<string, BacktestResponse>;
+  summary: Record<
+    string,
+    {
+      total_pnl: number;
+      num_trades: number;
+      win_rate: number;
+      sharpe_ratio: number;
+      max_drawdown: number;
+      profit_factor: number | string;
+    }
+  >;
+}
