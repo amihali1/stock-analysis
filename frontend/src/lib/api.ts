@@ -5,6 +5,7 @@ import type {
   TickerListResponse,
   PaperTrade,
   PaperTradeListResponse,
+  WatchlistResponse,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -79,5 +80,24 @@ export async function closePaperTrade(
   return fetchAPI<PaperTrade>(`/api/paper-trades/${tradeId}/close`, {
     method: "POST",
     body: JSON.stringify({ exit_price: exitPrice }),
+  });
+}
+
+export async function getWatchlist(): Promise<WatchlistResponse> {
+  return fetchAPI<WatchlistResponse>("/api/watchlist");
+}
+
+export async function addToWatchlist(
+  tickers: string[]
+): Promise<WatchlistResponse> {
+  return fetchAPI<WatchlistResponse>("/api/watchlist", {
+    method: "POST",
+    body: JSON.stringify({ tickers }),
+  });
+}
+
+export async function removeFromWatchlist(ticker: string): Promise<void> {
+  return fetchAPI<void>(`/api/watchlist/${encodeURIComponent(ticker)}`, {
+    method: "DELETE",
   });
 }

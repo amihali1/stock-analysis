@@ -320,13 +320,14 @@ if __name__ == "__main__":
     from src.db.session import engine
     from src.pipeline.data_fetcher import DataFetcher
     from src.pipeline.feature_eng import FeatureEngineer
-    from src.config import get_settings
 
     Base.metadata.create_all(engine)
 
     # Ensure we have data
-    settings = get_settings()
-    tickers = settings.default_watchlist
+    from src.db.watchlist import get_watchlist_tickers
+    db = SessionLocal()
+    tickers = get_watchlist_tickers(db)
+    db.close()
 
     logger.info(f"Fetching data for {len(tickers)} tickers...")
     fetcher = DataFetcher()

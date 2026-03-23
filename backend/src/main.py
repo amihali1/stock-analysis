@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import health, recommendations, analysis, paper_trades, backtest, alerts
+from src.api.routes import health, recommendations, analysis, paper_trades, backtest, alerts, watchlist
 from src.pipeline.scheduler import init_scheduler, shutdown_scheduler
 
 logger = logging.getLogger(__name__)
@@ -41,3 +41,4 @@ app.include_router(analysis.router, prefix="/api", tags=["analysis"])
 app.include_router(paper_trades.router, prefix="/api", tags=["paper-trades"])
 app.include_router(backtest.router, tags=["backtest"])
 app.include_router(alerts.router, prefix="/api", tags=["alerts"])
+app.include_router(watchlist.router, prefix="/api", tags=["watchlist"])

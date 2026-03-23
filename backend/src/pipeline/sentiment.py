@@ -132,7 +132,8 @@ class SentimentAnalyzer:
     async def analyze_all(self, tickers: list[str] | None = None) -> dict[str, dict]:
         """Analyze sentiment for all tickers."""
         if tickers is None:
-            tickers = get_settings().default_watchlist
+            from src.db.watchlist import get_watchlist_tickers
+            tickers = get_watchlist_tickers(self.db)
 
         results = {}
         for ticker in tickers:

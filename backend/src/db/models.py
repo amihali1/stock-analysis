@@ -178,6 +178,15 @@ class Alert(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Watchlist(Base):
+    __tablename__ = "watchlist"
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), unique=True, nullable=False, index=True)
+    sector = Column(String(100))
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AlertSetting(Base):
     __tablename__ = "alert_settings"
 

@@ -18,10 +18,11 @@ def run_pipeline(tickers: list[str] | None = None, period: str = "2y") -> dict:
 
     Returns summary dict with counts per ticker.
     """
-    if tickers is None:
-        tickers = get_settings().default_watchlist
-
     db = SessionLocal()
+
+    if tickers is None:
+        from src.db.watchlist import get_watchlist_tickers
+        tickers = get_watchlist_tickers(db)
     summary = {"tickers": {}, "elapsed_seconds": 0.0}
 
     try:

@@ -80,12 +80,10 @@ def job_generate_recommendations():
         from src.models.directional import DirectionalModel
         from src.models.ensemble import Ensemble, SignalInputs
         from src.models.position_sizer import PositionSizer
-        from src.config import get_settings
         from datetime import date
         from sqlalchemy import func
 
         db = SessionLocal()
-        settings = get_settings()
         dir_model = DirectionalModel()
         ensemble = Ensemble()
         sizer = PositionSizer()
@@ -93,7 +91,8 @@ def job_generate_recommendations():
         count = 0
 
         try:
-            for ticker in settings.default_watchlist:
+            from src.db.watchlist import get_watchlist_tickers
+            for ticker in get_watchlist_tickers(db):
                 # Get latest indicator row
                 ind = (
                     db.query(TechnicalIndicator)
