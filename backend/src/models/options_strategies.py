@@ -44,6 +44,7 @@ class SpreadRecommendation(BaseModel):
     theta_exposure: float  # Net theta (positive = time decay helps)
     vega_exposure: float  # Net vega
     earnings_warning: bool = False  # True if expiry crosses earnings
+    uses_real_data: bool = False  # True if real chain data was used
 
 
 class SpreadBuilder:
@@ -59,12 +60,18 @@ class SpreadBuilder:
         implied_vol: float = 0.30,
         expiry_days: int = 30,
         earnings_date: date | None = None,
+        chain_data: list[dict] | None = None,
     ) -> SpreadRecommendation | None:
         """Suggest the best spread strategy based on signals.
 
-        - High directional + low vol → bear call spread (credit)
-        - High directional + high vol → bear put debit spread
-        - High vol + neutral direction → iron condor (credit)
+        Args:
+            chain_data: Optional real options chain data (list of dicts with
+                strike, option_type, bid, ask, last, implied_vol keys).
+                Falls back to Black-Scholes estimates when None or empty.
+
+        - High directional + low vol -> bear call spread (credit)
+        - High directional + high vol -> bear put debit spread
+        - High vol + neutral direction -> iron condor (credit)
         """
         if current_price <= 0:
             return None
@@ -78,36 +85,82 @@ class SpreadBuilder:
 
         # Choose strategy based on signals
         if score.directional_signal > 0.6 and score.volatility_signal < 0.5:
-            return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning)
+            return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
         elif score.directional_signal > 0.6 and score.volatility_signal >= 0.5:
-            return self._bear_put_spread(score, current_price, implied_vol, expiry_days, earnings_warning)
+            return self._bear_put_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
         elif score.volatility_signal > 0.6 and score.directional_signal < 0.4:
-            return self._iron_condor(score, current_price, implied_vol, expiry_days, earnings_warning)
+            return self._iron_condor(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
         elif score.score >= 0.5:
-            return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning)
+            return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
 
         return None
 
+    def _get_premium(
+        self, chain_data: list[dict] | None, target_strike: float,
+        option_type: str, price: float, iv: float, t: float,
+    ) -> tuple[float, float, bool]:
+        """Get premium and actual strike, using real data if available.
+
+        Returns (premium, actual_strike, used_real_data).
+        """
+        if chain_data:
+            candidates = [
+                r for r in chain_data
+                if r["option_type"] == option_type
+            ]
+            if candidates:
+                nearest = min(candidates, key=lambda r: abs(r["strike"] - target_strike))
+                # Use midpoint of bid/ask for fair value
+                bid = nearest.get("bid", 0) or 0
+                ask = nearest.get("ask", 0) or 0
+                if bid > 0 and ask > 0:
+                    premium = (bid + ask) / 2.0
+                elif nearest.get("last", 0) > 0:
+                    premium = nearest["last"]
+                else:
+                    # Real data exists but no usable prices — fall back to BS
+                    return self._estimate_premium(price, target_strike, iv, t, option_type), target_strike, False
+                return premium, nearest["strike"], True
+
+        # Fallback to BS estimate
+        return self._estimate_premium(price, target_strike, iv, t, option_type), target_strike, False
+
+    def _get_iv_from_chain(
+        self, chain_data: list[dict] | None, target_strike: float, option_type: str, default_iv: float,
+    ) -> float:
+        """Get implied vol from chain data if available."""
+        if not chain_data:
+            return default_iv
+        candidates = [r for r in chain_data if r["option_type"] == option_type]
+        if not candidates:
+            return default_iv
+        nearest = min(candidates, key=lambda r: abs(r["strike"] - target_strike))
+        iv = nearest.get("implied_vol", 0) or 0
+        return iv if iv > 0 else default_iv
+
     def _bear_call_spread(
-        self, score: EnsembleScore, price: float, iv: float, expiry_days: int, earnings_warning: bool,
+        self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
+        earnings_warning: bool, chain_data: list[dict] | None,
     ) -> SpreadRecommendation | None:
         """Bear call spread: sell call near ATM, buy call further OTM. Credit spread."""
         t = expiry_days / 365.0
 
-        # Strikes: sell call slightly OTM, buy call further OTM
-        sell_strike = round(price * 1.02, 2)  # 2% OTM
-        buy_strike = round(price * 1.07, 2)  # 7% OTM
-        spread_width = buy_strike - sell_strike
+        # Target strikes: sell call slightly OTM, buy call further OTM
+        target_sell_strike = round(price * 1.02, 2)
+        target_buy_strike = round(price * 1.07, 2)
 
-        # Estimate premiums using simplified Black-Scholes approximation
-        sell_premium = self._estimate_premium(price, sell_strike, iv, t, "call")
-        buy_premium = self._estimate_premium(price, buy_strike, iv, t, "call")
+        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
+        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
+        uses_real = sell_real and buy_real
+
+        spread_width = buy_strike - sell_strike
+        if spread_width <= 0:
+            return None
 
         net_credit_per_share = sell_premium - buy_premium
         if net_credit_per_share <= 0:
             return None
 
-        # Position sizing: max_loss = (spread_width - net_credit) * 100 * contracts
         max_loss_per_contract = (spread_width - net_credit_per_share) * 100
         if max_loss_per_contract <= 0:
             return None
@@ -120,10 +173,12 @@ class SpreadBuilder:
         max_loss = max_loss_per_contract * contracts
         max_profit = net_credit
 
-        # Greeks (simplified)
-        delta = self._estimate_delta(price, sell_strike, iv, t, "call") - self._estimate_delta(price, buy_strike, iv, t, "call")
-        theta = 0.01 * contracts  # Positive theta (time decay helps credit spreads)
-        vega = -0.05 * contracts  # Short vega (benefits from vol decrease)
+        # Greeks
+        sell_iv = self._get_iv_from_chain(chain_data, sell_strike, "call", iv)
+        buy_iv = self._get_iv_from_chain(chain_data, buy_strike, "call", iv)
+        delta = self._estimate_delta(price, sell_strike, sell_iv, t, "call") - self._estimate_delta(price, buy_strike, buy_iv, t, "call")
+        theta = 0.01 * contracts
+        vega = -0.05 * contracts
 
         return SpreadRecommendation(
             ticker=score.ticker,
@@ -148,20 +203,26 @@ class SpreadBuilder:
             theta_exposure=round(theta, 4),
             vega_exposure=round(vega, 4),
             earnings_warning=earnings_warning,
+            uses_real_data=uses_real,
         )
 
     def _bear_put_spread(
-        self, score: EnsembleScore, price: float, iv: float, expiry_days: int, earnings_warning: bool,
+        self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
+        earnings_warning: bool, chain_data: list[dict] | None,
     ) -> SpreadRecommendation | None:
         """Bear put debit spread: buy put ATM, sell put further OTM. Debit spread."""
         t = expiry_days / 365.0
 
-        buy_strike = round(price * 0.98, 2)  # Near ATM
-        sell_strike = round(price * 0.93, 2)  # 7% OTM
-        spread_width = buy_strike - sell_strike
+        target_buy_strike = round(price * 0.98, 2)
+        target_sell_strike = round(price * 0.93, 2)
 
-        buy_premium = self._estimate_premium(price, buy_strike, iv, t, "put")
-        sell_premium = self._estimate_premium(price, sell_strike, iv, t, "put")
+        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
+        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
+        uses_real = buy_real and sell_real
+
+        spread_width = buy_strike - sell_strike
+        if spread_width <= 0:
+            return None
 
         net_debit_per_share = buy_premium - sell_premium
         if net_debit_per_share <= 0:
@@ -181,9 +242,11 @@ class SpreadBuilder:
         max_profit = max_profit_per_contract * contracts
         max_loss = net_debit
 
-        delta = self._estimate_delta(price, buy_strike, iv, t, "put") - self._estimate_delta(price, sell_strike, iv, t, "put")
-        theta = -0.01 * contracts  # Negative theta (time decay hurts debit spreads)
-        vega = 0.03 * contracts  # Long vega (benefits from vol increase)
+        buy_iv = self._get_iv_from_chain(chain_data, buy_strike, "put", iv)
+        sell_iv = self._get_iv_from_chain(chain_data, sell_strike, "put", iv)
+        delta = self._estimate_delta(price, buy_strike, buy_iv, t, "put") - self._estimate_delta(price, sell_strike, sell_iv, t, "put")
+        theta = -0.01 * contracts
+        vega = 0.03 * contracts
 
         return SpreadRecommendation(
             ticker=score.ticker,
@@ -202,32 +265,33 @@ class SpreadBuilder:
             breakeven=round(buy_strike - net_debit_per_share, 2),
             risk_reward_ratio=round(max_profit / max_loss, 4) if max_loss > 0 else 0,
             contracts=contracts,
-            net_credit=round(-net_debit, 2),  # Negative = debit
+            net_credit=round(-net_debit, 2),
             expiry_days=expiry_days,
             delta_exposure=round(delta * contracts, 4),
             theta_exposure=round(theta, 4),
             vega_exposure=round(vega, 4),
             earnings_warning=earnings_warning,
+            uses_real_data=uses_real,
         )
 
     def _iron_condor(
-        self, score: EnsembleScore, price: float, iv: float, expiry_days: int, earnings_warning: bool,
+        self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
+        earnings_warning: bool, chain_data: list[dict] | None,
     ) -> SpreadRecommendation | None:
         """Iron condor: sell OTM put + OTM call, buy further OTM put + call. Credit spread."""
         t = expiry_days / 365.0
 
-        # Put side (bull put spread)
-        sell_put_strike = round(price * 0.95, 2)
-        buy_put_strike = round(price * 0.90, 2)
+        # Target strikes
+        target_sell_put = round(price * 0.95, 2)
+        target_buy_put = round(price * 0.90, 2)
+        target_sell_call = round(price * 1.05, 2)
+        target_buy_call = round(price * 1.10, 2)
 
-        # Call side (bear call spread)
-        sell_call_strike = round(price * 1.05, 2)
-        buy_call_strike = round(price * 1.10, 2)
-
-        sell_put_premium = self._estimate_premium(price, sell_put_strike, iv, t, "put")
-        buy_put_premium = self._estimate_premium(price, buy_put_strike, iv, t, "put")
-        sell_call_premium = self._estimate_premium(price, sell_call_strike, iv, t, "call")
-        buy_call_premium = self._estimate_premium(price, buy_call_strike, iv, t, "call")
+        sell_put_premium, sell_put_strike, sp_real = self._get_premium(chain_data, target_sell_put, "put", price, iv, t)
+        buy_put_premium, buy_put_strike, bp_real = self._get_premium(chain_data, target_buy_put, "put", price, iv, t)
+        sell_call_premium, sell_call_strike, sc_real = self._get_premium(chain_data, target_sell_call, "call", price, iv, t)
+        buy_call_premium, buy_call_strike, bc_real = self._get_premium(chain_data, target_buy_call, "call", price, iv, t)
+        uses_real = sp_real and bp_real and sc_real and bc_real
 
         net_credit_per_share = (sell_put_premium - buy_put_premium) + (sell_call_premium - buy_call_premium)
         if net_credit_per_share <= 0:
@@ -272,10 +336,11 @@ class SpreadBuilder:
             contracts=contracts,
             net_credit=round(net_credit, 2),
             expiry_days=expiry_days,
-            delta_exposure=0.0,  # Iron condors are delta-neutral
+            delta_exposure=0.0,
             theta_exposure=round(0.02 * contracts, 4),
             vega_exposure=round(-0.08 * contracts, 4),
             earnings_warning=earnings_warning,
+            uses_real_data=uses_real,
         )
 
     def _estimate_premium(self, S: float, K: float, sigma: float, t: float, option_type: str) -> float:

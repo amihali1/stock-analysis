@@ -33,3 +33,14 @@ Markdown-based memory store so agents can read prior context and decisions witho
 
 ### D010: Ticket-based task decomposition in _tickets/
 Each phase broken into small, self-contained tickets. Prevents massive PRs. Each ticket has clear scope, acceptance criteria, and dependencies.
+
+## 2026-04-14 — Risk Management Strategy Update
+
+### D011: $1,000 max trade cost (down from $5,000)
+Focus on low-volume, low-cost trades. Every position (premium, margin, total cost) must stay under $1,000. This forces discipline and limits downside exposure per trade.
+
+### D012: High-confidence-only trade filtering
+Only surface trades where models agree with high confidence. The goal is NOT to find every opportunity — it's to only take trades with a strong edge. Marginal setups get skipped entirely. Fewer trades, higher win rate.
+
+### D013: Prefer defined-risk strategies
+Default to strategies with capped max loss (vertical spreads, cash-secured puts, debit spreads) over naked shorts or uncovered options. The max loss must be known and bounded before entry.

@@ -70,6 +70,15 @@ A locally-hosted stock analysis platform combining ML-powered quantitative analy
 - **Authentication** — JWT-based login to protect dashboard and API
 - **E2E deployment validation** — Full pipeline smoke test on homelab
 
+### Planned (Phase 7 — Alpaca Live Trading)
+- **Alpaca client service** — `alpaca-py` SDK wrapper with paper/live environment toggle
+- **Order mapper** — Translate recommendations + position sizing into Alpaca bracket orders (shorts, options, spreads)
+- **Safety rails** — Hard limits: max daily loss, max open positions, max orders/day, market hours only, master mode switch
+- **Portfolio sync** — Sync positions, orders, and account balances from Alpaca into local DB
+- **Execution engine** — Automated flow: recommendations → safety check → order submission, with manual override endpoints
+- **Trading UI** — Portfolio view, execution log, mode selector (disabled/paper/live), emergency close button
+- **Paper vs. backtest validation** — Compare Alpaca paper results against backtester predictions before going live
+
 ## Tech Stack
 
 | Layer | Technology |

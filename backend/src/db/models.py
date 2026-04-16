@@ -187,6 +187,94 @@ class Watchlist(Base):
     added_at = Column(DateTime, default=datetime.utcnow)
 
 
+class TradingLog(Base):
+    __tablename__ = "trading_log"
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    action = Column(String(20), nullable=False)  # submit, block, cancel, fill, error
+    strategy = Column(String(20))
+    qty = Column(Float)
+    side = Column(String(10))
+    order_id = Column(String(100))
+    reason = Column(Text)  # Why blocked or error details
+    passed_safety = Column(Integer, default=1)  # 0 = blocked, 1 = passed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AlpacaPosition(Base):
+    __tablename__ = "alpaca_positions"
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    qty = Column(Float, nullable=False)
+    side = Column(String(10), default="long")
+    avg_entry_price = Column(Float)
+    current_price = Column(Float)
+    market_value = Column(Float)
+    unrealized_pl = Column(Float)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AlpacaOrder(Base):
+    __tablename__ = "alpaca_orders"
+
+    id = Column(Integer, primary_key=True)
+    alpaca_order_id = Column(String(100), unique=True, index=True)
+    ticker = Column(String(10), nullable=False)
+    side = Column(String(10))
+    qty = Column(Float)
+    order_type = Column(String(20))
+    status = Column(String(20))
+    filled_price = Column(Float)
+    submitted_at = Column(DateTime)
+    filled_at = Column(DateTime)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(200), nullable=False)
+    is_active = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime)
+
+
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, nullable=False, unique=True, index=True)
+    total_exposure = Column(Float, default=0)
+    total_max_loss = Column(Float, default=0)
+    open_positions = Column(Integer, default=0)
+    beta_to_spy = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OptionsChain(Base):
+    __tablename__ = "options_chain"
+    __table_args__ = (
+        Index("ix_options_chain_ticker_exp", "ticker", "expiration"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    expiration = Column(String(10), nullable=False)  # YYYY-MM-DD
+    strike = Column(Float, nullable=False)
+    option_type = Column(String(4), nullable=False)  # call, put
+    bid = Column(Float, default=0)
+    ask = Column(Float, default=0)
+    last = Column(Float, default=0)
+    volume = Column(Integer, default=0)
+    open_interest = Column(Integer, default=0)
+    implied_vol = Column(Float, default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AlertSetting(Base):
     __tablename__ = "alert_settings"
 

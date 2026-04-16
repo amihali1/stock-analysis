@@ -125,6 +125,54 @@ def create_alert_setting(req: AlertSettingRequest):
         db.close()
 
 
+@router.post("/alerts/acknowledge-all")
+def acknowledge_all_alerts():
+    """Mark all unacknowledged alerts as acknowledged."""
+    db = SessionLocal()
+    try:
+        count = (
+            db.query(Alert)
+            .filter(Alert.acknowledged == 0)
+            .update({"acknowledged": 1})
+        )
+        db.commit()
+        return {"status": "acknowledged", "count": count}
+    finally:
+        db.close()
+
+
+@router.get("/alerts/unread-count")
+def unread_alert_count():
+    """Get count of unacknowledged alerts."""
+    db = SessionLocal()
+    try:
+        count = db.query(Alert).filter(Alert.acknowledged == 0).count()
+        return {"count": count}
+    finally:
+        db.close()
+
+
+@router.post("/alert-settings/{setting_id}/test")
+async def test_alert_setting(setting_id: int):
+    """Send a test alert to the configured channel."""
+    db = SessionLocal()
+    try:
+        setting = db.query(AlertSetting).filter_by(id=setting_id).first()
+        if not setting:
+            raise HTTPException(status_code=404, detail="Setting not found")
+
+        from src.services.alerting import AlertService
+
+        service = AlertService()
+        success = await service.send_test(setting)
+        if success:
+            return {"status": "sent", "channel": setting.channel}
+        else:
+            raise HTTPException(status_code=502, detail="Failed to send test alert")
+    finally:
+        db.close()
+
+
 @router.delete("/alert-settings/{setting_id}")
 def delete_alert_setting(setting_id: int):
     """Delete an alert setting."""

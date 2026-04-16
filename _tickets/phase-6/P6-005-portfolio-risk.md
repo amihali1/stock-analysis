@@ -1,6 +1,6 @@
 # P6-005: Portfolio-level risk management
 
-**Status**: todo
+**Status**: done
 **Phase**: 6
 **Dependencies**: P5-001, P4-005
 **Estimated scope**: large

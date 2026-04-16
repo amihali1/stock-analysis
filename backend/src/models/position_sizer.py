@@ -162,12 +162,19 @@ class PositionSizer:
         current_price: float,
         implied_vol: float = 0.30,
         expiry_days: int = 30,
+        chain_data: list[dict] | None = None,
     ):
         """Size an options spread position using SpreadBuilder.
+
+        Args:
+            chain_data: Optional real options chain data. When provided,
+                SpreadBuilder uses real premiums/strikes instead of BS estimates.
 
         Returns a SpreadRecommendation or None.
         """
         from src.models.options_strategies import SpreadBuilder
 
         builder = SpreadBuilder(max_position=self.max_position)
-        return builder.suggest_spread(score, current_price, implied_vol, expiry_days)
+        return builder.suggest_spread(
+            score, current_price, implied_vol, expiry_days, chain_data=chain_data,
+        )

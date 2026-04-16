@@ -135,3 +135,163 @@ export interface AnalysisResponse {
   sentiments: SentimentEntry[];
   recommendations: Recommendation[];
 }
+
+// Backtesting types
+
+export interface BacktestConfig {
+  tickers: string[] | null;
+  strategy: string;
+  start_date: string | null;
+  end_date: string | null;
+  max_position: number;
+  hold_days: number;
+  score_threshold: number;
+  max_concurrent: number;
+}
+
+export interface BacktestTrade {
+  ticker: string;
+  strategy: string;
+  entry_date: string;
+  exit_date: string;
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  return_pct: number;
+  score: number;
+  hit_stop: boolean;
+  hit_target: boolean;
+}
+
+export interface BacktestMetrics {
+  total_pnl: number;
+  num_trades: number;
+  win_rate: number;
+  sharpe_ratio: number;
+  max_drawdown: number;
+  profit_factor: number | string;
+  avg_pnl: number;
+  best_trade: number;
+  worst_trade: number;
+  avg_return_pct: number;
+  avg_hold_days: number;
+  total_position_value: number;
+  return_on_capital: number;
+  max_concurrent_used: number;
+}
+
+export interface DailyEquityPoint {
+  date: string;
+  cumulative_pnl: number;
+  unrealized: number;
+  total_equity: number;
+  open_positions: number;
+}
+
+export interface BacktestResponse {
+  strategy: string;
+  start_date: string;
+  end_date: string;
+  num_trades: number;
+  metrics: BacktestMetrics;
+  trades: BacktestTrade[];
+  daily_equity?: DailyEquityPoint[];
+}
+
+// Alerts types
+
+export interface AlertEntry {
+  id: number;
+  ticker: string;
+  alert_type: string;
+  message: string;
+  acknowledged: boolean;
+  created_at: string | null;
+}
+
+export interface AlertSetting {
+  id: number;
+  channel: string;
+  webhook_url: string | null;
+  enabled: boolean;
+  score_threshold: number;
+  alert_stop_loss: boolean;
+  alert_target_hit: boolean;
+  alert_high_conviction: boolean;
+}
+
+// Portfolio / Trading types
+
+export interface AlpacaPosition {
+  ticker: string;
+  qty: number;
+  side: string;
+  avg_entry_price: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pl: number;
+  unrealized_plpc: number;
+  change_today: number;
+}
+
+export interface PortfolioSummary {
+  equity: number;
+  buying_power: number;
+  cash: number;
+  day_trade_count: number;
+  alpaca_positions: number;
+  paper_positions: number;
+  total_positions: number;
+  total_market_value: number;
+  total_unrealized_pl: number;
+  positions: AlpacaPosition[];
+  error?: string;
+}
+
+export interface AlpacaOrder {
+  order_id: string;
+  ticker: string;
+  side: string | null;
+  qty: number | null;
+  type: string | null;
+  status: string | null;
+  filled_price: number | null;
+  submitted_at: string | null;
+  filled_at: string | null;
+}
+
+export interface ExecutionLogEntry {
+  id: number;
+  ticker: string;
+  action: string;
+  strategy: string | null;
+  qty: number | null;
+  side: string | null;
+  order_id: string | null;
+  reason: string | null;
+  passed_safety: boolean;
+  created_at: string | null;
+}
+
+export interface ExecutionResult {
+  rec_id?: number;
+  ticker: string;
+  status: string;
+  order_id?: string;
+  reason?: string;
+}
+
+export interface BacktestCompareResponse {
+  strategies: Record<string, BacktestResponse>;
+  summary: Record<
+    string,
+    {
+      total_pnl: number;
+      num_trades: number;
+      win_rate: number;
+      sharpe_ratio: number;
+      max_drawdown: number;
+      profit_factor: number | string;
+    }
+  >;
+}

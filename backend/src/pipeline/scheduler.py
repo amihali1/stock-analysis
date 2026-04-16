@@ -215,6 +215,54 @@ def job_generate_recommendations():
         _record_run("recommendations", "error")
 
 
+def job_execute_recommendations():
+    """8:00 AM ET — Auto-execute eligible recommendations (if enabled)."""
+    logger.info("Scheduler: starting recommendation execution")
+    try:
+        from src.db.session import SessionLocal
+        from src.services.execution_engine import ExecutionEngine
+
+        db = SessionLocal()
+        try:
+            engine = ExecutionEngine(db)
+            results = engine.execute_recommendations()
+            submitted = sum(1 for r in results if r["status"] == "submitted")
+            logger.info(f"Scheduler: execution complete — {submitted}/{len(results)} submitted")
+            _record_run("execute_recommendations", f"ok ({submitted}/{len(results)} submitted)")
+        finally:
+            db.close()
+    except ValueError:
+        logger.debug("Scheduler: execution skipped — Alpaca credentials not configured")
+        _record_run("execute_recommendations", "skipped (no credentials)")
+    except Exception:
+        logger.exception("Scheduler: recommendation execution failed")
+        _record_run("execute_recommendations", "error")
+
+
+def job_sync_portfolio():
+    """Every 5 minutes during market hours — Sync positions and orders from Alpaca."""
+    logger.info("Scheduler: starting portfolio sync")
+    try:
+        from src.db.session import SessionLocal
+        from src.services.portfolio_sync import PortfolioSync
+
+        db = SessionLocal()
+        try:
+            sync = PortfolioSync(db)
+            pos = sync.sync_positions()
+            orders = sync.sync_orders()
+            logger.info(f"Scheduler: portfolio sync complete — {pos} positions, {orders} new orders")
+            _record_run("portfolio_sync", f"ok ({pos} pos, {orders} orders)")
+        finally:
+            db.close()
+    except ValueError:
+        logger.debug("Scheduler: portfolio sync skipped — Alpaca credentials not configured")
+        _record_run("portfolio_sync", "skipped (no credentials)")
+    except Exception:
+        logger.exception("Scheduler: portfolio sync failed")
+        _record_run("portfolio_sync", "error")
+
+
 def job_retrain_models():
     """First Sunday of each month — Retrain ML models with latest data."""
     logger.info("Scheduler: starting model retraining")
@@ -241,11 +289,19 @@ def init_scheduler():
     scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
+    # Auto-execute: 8:00 AM ET (after 7:30 AM recommendation generation)
+    scheduler.add_job(job_execute_recommendations, CronTrigger(hour=8, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="execute_recommendations", replace_existing=True)
+
+    # Portfolio sync: every 5 minutes, weekdays 9:30 AM - 4:00 PM ET
+    scheduler.add_job(job_sync_portfolio, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync", replace_existing=True)
+    # Also catch the 16:00 close
+    scheduler.add_job(job_sync_portfolio, CronTrigger(minute="0,5", hour=16, timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync_close", replace_existing=True)
+
     # Monthly model retraining: first Sunday of each month at 2:00 AM ET
     scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)
 
     scheduler.start()
-    logger.info("Scheduler started with 4 daily jobs (6:00/6:30/7:00/7:30 AM ET, Mon-Fri) + monthly retrain")
+    logger.info("Scheduler started with 4 daily jobs + portfolio sync (5min) + monthly retrain")
 
 
 def shutdown_scheduler():
