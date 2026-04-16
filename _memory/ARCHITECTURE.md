@@ -34,9 +34,13 @@
 - `model_predictions` — ticker FK, date, model_name, signal, confidence
 - `recommendations` — ticker FK, date, strategy (short|options), score, position_size, stop_loss, max_loss
 
-## Budget Constraint
+## Budget & Risk Constraints
 
-Every recommendation enforces $5,000 max buy-in:
-- Shorts: margin requirement ≤ $5,000
-- Options: premium × 100 × contracts ≤ $5,000
+Every recommendation enforces strict risk management:
+- **$1,000 max cost per trade** (total premium, margin, or position cost)
+- **High-confidence only**: All models must agree with high confidence before surfacing a trade
+- **Defined-risk preferred**: Vertical spreads, cash-secured puts over naked/unlimited-risk positions
+- Shorts: margin requirement ≤ $1,000
+- Options: premium × 100 × contracts ≤ $1,000
 - All recommendations include stop-loss and max loss in dollars
+- Skip marginal setups — only trade when the edge is clear

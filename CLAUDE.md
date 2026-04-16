@@ -22,7 +22,10 @@ Locally-hosted stock analysis platform with ML-powered quantitative analysis and
 ## Key Conventions
 - Time-based train/test splits ONLY for financial data (never random)
 - Every recommendation must include stop-loss and max loss in dollars
-- $5,000 max buy-in per recommendation
+- **$1,000 max cost per trade** (total premium, margin, or position cost)
+- **Risk-first filtering**: Only surface trades with high probability of profit — skip marginal setups
+- **Minimum confidence threshold**: Models must agree with high confidence before a trade is recommended
+- Prefer defined-risk strategies (e.g., vertical spreads, cash-secured puts) over naked/unlimited-risk positions
 - Cache API data aggressively in the database
 - Log raw LLM responses for debugging
 

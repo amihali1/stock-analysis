@@ -1,6 +1,6 @@
 # P6-006: Authentication
 
-**Status**: todo
+**Status**: done
 **Phase**: 6
 **Dependencies**: P4-001
 **Estimated scope**: medium

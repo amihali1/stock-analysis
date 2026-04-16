@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import AuthGuard, { LogoutButton } from "@/components/AuthGuard";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -50,6 +51,19 @@ function Nav() {
         >
           Backtest
         </Link>
+        <Link
+          href="/alerts"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Alerts
+        </Link>
+        <Link
+          href="/portfolio"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Risk
+        </Link>
+        <LogoutButton />
       </div>
     </nav>
   );
@@ -63,8 +77,10 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="bg-gray-950 text-gray-100 min-h-screen">
-        <Nav />
-        <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+        <AuthGuard>
+          <Nav />
+          <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+        </AuthGuard>
       </body>
     </html>
   );

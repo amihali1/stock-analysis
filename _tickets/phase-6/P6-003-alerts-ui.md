@@ -1,6 +1,6 @@
 # P6-003: Alerts UI
 
-**Status**: todo
+**Status**: done
 **Phase**: 6
 **Dependencies**: P5-003, P4-001
 **Estimated scope**: medium

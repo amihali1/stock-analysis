@@ -21,6 +21,29 @@ class Settings(BaseSettings):
     # Trading constraints
     max_position_size: float = 5000.0
 
+    # Alpaca
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"  # Paper trading default
+    alpaca_trading_enabled: bool = False
+
+    # Trading safety rails
+    trading_mode: str = "disabled"  # disabled, paper, live
+    max_daily_loss: float = 500.0
+    max_open_positions: int = 5
+    max_daily_orders: int = 20
+    allowed_hours_only: bool = True
+    blocked_tickers: list[str] = []
+    auto_execute_enabled: bool = False
+    min_score_threshold: float = 0.7
+
+    # Auth
+    jwt_secret: str = "change-me-in-production"
+    jwt_access_expire_minutes: int = 1440  # 24 hours
+    jwt_refresh_expire_days: int = 30
+    default_admin_username: str = "admin"
+    default_admin_password: str = "admin"
+
     # Watchlist
     default_watchlist: list[str] = [
         # Tech

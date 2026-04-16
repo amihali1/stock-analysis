@@ -1,6 +1,6 @@
 # P6-001: Watchlist management UI
 
-**Status**: todo
+**Status**: done
 **Phase**: 6
 **Dependencies**: P4-001
 **Estimated scope**: medium
@@ -9,13 +9,13 @@
 Allow users to add/remove tickers from the watchlist via the UI instead of relying on the hardcoded list in config.py.
 
 ## Acceptance Criteria
-- [ ] `Watchlist` DB model storing user-configured tickers
-- [ ] API endpoints: GET /api/watchlist, POST /api/watchlist, DELETE /api/watchlist/{ticker}
-- [ ] Seed watchlist from `default_watchlist` on first run
-- [ ] Pipeline and scheduler use DB watchlist instead of config
-- [ ] Frontend page: searchable ticker input, current watchlist with remove buttons
-- [ ] Sector/category tags on tickers
-- [ ] Bulk import (paste comma-separated tickers)
+- [x] `Watchlist` DB model storing user-configured tickers
+- [x] API endpoints: GET /api/watchlist, POST /api/watchlist, DELETE /api/watchlist/{ticker}
+- [x] Seed watchlist from `default_watchlist` on first run
+- [x] Pipeline and scheduler use DB watchlist instead of config
+- [x] Frontend page: searchable ticker input, current watchlist with remove buttons
+- [x] Sector/category tags on tickers
+- [x] Bulk import (paste comma-separated tickers)
 
 ## Files to Create/Modify
 - `backend/src/db/models.py` (add Watchlist model)

@@ -1,6 +1,6 @@
 # P6-002: Backtesting UI
 
-**Status**: todo
+**Status**: done
 **Phase**: 6
 **Dependencies**: P5-001, P4-001
 **Estimated scope**: large

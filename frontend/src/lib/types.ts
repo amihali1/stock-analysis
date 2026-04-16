@@ -198,6 +198,89 @@ export interface BacktestResponse {
   daily_equity?: DailyEquityPoint[];
 }
 
+// Alerts types
+
+export interface AlertEntry {
+  id: number;
+  ticker: string;
+  alert_type: string;
+  message: string;
+  acknowledged: boolean;
+  created_at: string | null;
+}
+
+export interface AlertSetting {
+  id: number;
+  channel: string;
+  webhook_url: string | null;
+  enabled: boolean;
+  score_threshold: number;
+  alert_stop_loss: boolean;
+  alert_target_hit: boolean;
+  alert_high_conviction: boolean;
+}
+
+// Portfolio / Trading types
+
+export interface AlpacaPosition {
+  ticker: string;
+  qty: number;
+  side: string;
+  avg_entry_price: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pl: number;
+  unrealized_plpc: number;
+  change_today: number;
+}
+
+export interface PortfolioSummary {
+  equity: number;
+  buying_power: number;
+  cash: number;
+  day_trade_count: number;
+  alpaca_positions: number;
+  paper_positions: number;
+  total_positions: number;
+  total_market_value: number;
+  total_unrealized_pl: number;
+  positions: AlpacaPosition[];
+  error?: string;
+}
+
+export interface AlpacaOrder {
+  order_id: string;
+  ticker: string;
+  side: string | null;
+  qty: number | null;
+  type: string | null;
+  status: string | null;
+  filled_price: number | null;
+  submitted_at: string | null;
+  filled_at: string | null;
+}
+
+export interface ExecutionLogEntry {
+  id: number;
+  ticker: string;
+  action: string;
+  strategy: string | null;
+  qty: number | null;
+  side: string | null;
+  order_id: string | null;
+  reason: string | null;
+  passed_safety: boolean;
+  created_at: string | null;
+}
+
+export interface ExecutionResult {
+  rec_id?: number;
+  ticker: string;
+  status: string;
+  order_id?: string;
+  reason?: string;
+}
+
 export interface BacktestCompareResponse {
   strategies: Record<string, BacktestResponse>;
   summary: Record<

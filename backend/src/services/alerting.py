@@ -131,6 +131,20 @@ class AlertService:
             )
             resp.raise_for_status()
 
+    async def send_test(self, setting) -> bool:
+        """Send a test alert using a specific AlertSetting record."""
+        service = AlertService(
+            discord_webhook=setting.webhook_url or "",
+            telegram_bot_token=setting.bot_token or "",
+            telegram_chat_id=setting.chat_id or "",
+        )
+        return await service.send_alert(
+            AlertType.HIGH_CONVICTION,
+            "TEST",
+            "This is a test alert from Stock Analysis Platform.",
+            {"source": "test_button"},
+        )
+
     async def check_paper_trade_alerts(self):
         """Check open paper trades for stop-loss or target hits against latest prices."""
         from src.db.models import PriceHistory

@@ -265,3 +265,65 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phases 0-5 complete. 63 tests passing.
 **Next steps**: All planned tickets done. Future work: live trading integration, more spread strategies.
+
+---
+
+## 2026-04-14 — Session 4: Phase 6 — Polish, Risk, Auth
+
+**Agent**: Claude Opus 4.6
+**Tickets**: P6-001, P6-002, P6-003, P6-004, P6-005, P6-006, P6-007
+
+**What was done**:
+
+**P6-001 (Watchlist UI)**: Already implemented in prior sessions. Marked done.
+
+**P6-002 (Backtesting UI)**: Already implemented in prior sessions. Marked done.
+
+**P6-007 (E2E Deployment)**:
+- Created `frontend/Dockerfile` (multi-stage Node 20 Alpine, standalone output)
+- Added `frontend` service to `docker-compose.yml` (port 3100)
+- Fixed Ollama URL from `http://ollama:11434` to `http://host.docker.internal:11434` with `extra_hosts`
+- Updated `deploy.sh` to sync frontend + backend
+- Verified 63 tests passing, frontend builds clean
+
+**P6-004 (Real Options Chain Data)**:
+- Created `services/options_chain.py` — `OptionsChainFetcher` using yfinance
+- Fetches expirations, full chain (calls + puts), caches in DB with configurable TTL (15 min default)
+- Added `OptionsChain` DB model + Alembic migration
+- Updated `SpreadBuilder` to use real bid/ask midpoint premiums when chain data provided
+- Falls back to Black-Scholes when no real data available
+- `SpreadRecommendation` now has `uses_real_data` flag
+- Updated `PositionSizer.size_spread()` to accept `chain_data` parameter
+- API: GET /api/options-chain/{ticker}?expiration=YYYY-MM-DD, GET /api/options-chain/{ticker}/expirations
+
+**P6-003 (Alerts UI)**:
+- Created `frontend/src/app/alerts/page.tsx` — two-tab page (History + Settings)
+- History tab: alert table with type badges, acknowledge/acknowledge-all buttons
+- Settings tab: add/edit Discord webhook or Telegram bot, alert type toggles, score threshold slider, test button
+- Added backend: POST /api/alerts/acknowledge-all, GET /api/alerts/unread-count, POST /api/alert-settings/{id}/test
+- Added `send_test()` to `AlertService`
+- Added Alerts link to nav
+
+**P6-005 (Portfolio Risk Management)**:
+- Created `models/risk_manager.py` — `RiskManager` class
+- Correlation matrix from 60-day rolling returns (pandas/numpy)
+- Correlation-aware position limit (default 0.70 threshold)
+- Sector exposure tracking with configurable max % per sector (default 30%)
+- Portfolio metrics: total exposure, max loss, open positions, beta to SPY
+- `can_open_position()` runs all risk checks (position limit, correlation, sector)
+- Added `PortfolioSnapshot` DB model + migration for daily tracking
+- API: GET /api/portfolio/risk, GET /api/portfolio/history, POST /api/portfolio/check
+- Frontend: `/portfolio` page with metric cards, sector allocation bar chart, correlation heatmap
+- Components: `SectorAllocation.tsx`, `CorrelationHeatmap.tsx`
+
+**P6-006 (Authentication)**:
+- JWT auth with bcrypt password hashing (access + refresh tokens)
+- `User` DB model + migration
+- Auth middleware protects all /api/* routes except /api/health, /api/auth/login, /api/auth/refresh
+- Default admin user auto-created on startup (configurable via env vars)
+- API: POST /api/auth/login, POST /api/auth/refresh, POST /api/auth/logout
+- Frontend: login page, AuthGuard component, auto token refresh on 401, logout button in nav
+- Token storage in localStorage with automatic redirect to /login on expiry
+
+**Current state**: Phases 0-6 complete. 63 backend tests passing. Frontend builds clean (10 routes).
+**Next steps**: Phase 7 (Alpaca trading integration — P7-001 through P7-007)
