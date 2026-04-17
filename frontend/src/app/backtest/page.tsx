@@ -107,7 +107,7 @@ export default function BacktestPage() {
   const [holdDays, setHoldDays] = useState(5);
   const [scoreThreshold, setScoreThreshold] = useState(0.5);
   const [maxConcurrent, setMaxConcurrent] = useState(10);
-  const [maxPosition, setMaxPosition] = useState(5000);
+  const [maxPosition, setMaxPosition] = useState(1000);
 
   // Single strategy results
   const [result, setResult] = useState<BacktestResponse | null>(null);

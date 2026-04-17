@@ -55,11 +55,23 @@ export default function SignalBreakdown({ recommendation }: SignalBreakdownProps
         value={r.sentiment_signal}
         color="bg-purple-500"
       />
-      <div className="pt-2 border-t border-gray-800">
+      <div className="pt-2 border-t border-gray-800 space-y-2">
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Ensemble Score</span>
           <span className="font-mono font-bold text-lg">
             {r.score.toFixed(2)}
+          </span>
+        </div>
+        <div className="flex justify-between text-sm items-center">
+          <span className="text-gray-400">Risk Type</span>
+          <span
+            className={`text-xs px-2 py-0.5 rounded border ${
+              r.risk_type === "defined"
+                ? "bg-green-900/50 text-green-300 border-green-800"
+                : "bg-yellow-900/50 text-yellow-300 border-yellow-800"
+            }`}
+          >
+            {r.risk_type === "defined" ? "Defined Risk" : "Undefined Risk"}
           </span>
         </div>
       </div>

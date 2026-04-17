@@ -16,10 +16,27 @@ function strategyBadge(strategy: Strategy) {
   const cls =
     strategy === "short"
       ? "bg-red-900/50 text-red-300 border-red-800"
+      : strategy === "spread"
+      ? "bg-blue-900/50 text-blue-300 border-blue-800"
       : "bg-purple-900/50 text-purple-300 border-purple-800";
   return (
     <span className={`text-xs px-2 py-0.5 rounded border ${cls}`}>
       {strategy}
+    </span>
+  );
+}
+
+function riskBadge(riskType: string) {
+  if (riskType === "defined") {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded border bg-green-900/50 text-green-300 border-green-800">
+        Defined
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs px-2 py-0.5 rounded border bg-yellow-900/50 text-yellow-300 border-yellow-800">
+      Undefined
     </span>
   );
 }
@@ -107,6 +124,11 @@ function Dashboard() {
             active={strategyFilter === "options"}
             label="Options"
           />
+          <FilterTab
+            href="/?strategy=spread"
+            active={strategyFilter === "spread"}
+            label="Spreads"
+          />
         </div>
       </div>
 
@@ -138,6 +160,7 @@ function Dashboard() {
                   Ticker{sortIcon("ticker")}
                 </th>
                 <th className="py-3 px-3">Strategy</th>
+                <th className="py-3 px-3">Risk</th>
                 <th
                   className="py-3 px-3 cursor-pointer hover:text-white text-right"
                   onClick={() => handleSort("score")}
@@ -174,6 +197,9 @@ function Dashboard() {
                     </td>
                     <td className="py-3 px-3">
                       {strategyBadge(rec.strategy)}
+                    </td>
+                    <td className="py-3 px-3">
+                      {riskBadge(rec.risk_type)}
                     </td>
                     <td
                       className={`py-3 px-3 text-right font-mono font-bold ${scoreColor(rec.score)}`}

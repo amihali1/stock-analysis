@@ -1,6 +1,6 @@
 # P8-006: Frontend updates for risk management changes
 
-**Status**: todo
+**Status**: done
 **Phase**: 8
 **Dependencies**: P8-001, P8-002, P8-003
 **Estimated scope**: medium (3-5 files)
