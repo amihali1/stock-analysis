@@ -7,15 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy all source first
 COPY pyproject.toml .
-RUN pip install --no-cache-dir .
-
-# Copy source
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
 COPY trained_models/ trained_models/
+
+# Install package (includes src as a package)
+RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 
