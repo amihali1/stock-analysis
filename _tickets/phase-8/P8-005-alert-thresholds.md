@@ -1,6 +1,6 @@
 # P8-005: Tighten alert thresholds for high-conviction-only strategy
 
-**Status**: todo
+**Status**: done
 **Phase**: 8
 **Dependencies**: P8-002
 **Estimated scope**: small (1-2 files)

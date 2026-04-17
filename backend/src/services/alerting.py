@@ -184,8 +184,13 @@ class AlertService:
         finally:
             db.close()
 
-    async def check_high_conviction_alerts(self, score_threshold: float = 0.75):
-        """Check for new high-conviction recommendations."""
+    async def check_high_conviction_alerts(self, score_threshold: float = 0.85):
+        """Check for new high-conviction recommendations.
+
+        Since the ensemble already filters at min_confidence (0.75), this
+        threshold is intentionally higher to surface only standout signals.
+        Only defined-risk trades or very strong undefined-risk signals alert.
+        """
         from src.db.models import Recommendation
         from datetime import date
 
@@ -194,17 +199,35 @@ class AlertService:
             today = date.today()
             high_recs = (
                 db.query(Recommendation)
-                .filter(Recommendation.date == today, Recommendation.score >= score_threshold)
+                .filter(
+                    Recommendation.date == today,
+                    Recommendation.score >= score_threshold,
+                )
                 .all()
             )
 
             for rec in high_recs:
+                # Build signal agreement summary
+                signals = []
+                if rec.directional_signal and rec.directional_signal >= 0.75:
+                    signals.append(f"directional={rec.directional_signal:.2f}")
+                if rec.volatility_signal and rec.volatility_signal >= 0.75:
+                    signals.append(f"volatility={rec.volatility_signal:.2f}")
+                if rec.sentiment_signal and rec.sentiment_signal >= 0.75:
+                    signals.append(f"sentiment={rec.sentiment_signal:.2f}")
+
+                agreement = f"{len(signals)}/3 models agree"
+                risk_label = f"[{rec.risk_type or 'undefined'}-risk]"
+
                 await self.send_alert(
                     AlertType.HIGH_CONVICTION, rec.ticker,
-                    f"High conviction {rec.strategy} signal (score: {rec.score:.2f})",
+                    f"{risk_label} High conviction {rec.strategy} signal "
+                    f"(score: {rec.score:.2f}, {agreement})",
                     {
                         "score": rec.score,
                         "strategy": rec.strategy,
+                        "risk_type": rec.risk_type or "undefined",
+                        "signals": ", ".join(signals) if signals else "below threshold",
                         "entry_price": rec.entry_price,
                         "position_size": rec.position_size,
                         "max_loss": rec.max_loss,
