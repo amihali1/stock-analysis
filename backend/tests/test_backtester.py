@@ -77,7 +77,7 @@ class TestBacktester:
     def test_run_basic(self, mock_load, sample_data):
         """Test basic backtest execution with synthetic data."""
         mock_load.return_value = sample_data
-        bt = Backtester(max_position=5000, score_threshold=0.3)
+        bt = Backtester(max_position=1000, score_threshold=0.3)
         result = bt.run(strategy="short")
 
         assert isinstance(result, BacktestResult)
@@ -94,7 +94,7 @@ class TestBacktester:
     def test_run_options(self, mock_load, sample_data):
         """Test options strategy backtest."""
         mock_load.return_value = sample_data
-        bt = Backtester(max_position=5000, score_threshold=0.3)
+        bt = Backtester(max_position=1000, score_threshold=0.3)
         result = bt.run(strategy="options")
 
         assert result.strategy == "options"
@@ -105,7 +105,7 @@ class TestBacktester:
     def test_run_combined(self, mock_load, sample_data):
         """Test combined strategy backtest."""
         mock_load.return_value = sample_data
-        bt = Backtester(max_position=5000, score_threshold=0.3)
+        bt = Backtester(max_position=1000, score_threshold=0.3)
         result = bt.run(strategy="combined")
 
         assert result.strategy == "combined"
@@ -132,11 +132,11 @@ class TestBacktester:
     def test_compute_metrics_with_trades(self):
         trades = [
             Trade("AAPL", "short", date(2024, 1, 2), date(2024, 1, 7), 150.0, 145.0,
-                  5000, 10, 157.5, 135.0, 750, 0.7, pnl=50.0, return_pct=0.033),
+                  1000, 3, 157.5, 135.0, 750, 0.7, pnl=50.0, return_pct=0.033),
             Trade("MSFT", "short", date(2024, 1, 2), date(2024, 1, 7), 300.0, 310.0,
-                  5000, 5, 315.0, 270.0, 750, 0.6, pnl=-50.0, return_pct=-0.033),
+                  1000, 1, 315.0, 270.0, 750, 0.6, pnl=-50.0, return_pct=-0.033),
             Trade("GOOGL", "short", date(2024, 1, 2), date(2024, 1, 7), 130.0, 120.0,
-                  5000, 12, 136.5, 117.0, 780, 0.8, pnl=120.0, return_pct=0.077),
+                  1000, 4, 136.5, 117.0, 780, 0.8, pnl=120.0, return_pct=0.077),
         ]
         daily = [
             {"date": "2024-01-02", "total_equity": 0},
@@ -164,7 +164,7 @@ class TestBacktester:
             end_date=date(2024, 3, 29),
             trades=[
                 Trade("AAPL", "short", date(2024, 1, 2), date(2024, 1, 7), 150.0, 145.0,
-                      5000, 10, 157.5, 135.0, 750, 0.7, pnl=50.0, return_pct=0.033),
+                      1000, 3, 157.5, 135.0, 750, 0.7, pnl=50.0, return_pct=0.033),
             ],
             metrics={"total_pnl": 50.0, "win_rate": 1.0},
         )
@@ -230,7 +230,7 @@ class TestBacktester:
     def test_max_concurrent_respected(self, mock_load, sample_data):
         """Ensure we don't exceed max concurrent positions."""
         mock_load.return_value = sample_data
-        bt = Backtester(max_position=5000, score_threshold=0.0, max_concurrent_positions=2)
+        bt = Backtester(max_position=1000, score_threshold=0.0, max_concurrent_positions=2)
         result = bt.run(strategy="short")
 
         # Check daily equity: open_positions should never exceed max
@@ -241,7 +241,7 @@ class TestBacktester:
     def test_daily_equity_tracking(self, mock_load, sample_data):
         """Ensure daily equity is tracked for every trading day."""
         mock_load.return_value = sample_data
-        bt = Backtester(max_position=5000, score_threshold=0.3)
+        bt = Backtester(max_position=1000, score_threshold=0.3)
         result = bt.run(strategy="short")
 
         assert len(result.daily_equity) > 0

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     reddit_user_agent: str = "stock-analysis/0.1"
 
     # Trading constraints
-    max_position_size: float = 5000.0
+    max_position_size: float = 1000.0
 
     # Alpaca
     alpaca_api_key: str = ""
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Trading safety rails
     trading_mode: str = "disabled"  # disabled, paper, live
-    max_daily_loss: float = 500.0
+    max_daily_loss: float = 200.0
     max_open_positions: int = 5
     max_daily_orders: int = 20
     allowed_hours_only: bool = True

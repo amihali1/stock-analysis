@@ -50,7 +50,7 @@ class SpreadRecommendation(BaseModel):
 class SpreadBuilder:
     """Build defined-risk options spread strategies from ensemble signals."""
 
-    def __init__(self, max_position: float = 5000.0):
+    def __init__(self, max_position: float = 1000.0):
         self.max_position = max_position
 
     def suggest_spread(

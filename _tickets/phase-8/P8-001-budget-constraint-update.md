@@ -1,6 +1,6 @@
 # P8-001: Update budget constraint from $5,000 to $1,000
 
-**Status**: todo
+**Status**: done
 **Phase**: 8
 **Dependencies**: none
 **Estimated scope**: medium (3-5 files)

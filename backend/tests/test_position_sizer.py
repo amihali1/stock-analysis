@@ -13,7 +13,7 @@ def ensemble():
 
 @pytest.fixture
 def sizer():
-    return PositionSizer(max_position=5000.0)
+    return PositionSizer(max_position=1000.0)
 
 
 def make_inputs(**overrides) -> SignalInputs:
@@ -66,7 +66,7 @@ class TestPositionSizerShort:
         rec = sizer.size_short(score, current_price=150.0)
         assert rec is not None
         assert rec.strategy == "short"
-        assert rec.position_size <= 5000.0
+        assert rec.position_size <= 1000.0
         assert rec.shares >= 1
         assert rec.stop_loss > rec.entry_price  # Stop-loss above entry for short
         assert rec.target_price < rec.entry_price  # Target below entry for short
@@ -75,7 +75,7 @@ class TestPositionSizerShort:
     def test_max_position_respected(self, sizer):
         score = EnsembleScore(ticker="AAPL", score=1.0, directional_signal=1.0, volatility_signal=1.0, sentiment_signal=1.0)
         rec = sizer.size_short(score, current_price=100.0)
-        assert rec.position_size <= 5000.0
+        assert rec.position_size <= 1000.0
 
     def test_expensive_stock(self, sizer):
         score = EnsembleScore(ticker="BRK", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
@@ -104,21 +104,21 @@ class TestPositionSizerOptions:
         assert rec is not None
         assert rec.strategy == "options"
         assert rec.option_type == "put"
-        assert rec.position_size <= 5000.0
+        assert rec.position_size <= 1000.0
         assert rec.contracts >= 1
         assert rec.max_loss == rec.position_size  # Max loss = premium paid
 
     def test_max_position_respected(self, sizer):
         score = EnsembleScore(ticker="AAPL", score=1.0, directional_signal=1.0, volatility_signal=1.0, sentiment_signal=1.0)
         rec = sizer.size_options(score, current_price=100.0, premium_per_share=5.0)
-        # 5 * 100 = $500/contract, max 10 contracts = $5000
-        assert rec.position_size <= 5000.0
+        # 5 * 100 = $500/contract, max 2 contracts = $1000
+        assert rec.position_size <= 1000.0
 
     def test_expensive_premium(self, sizer):
         score = EnsembleScore(ticker="X", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
         # Premium too expensive for even 1 contract
         rec = sizer.size_options(score, current_price=100.0, premium_per_share=100.0)
-        assert rec is None  # $10,000/contract > $5,000 budget
+        assert rec is None  # $10,000/contract > $1,000 budget
 
     def test_strike_below_current_price(self, sizer):
         score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)

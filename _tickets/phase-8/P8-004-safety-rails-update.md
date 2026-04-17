@@ -1,6 +1,6 @@
 # P8-004: Update safety rails for $1,000 limit
 
-**Status**: todo
+**Status**: done
 **Phase**: 8
 **Dependencies**: P8-001, P7-003
 **Estimated scope**: small (1-2 files)

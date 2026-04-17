@@ -23,7 +23,7 @@ def _make_db():
 
 def _make_order(**kwargs):
     defaults = {
-        "ticker": "AAPL", "qty": 10, "side": "sell",
+        "ticker": "AAPL", "qty": 3, "side": "sell",
         "order_type": "limit", "limit_price": 150.0,
         "strategy": "short", "dry_run": False,
     }
@@ -34,9 +34,9 @@ def _make_order(**kwargs):
 def _make_settings(**overrides):
     s = MagicMock()
     s.trading_mode = overrides.get("trading_mode", "paper")
-    s.max_daily_loss = overrides.get("max_daily_loss", 500.0)
+    s.max_daily_loss = overrides.get("max_daily_loss", 200.0)
     s.max_open_positions = overrides.get("max_open_positions", 5)
-    s.max_position_size = overrides.get("max_position_size", 5000.0)
+    s.max_position_size = overrides.get("max_position_size", 1000.0)
     s.max_daily_orders = overrides.get("max_daily_orders", 20)
     s.allowed_hours_only = overrides.get("allowed_hours_only", True)
     s.blocked_tickers = overrides.get("blocked_tickers", [])
@@ -143,7 +143,7 @@ class TestDailyOrderLimit:
 class TestPositionSize:
     def test_blocks_oversized(self):
         db = _make_db()
-        with patch("src.services.safety_rails.get_settings", return_value=_make_settings(max_position_size=5000)):
+        with patch("src.services.safety_rails.get_settings", return_value=_make_settings(max_position_size=1000)):
             rails = TradingSafetyRails(db)
             order = _make_order(qty=100, limit_price=100.0)  # 100 * 100 * 1.5 = 15000
             ok, reason = rails.check_order(order)
@@ -152,9 +152,9 @@ class TestPositionSize:
 
     def test_allows_within_limit(self):
         db = _make_db()
-        with patch("src.services.safety_rails.get_settings", return_value=_make_settings(max_position_size=5000)):
+        with patch("src.services.safety_rails.get_settings", return_value=_make_settings(max_position_size=1000)):
             rails = TradingSafetyRails(db)
-            order = _make_order(qty=10, limit_price=150.0)  # 10 * 150 * 1.5 = 2250
+            order = _make_order(qty=3, limit_price=150.0)  # 3 * 150 * 1.5 = 675
             ok, _ = rails.check_order(order)
             assert ok is True
 

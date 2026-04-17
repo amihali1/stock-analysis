@@ -1,4 +1,4 @@
-"""Position sizing with $5,000 max buy-in constraint."""
+"""Position sizing with $1,000 max buy-in constraint."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class OptionsRecommendation(BaseModel):
 
 
 class PositionSizer:
-    """Calculate position sizes within the $5,000 budget constraint."""
+    """Calculate position sizes within the $1,000 budget constraint."""
 
     def __init__(self, max_position: float | None = None):
         self.max_position = max_position or get_settings().max_position_size

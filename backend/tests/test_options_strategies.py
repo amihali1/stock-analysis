@@ -21,7 +21,7 @@ def _make_score(ticker="AAPL", score=0.7, directional=0.7, volatility=0.4, senti
 class TestSpreadBuilder:
     def test_bear_call_spread_high_dir_low_vol(self):
         """High directional + low vol should suggest bear call spread."""
-        builder = SpreadBuilder(max_position=5000)
+        builder = SpreadBuilder(max_position=1000)
         score = _make_score(directional=0.8, volatility=0.3)
         result = builder.suggest_spread(score, current_price=150.0)
 
@@ -35,7 +35,7 @@ class TestSpreadBuilder:
 
     def test_bear_put_spread_high_dir_high_vol(self):
         """High directional + high vol should suggest bear put spread."""
-        builder = SpreadBuilder(max_position=5000)
+        builder = SpreadBuilder(max_position=1000)
         score = _make_score(directional=0.8, volatility=0.7)
         result = builder.suggest_spread(score, current_price=150.0)
 
@@ -46,7 +46,7 @@ class TestSpreadBuilder:
 
     def test_iron_condor_high_vol_low_dir(self):
         """High vol + neutral direction should suggest iron condor."""
-        builder = SpreadBuilder(max_position=5000)
+        builder = SpreadBuilder(max_position=1000)
         score = _make_score(directional=0.3, volatility=0.8, score=0.6)
         result = builder.suggest_spread(score, current_price=150.0)
 

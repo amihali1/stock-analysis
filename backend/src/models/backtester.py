@@ -85,7 +85,7 @@ class Backtester:
 
     def __init__(
         self,
-        max_position: float = 5000.0,
+        max_position: float = 1000.0,
         hold_days: int = DEFAULT_HOLD_DAYS,
         score_threshold: float = MIN_SCORE_THRESHOLD,
         max_concurrent_positions: int = 10,

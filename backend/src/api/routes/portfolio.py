@@ -48,7 +48,7 @@ def get_portfolio_history(days: int = 30, db: Session = Depends(get_db)):
 
 
 @router.post("/portfolio/check")
-def check_position(ticker: str, position_size: float = 5000.0, db: Session = Depends(get_db)):
+def check_position(ticker: str, position_size: float = 1000.0, db: Session = Depends(get_db)):
     """Check if a new position passes all risk controls."""
     from src.models.risk_manager import RiskManager
 

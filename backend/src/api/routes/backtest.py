@@ -16,7 +16,7 @@ class BacktestRequest(BaseModel):
     strategy: str = "combined"
     start_date: Optional[date] = None
     end_date: Optional[date] = None
-    max_position: float = 5000.0
+    max_position: float = 1000.0
     hold_days: int = 5
     score_threshold: float = 0.5
     max_concurrent: int = 10
