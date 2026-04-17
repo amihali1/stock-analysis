@@ -1,6 +1,6 @@
 # P8-002: Add minimum confidence threshold to ensemble scorer
 
-**Status**: todo
+**Status**: done
 **Phase**: 8
 **Dependencies**: P8-001
 **Estimated scope**: medium (3-5 files)

@@ -89,6 +89,7 @@ def job_generate_recommendations():
         sizer = PositionSizer()
         today = date.today()
         count = 0
+        filtered_count = 0
 
         try:
             from src.db.watchlist import get_watchlist_tickers
@@ -160,8 +161,14 @@ def job_generate_recommendations():
 
                 score = ensemble.score(inputs)
 
-                # Only generate recommendations for strong signals
+                # Only generate recommendations for strong, high-confidence signals
                 if score.score < 0.5:
+                    continue
+
+                if not score.meets_confidence:
+                    filtered_count += 1
+                    logger.debug(f"Scheduler: {ticker} filtered — below confidence threshold "
+                                 f"(dir={score.directional_signal}, vol={score.volatility_signal}, sent={score.sentiment_signal})")
                     continue
 
                 # Generate short recommendation
@@ -207,8 +214,8 @@ def job_generate_recommendations():
         finally:
             db.close()
 
-        logger.info(f"Scheduler: recommendations complete — {count} new recommendations")
-        _record_run("recommendations", f"ok ({count} recs)")
+        logger.info(f"Scheduler: recommendations complete — {count} new, {filtered_count} filtered below confidence threshold")
+        _record_run("recommendations", f"ok ({count} recs, {filtered_count} filtered)")
 
     except Exception:
         logger.exception("Scheduler: recommendation generation failed")

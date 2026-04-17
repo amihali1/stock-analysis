@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Trading constraints
     max_position_size: float = 1000.0
+    min_confidence: float = 0.75  # Minimum per-model confidence to generate a recommendation
 
     # Alpaca
     alpaca_api_key: str = ""

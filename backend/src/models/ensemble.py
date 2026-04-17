@@ -28,6 +28,7 @@ class EnsembleScore(BaseModel):
     directional_signal: float
     volatility_signal: float
     sentiment_signal: float
+    meets_confidence: bool = Field(default=True, description="Whether all individual signals meet the minimum confidence threshold")
 
 
 class Ensemble:
@@ -38,11 +39,17 @@ class Ensemble:
         weight_directional: float = 0.4,
         weight_volatility: float = 0.3,
         weight_sentiment: float = 0.3,
+        min_confidence: float | None = None,
     ):
         total = weight_directional + weight_volatility + weight_sentiment
         self.w_dir = weight_directional / total
         self.w_vol = weight_volatility / total
         self.w_sent = weight_sentiment / total
+        if min_confidence is not None:
+            self.min_confidence = min_confidence
+        else:
+            from src.config import get_settings
+            self.min_confidence = get_settings().min_confidence
 
     def score(self, inputs: SignalInputs) -> EnsembleScore:
         """Compute ensemble score from individual signals.
@@ -50,6 +57,9 @@ class Ensemble:
         Directional signal: probability of drop (0-1, higher = more bearish)
         Volatility signal: higher predicted vol = more opportunity for options (0-1)
         Sentiment signal: negative sentiment = bearish = higher signal (0-1)
+
+        Each individual signal must meet min_confidence for the recommendation
+        to be considered actionable (meets_confidence=True).
         """
         dir_signal = inputs.directional_prob
 
@@ -68,10 +78,18 @@ class Ensemble:
             + self.w_sent * sent_signal
         )
 
+        # Check if each model independently meets the confidence threshold
+        meets_confidence = (
+            dir_signal >= self.min_confidence
+            and vol_signal >= self.min_confidence
+            and sent_signal >= self.min_confidence
+        )
+
         return EnsembleScore(
             ticker=inputs.ticker,
             score=round(combined, 4),
             directional_signal=round(dir_signal, 4),
             volatility_signal=round(vol_signal, 4),
             sentiment_signal=round(sent_signal, 4),
+            meets_confidence=meets_confidence,
         )
