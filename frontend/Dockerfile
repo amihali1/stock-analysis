@@ -10,7 +10,7 @@ COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
-RUN npm run build
+RUN npm run build && mkdir -p public
 
 # Production
 FROM node:20-alpine AS runner
@@ -24,7 +24,8 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public 2>/dev/null || true
+
+COPY --from=builder /app/public ./public
 
 USER nextjs
 
