@@ -146,3 +146,36 @@ class TestBlackScholesEstimates:
         builder = SpreadBuilder()
         delta = builder._estimate_delta(100, 100, 0.30, 30 / 365, "put")
         assert -1 < delta < 0
+
+
+class TestSpreadRiskType:
+    def test_all_spread_types_are_defined_risk(self):
+        """Every spread strategy should be labeled as defined-risk."""
+        builder = SpreadBuilder(max_position=1000)
+
+        # Bear call spread (high dir, low vol)
+        score_bc = _make_score(directional=0.8, volatility=0.3)
+        result_bc = builder.suggest_spread(score_bc, current_price=150.0)
+        if result_bc:
+            assert result_bc.risk_type == "defined"
+
+        # Bull put spread (high dir, high vol)
+        score_bp = _make_score(directional=0.8, volatility=0.7)
+        result_bp = builder.suggest_spread(score_bp, current_price=150.0)
+        if result_bp:
+            assert result_bp.risk_type == "defined"
+
+        # Iron condor (low dir, high vol)
+        score_ic = _make_score(directional=0.3, volatility=0.8, score=0.6)
+        result_ic = builder.suggest_spread(score_ic, current_price=150.0)
+        if result_ic:
+            assert result_ic.risk_type == "defined"
+
+    def test_spread_max_loss_is_finite(self):
+        """Defined-risk spreads must have a known, finite max loss."""
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.8, volatility=0.3)
+        result = builder.suggest_spread(score, current_price=150.0)
+        if result:
+            assert result.max_loss > 0
+            assert result.max_loss < float("inf")

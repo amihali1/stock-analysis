@@ -31,6 +31,7 @@ class ShortRecommendation(BaseModel):
     shares: int
     position_size: float = Field(description="Dollar amount of position")
     max_loss: float = Field(description="Maximum loss in dollars")
+    risk_type: str = "undefined"  # Naked shorts have unlimited risk
 
 
 class OptionsRecommendation(BaseModel):
@@ -49,6 +50,7 @@ class OptionsRecommendation(BaseModel):
     strike: float
     expiry_days: int
     option_type: str = "put"
+    risk_type: str = "defined"  # Long puts have max loss = premium paid
 
 
 class PositionSizer:

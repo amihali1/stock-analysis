@@ -45,6 +45,7 @@ class SpreadRecommendation(BaseModel):
     vega_exposure: float  # Net vega
     earnings_warning: bool = False  # True if expiry crosses earnings
     uses_real_data: bool = False  # True if real chain data was used
+    risk_type: str = "defined"  # Spreads are always defined-risk
 
 
 class SpreadBuilder:

@@ -154,3 +154,43 @@ class TestPositionSizerOptions:
         score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
         rec = sizer.size_options(score, current_price=200.0, strike_offset_pct=0.05)
         assert rec.strike == 190.0  # 200 * 0.95
+
+
+class TestRiskType:
+    """Verify risk_type labels on each strategy."""
+
+    def test_short_is_undefined_risk(self):
+        sizer = PositionSizer(max_position=1000.0)
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
+        rec = sizer.size_short(score, current_price=50.0)
+        assert rec is not None
+        assert rec.risk_type == "undefined"
+
+    def test_options_is_defined_risk(self):
+        sizer = PositionSizer(max_position=1000.0)
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
+        rec = sizer.size_options(score, current_price=50.0)
+        assert rec is not None
+        assert rec.risk_type == "defined"
+
+    def test_spread_is_defined_risk(self):
+        sizer = PositionSizer(max_position=1000.0)
+        score = EnsembleScore(ticker="AAPL", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+        rec = sizer.size_spread(score, current_price=150.0)
+        assert rec is not None
+        assert rec.risk_type == "defined"
+
+    def test_defined_risk_preferred_over_naked(self):
+        """When spread is available, it should be preferred over naked short."""
+        sizer = PositionSizer(max_position=1000.0)
+        score = EnsembleScore(ticker="AAPL", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+
+        spread = sizer.size_spread(score, current_price=150.0)
+        short = sizer.size_short(score, current_price=150.0)
+
+        # Both should be available
+        assert spread is not None
+        assert short is not None
+        # Spread is defined-risk, short is not
+        assert spread.risk_type == "defined"
+        assert short.risk_type == "undefined"

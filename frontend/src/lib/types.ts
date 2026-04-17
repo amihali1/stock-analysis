@@ -1,4 +1,5 @@
-export type Strategy = "short" | "options";
+export type Strategy = "short" | "options" | "spread";
+export type RiskType = "defined" | "undefined";
 
 export interface Recommendation {
   ticker: string;
@@ -17,6 +18,7 @@ export interface Recommendation {
   strike: number | null;
   expiry: string | null;
   option_type: string | null;
+  risk_type: RiskType;
   notes: string | null;
 }
 

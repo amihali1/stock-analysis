@@ -46,6 +46,7 @@ class RecommendationResponse(BaseModel):
     strike: float | None = None
     expiry: date | None = None
     option_type: str | None = None
+    risk_type: str = "undefined"
     notes: str | None = None
 
 

@@ -171,25 +171,29 @@ def job_generate_recommendations():
                                  f"(dir={score.directional_signal}, vol={score.volatility_signal}, sent={score.sentiment_signal})")
                     continue
 
-                # Generate short recommendation
-                short_rec = sizer.size_short(score, price.close)
-                if short_rec:
+                # Prefer defined-risk strategies: try spread first
+                spread_rec = sizer.size_spread(score, price.close)
+                if spread_rec:
                     rec = Recommendation(
-                        ticker=ticker, date=today, strategy="short",
+                        ticker=ticker, date=today, strategy="spread",
                         score=score.score,
                         directional_signal=score.directional_signal,
                         volatility_signal=score.volatility_signal,
                         sentiment_signal=score.sentiment_signal,
-                        entry_price=short_rec.entry_price,
-                        stop_loss=short_rec.stop_loss,
-                        target_price=short_rec.target_price,
-                        position_size=short_rec.position_size,
-                        max_loss=short_rec.max_loss,
+                        entry_price=spread_rec.current_price,
+                        stop_loss=None,
+                        target_price=None,
+                        position_size=abs(spread_rec.net_credit),
+                        max_loss=spread_rec.max_loss,
+                        contracts=spread_rec.contracts,
+                        risk_type="defined",
+                        notes=spread_rec.strategy_name,
                     )
                     db.add(rec)
                     count += 1
+                    continue  # Defined-risk spread found — skip naked alternatives
 
-                # Generate options recommendation
+                # Fallback: long put (defined-risk, max loss = premium)
                 options_rec = sizer.size_options(score, price.close)
                 if options_rec:
                     rec = Recommendation(
@@ -206,6 +210,28 @@ def job_generate_recommendations():
                         contracts=options_rec.contracts,
                         strike=options_rec.strike,
                         option_type=options_rec.option_type,
+                        risk_type="defined",
+                    )
+                    db.add(rec)
+                    count += 1
+                    continue  # Long put found — skip naked short
+
+                # Last resort: naked short (undefined-risk, flagged)
+                short_rec = sizer.size_short(score, price.close)
+                if short_rec:
+                    rec = Recommendation(
+                        ticker=ticker, date=today, strategy="short",
+                        score=score.score,
+                        directional_signal=score.directional_signal,
+                        volatility_signal=score.volatility_signal,
+                        sentiment_signal=score.sentiment_signal,
+                        entry_price=short_rec.entry_price,
+                        stop_loss=short_rec.stop_loss,
+                        target_price=short_rec.target_price,
+                        position_size=short_rec.position_size,
+                        max_loss=short_rec.max_loss,
+                        risk_type="undefined",
+                        notes="Naked short — no defined-risk alternative available",
                     )
                     db.add(rec)
                     count += 1

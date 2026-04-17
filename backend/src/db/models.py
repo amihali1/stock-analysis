@@ -136,6 +136,7 @@ class Recommendation(Base):
     strike = Column(Float)  # For options
     expiry = Column(Date)  # For options
     option_type = Column(String(4))  # call, put
+    risk_type = Column(String(10), default="undefined")  # defined, undefined
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
