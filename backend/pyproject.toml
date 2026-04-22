@@ -32,6 +32,8 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "python-dotenv>=1.0.0",
+    # Metrics
+    "prometheus-fastapi-instrumentator>=7.0.0",
     # Auth
     "bcrypt>=4.0.0",
     "PyJWT>=2.8.0",

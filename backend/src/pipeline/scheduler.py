@@ -10,6 +10,13 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.db.models import Base
 from src.db.session import engine
+from src.metrics import (
+    pipeline_indicators_computed_total,
+    pipeline_last_run_timestamp,
+    pipeline_prices_fetched_total,
+    pipeline_recommendations_generated_total,
+    pipeline_sentiment_runs_total,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +24,12 @@ scheduler = AsyncIOScheduler()
 
 
 def _record_run(job_name: str, status: str):
-    """Record job completion time in health endpoint state."""
+    """Record job completion time in health endpoint state and Prometheus gauge."""
     from src.api.routes.health import last_job_runs
-    last_job_runs[job_name] = f"{status} at {datetime.now().isoformat()}"
+    now = datetime.now()
+    last_job_runs[job_name] = f"{status} at {now.isoformat()}"
+    outcome = "ok" if status.startswith("ok") else ("skipped" if status.startswith("skipped") else "error")
+    pipeline_last_run_timestamp.labels(job=job_name, status=outcome).set(now.timestamp())
 
 
 def job_fetch_prices():
@@ -32,6 +42,7 @@ def job_fetch_prices():
         results = fetcher.fetch_daily(period="5d")
         fetcher.close()
         total = sum(v for v in results.values() if v > 0)
+        pipeline_prices_fetched_total.inc(total)
         logger.info(f"Scheduler: price fetch complete — {total} new rows across {len(results)} tickers")
         _record_run("fetch_prices", f"ok ({total} rows)")
     except Exception:
@@ -48,6 +59,7 @@ def job_compute_indicators():
         results = eng.compute_all()
         eng.close()
         total = sum(v for v in results.values() if v > 0)
+        pipeline_indicators_computed_total.inc(total)
         logger.info(f"Scheduler: indicators complete — {total} new rows")
         _record_run("compute_indicators", f"ok ({total} rows)")
     except Exception:
@@ -64,9 +76,11 @@ async def job_sentiment():
         results = await analyzer.analyze_all()
         analyzer.close()
         scored = sum(1 for v in results.values() if v.get("scores_computed", 0) > 0)
+        pipeline_sentiment_runs_total.labels(status="ok").inc()
         logger.info(f"Scheduler: sentiment complete — {scored} tickers scored")
         _record_run("sentiment", f"ok ({scored} tickers)")
     except Exception:
+        pipeline_sentiment_runs_total.labels(status="error").inc()
         logger.exception("Scheduler: sentiment analysis failed")
         _record_run("sentiment", "error")
 
@@ -240,6 +254,7 @@ def job_generate_recommendations():
         finally:
             db.close()
 
+        pipeline_recommendations_generated_total.inc(count)
         logger.info(f"Scheduler: recommendations complete — {count} new, {filtered_count} filtered below confidence threshold")
         _record_run("recommendations", f"ok ({count} recs, {filtered_count} filtered)")
 

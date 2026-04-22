@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -72,6 +73,10 @@ app.add_middleware(
 )
 
 app.add_middleware(AuthMiddleware)
+
+Instrumentator(
+    excluded_handlers=["/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(health.router, prefix="/api", tags=["health"])
