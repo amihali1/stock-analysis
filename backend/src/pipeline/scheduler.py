@@ -92,6 +92,7 @@ def job_generate_recommendations():
         from src.db.session import SessionLocal
         from src.db.models import PriceHistory, TechnicalIndicator, SentimentScore, Recommendation, Stock
         from src.models.directional import DirectionalModel
+        from src.models.volatility import VolatilityModel
         from src.models.ensemble import Ensemble, SignalInputs
         from src.models.position_sizer import PositionSizer
         from datetime import date
@@ -99,6 +100,12 @@ def job_generate_recommendations():
 
         db = SessionLocal()
         dir_model = DirectionalModel()
+        vol_model = VolatilityModel()
+        try:
+            vol_model.load()
+        except Exception:
+            logger.exception("Scheduler: volatility model unavailable, falling back to default vol")
+            vol_model = None
         ensemble = Ensemble()
         sizer = PositionSizer()
         today = date.today()
@@ -163,11 +170,20 @@ def job_generate_recommendations():
                 sent_score = float(sent[0]) if sent and sent[0] is not None else 0.0
                 sent_conf = float(sent[1]) if sent and sent[1] is not None else 0.0
 
+                predicted_vol = 0.25
+                if vol_model is not None:
+                    try:
+                        pv = vol_model.predict_latest(ticker, db=db)
+                        if pv is not None:
+                            predicted_vol = pv
+                    except Exception:
+                        logger.exception(f"Scheduler: vol prediction failed for {ticker}")
+
                 inputs = SignalInputs(
                     ticker=ticker,
                     directional_prob=dir_prob,
                     directional_confidence=dir_conf,
-                    predicted_vol=0.25,  # Default until LSTM is run on sequences
+                    predicted_vol=predicted_vol,
                     sentiment_score=sent_score,
                     sentiment_confidence=sent_conf,
                     current_price=price.close,

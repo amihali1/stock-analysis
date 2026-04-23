@@ -58,8 +58,10 @@ class Ensemble:
         Volatility signal: higher predicted vol = more opportunity for options (0-1)
         Sentiment signal: negative sentiment = bearish = higher signal (0-1)
 
-        Each individual signal must meet min_confidence for the recommendation
-        to be considered actionable (meets_confidence=True).
+        meets_confidence is True when the directional model and the sentiment
+        analyzer both report confidence >= min_confidence. The LSTM produces no
+        per-prediction confidence, so vol is excluded from the gate — it still
+        contributes to the weighted score.
         """
         dir_signal = inputs.directional_prob
 
@@ -78,11 +80,9 @@ class Ensemble:
             + self.w_sent * sent_signal
         )
 
-        # Check if each model independently meets the confidence threshold
         meets_confidence = (
-            dir_signal >= self.min_confidence
-            and vol_signal >= self.min_confidence
-            and sent_signal >= self.min_confidence
+            inputs.directional_confidence >= self.min_confidence
+            and inputs.sentiment_confidence >= self.min_confidence
         )
 
         return EnsembleScore(

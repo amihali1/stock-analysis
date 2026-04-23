@@ -59,35 +59,36 @@ class TestEnsemble:
         assert 0 <= result.volatility_signal <= 1
         assert 0 <= result.sentiment_signal <= 1
 
-    def test_meets_confidence_when_all_signals_high(self):
-        ensemble = Ensemble(min_confidence=0.5)
-        inputs = make_inputs(directional_prob=0.9, sentiment_score=-0.8, predicted_vol=0.8, sentiment_confidence=0.9)
+    def test_meets_confidence_when_both_models_confident(self):
+        ensemble = Ensemble(min_confidence=0.75)
+        inputs = make_inputs(directional_confidence=0.8, sentiment_confidence=0.85)
         result = ensemble.score(inputs)
         assert result.meets_confidence is True
 
-    def test_fails_confidence_when_directional_low(self):
+    def test_fails_confidence_when_directional_confidence_low(self):
         ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_prob=0.3, sentiment_score=-0.8, predicted_vol=0.8, sentiment_confidence=0.9)
+        inputs = make_inputs(directional_confidence=0.5, sentiment_confidence=0.9)
         result = ensemble.score(inputs)
         assert result.meets_confidence is False
 
-    def test_fails_confidence_when_sentiment_low(self):
+    def test_fails_confidence_when_sentiment_confidence_low(self):
         ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_prob=0.9, sentiment_score=0.2, predicted_vol=0.8, sentiment_confidence=0.9)
-        result = ensemble.score(inputs)
-        assert result.meets_confidence is False
-
-    def test_fails_confidence_when_volatility_low(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_prob=0.9, sentiment_score=-0.8, predicted_vol=0.1, sentiment_confidence=0.9)
+        inputs = make_inputs(directional_confidence=0.9, sentiment_confidence=0.4)
         result = ensemble.score(inputs)
         assert result.meets_confidence is False
 
     def test_confidence_at_exact_threshold(self):
         ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_prob=0.75, sentiment_score=-0.5, predicted_vol=0.75, sentiment_confidence=1.0)
+        inputs = make_inputs(directional_confidence=0.75, sentiment_confidence=0.75)
         result = ensemble.score(inputs)
         assert result.meets_confidence is True
+
+    def test_vol_does_not_affect_meets_confidence(self):
+        ensemble = Ensemble(min_confidence=0.75)
+        low_vol = make_inputs(directional_confidence=0.9, sentiment_confidence=0.9, predicted_vol=0.05)
+        high_vol = make_inputs(directional_confidence=0.9, sentiment_confidence=0.9, predicted_vol=0.9)
+        assert ensemble.score(low_vol).meets_confidence is True
+        assert ensemble.score(high_vol).meets_confidence is True
 
 
 class TestPositionSizerShort:

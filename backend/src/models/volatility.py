@@ -102,6 +102,53 @@ class VolatilityModel:
             pred = self.model(x).item()
         return max(pred, 0.0)  # Vol can't be negative
 
+    def predict_latest(self, ticker: str, db=None) -> float | None:
+        """Predict next 5-day vol for a ticker using its most recent price history.
+
+        Returns None when the ticker has insufficient history (< LOOKBACK + 20 rows
+        of joined price+indicator data).
+        """
+        owns_db = db is None
+        if owns_db:
+            db = SessionLocal()
+        try:
+            rows = (
+                db.query(
+                    PriceHistory.date,
+                    PriceHistory.close,
+                    PriceHistory.volume,
+                    TechnicalIndicator.rsi_14,
+                )
+                .join(
+                    TechnicalIndicator,
+                    (PriceHistory.ticker == TechnicalIndicator.ticker)
+                    & (PriceHistory.date == TechnicalIndicator.date),
+                )
+                .filter(PriceHistory.ticker == ticker)
+                .order_by(PriceHistory.date.desc())
+                .limit(LOOKBACK + 25)
+                .all()
+            )
+        finally:
+            if owns_db:
+                db.close()
+
+        if len(rows) < LOOKBACK + 20:
+            return None
+
+        df = pd.DataFrame(rows, columns=["date", "close", "volume", "rsi_14"]).sort_values("date").reset_index(drop=True)
+        df["close_return"] = df["close"].pct_change()
+        df["volume_norm"] = df["volume"] / df["volume"].rolling(20).mean()
+        df["rsi_14"] = df["rsi_14"].astype(float) / 100.0
+        df["volatility_hist"] = df["close_return"].rolling(20).std() * np.sqrt(252)
+
+        df = df.dropna().reset_index(drop=True)
+        if len(df) < LOOKBACK:
+            return None
+
+        seq = df[FEATURE_NAMES].tail(LOOKBACK).values
+        return self.predict(seq)
+
     def train(self, tickers: list[str] | None = None, epochs: int = 50, batch_size: int = 64, lr: float = 1e-3) -> dict:
         """Train the LSTM with time-based split."""
         logger.info("Building volatility dataset...")
