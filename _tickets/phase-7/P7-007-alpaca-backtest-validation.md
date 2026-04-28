@@ -1,6 +1,6 @@
 # P7-007: Backtest validation against Alpaca paper trading
 
-**Status**: todo
+**Status**: done
 **Phase**: 7
 **Dependencies**: P7-005, P5-001
 **Estimated scope**: medium

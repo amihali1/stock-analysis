@@ -1,6 +1,6 @@
 # P7-006: Trading UI — portfolio, execution, and controls
 
-**Status**: todo
+**Status**: done
 **Phase**: 7
 **Dependencies**: P7-004, P7-005
 **Estimated scope**: large

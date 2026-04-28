@@ -290,3 +290,66 @@ class AlertSetting(Base):
     alert_target_hit = Column(Integer, default=1)
     alert_high_conviction = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SystemSetting(Base):
+    """Runtime-mutable settings (trading mode, auto-execute, thresholds)."""
+
+    __tablename__ = "system_settings"
+
+    key = Column(String(50), primary_key=True)
+    value = Column(String(500), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SentimentHistory(Base):
+    """Daily aggregated sentiment per ticker (P9-004)."""
+
+    __tablename__ = "sentiment_history"
+    __table_args__ = (
+        Index("ix_sentiment_history_ticker_date", "ticker", "date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    date = Column(Date, nullable=False)
+    sentiment_score = Column(Float)
+    confidence = Column(Float)
+    article_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EarningsCalendar(Base):
+    """Upcoming earnings dates per ticker (P9-005)."""
+
+    __tablename__ = "earnings_calendar"
+    __table_args__ = (
+        Index("ix_earnings_calendar_ticker_date", "ticker", "earnings_date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    earnings_date = Column(Date, nullable=False)
+    source = Column(String(20), default="yfinance")
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OptionsSnapshot(Base):
+    """Daily per-ticker summary of options-market state used as model features."""
+
+    __tablename__ = "options_snapshots"
+    __table_args__ = (
+        Index("ix_options_snapshot_ticker_date", "ticker", "date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    date = Column(Date, nullable=False)
+    iv_atm_30d = Column(Float)
+    iv_atm_90d = Column(Float)
+    iv_rank_252d = Column(Float)
+    iv_percentile_252d = Column(Float)
+    put_call_skew_25d = Column(Float)
+    term_structure_slope = Column(Float)
+    has_options = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)

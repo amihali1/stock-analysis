@@ -13,7 +13,7 @@ router = APIRouter()
 
 @router.get("/recommendations", response_model=RecommendationsListResponse)
 def get_recommendations(
-    strategy: Optional[str] = Query(None, pattern="^(short|options)$"),
+    strategy: Optional[str] = Query(None, pattern="^(short|options|spread)$"),
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
@@ -27,6 +27,7 @@ def get_recommendations(
 
     items = [
         RecommendationResponse(
+            id=r.id,
             ticker=r.ticker,
             date=r.date,
             strategy=r.strategy,
@@ -43,6 +44,7 @@ def get_recommendations(
             strike=r.strike,
             expiry=r.expiry,
             option_type=r.option_type,
+            risk_type=r.risk_type or "undefined",
             notes=r.notes,
         )
         for r in recs

@@ -327,3 +327,150 @@ Chronological record of what each agent session accomplished. Read the latest en
 
 **Current state**: Phases 0-6 complete. 63 backend tests passing. Frontend builds clean (10 routes).
 **Next steps**: Phase 7 (Alpaca trading integration — P7-001 through P7-007)
+
+---
+
+## 2026-04-?? — Session 5: Phase 7 (P7-001..005) and Phase 8
+
+**Agent**: prior (un-logged)
+**Tickets**: P7-001..P7-005, P8-001..P8-006
+
+These tickets were marked `done` in their ticket files and the corresponding code is in place
+(see budget=$1,000 in `position_sizer.py`, `min_confidence=0.75` in `config.py`, `risk_type`
+column on recommendations + alembic migration `e5f7g9h1j3k5`, alerting hooked to
+`min_confidence`, and `alpaca_client`/`order_mapper`/`safety_rails`/`portfolio_sync`/
+`execution_engine` services). The session that did this work didn't update the log; this is
+a backfill so Phase 8 isn't accidentally re-done.
+
+---
+
+## 2026-04-24 — Session 6: P7-006, P7-007, start of Phase 9
+
+**Agent**: Claude Opus 4.7
+**Tickets**: P7-006, P7-007
+
+**P7-006 (Trading UI — portfolio, execution, controls)**:
+- New DB model `SystemSetting` (key/value) + alembic migration `f6g8h0i2j4k6` for runtime-mutable trading settings
+- New service `services/trading_settings.py` (get/update with config fallback)
+- Refactored `safety_rails.py` and `execution_engine.py` to honor DB overrides via shared `defaults` plumbing so existing tests' settings mocks still flow through
+- New API routes `routes/trading.py`: GET/PUT `/api/trading/settings` (live mode requires `confirm: "CONFIRM"`), GET `/api/trading/safety-status`, GET `/api/trading/modes`
+- Added `safety_status()` to `TradingSafetyRails` returning current rails snapshot (mode, daily loss, open positions, daily orders)
+- Frontend types + API methods for `TradingSettings`/`SafetyStatus`
+- New components: `TradingControls` (mode selector with CONFIRM gate, auto-execute toggle, score threshold slider, safety rail bars), `TradingModeBadge` (nav badge: gray/yellow/red)
+- New page `/execution-log` with passed/blocked filter and date window
+- Updated `app/page.tsx` (dashboard) — Execute button per row when trading != disabled, restructured row to avoid nested clickables
+- Updated `app/layout.tsx` — added Trading + Execution links and `TradingModeBadge`
+- Mounted `TradingControls` at top of `/trading` page
+- Added `id` field to `RecommendationResponse` so the dashboard can target rows for execution
+- Drive-by fix: recommendations route regex extended to allow `strategy=spread` (was 422)
+- Tests: `test_trading_settings.py` (7 tests) — defaults, DB overrides, validation, bool round-trip
+- All 160 backend tests pass; frontend `tsc --noEmit` clean
+
+**P7-007 (Paper trading validation script)**:
+- New service `services/paper_validation.py` with `PaperValidator`, `_compute_paper_metrics`, `_relative_diff`, `format_report`
+- Compares win_rate / avg_pnl / sharpe_ratio / max_drawdown between closed `PaperTrade` rows in window vs `Backtester.run()` over same window
+- Flags any metric with relative diff > 10%, with one-line diagnosis hint per metric
+- New CLI `scripts/validate_paper_trading.py` — `--start/--end` or `--days N`, optional `--json out.json`, exit 1 if divergences flagged (CI gate)
+- New API route `GET /api/validate/paper-vs-backtest?start_date=...&end_date=...`
+- Tests: `test_paper_validation.py` (13 tests) — empty/open trade handling, equity-curve max DD, relative diff, in-sync no-divergence, win-rate flag, window filter, invalid window, format renderer
+
+**Current state**: Phase 7 complete. Phase 8 confirmed complete. 160 backend tests pass.
+**Next steps**: Phase 9 (P9-001..P9-007 — feature improvements + retrain/backtest)
+
+---
+
+## 2026-04-24 — Session 7: P9-001 Options IV features
+
+**Agent**: Claude Opus 4.7
+**Ticket**: P9-001
+**What was done**:
+- New table `options_snapshots` (model + Alembic migration `g7h9i1j3k5l7`) — daily per-ticker IV summary: `iv_atm_30d`, `iv_atm_90d`, `iv_rank_252d`, `iv_percentile_252d`, `put_call_skew_25d`, `term_structure_slope`, `has_options`
+- New `pipeline/options_fetcher.py` — `OptionsFetcher.fetch_one/fetch_all` pulls yfinance chains for the ATM options nearest 30 DTE and 90 DTE, computes ATM-IV avg of call/put, term-structure slope, and a 25-delta skew approximated via ±10% strike offset (no Greeks). Always upserts a row — flagged `has_options=0` on missing chain / yfinance error
+- `_iv_rank_and_percentile` reads up to 380 calendar days of prior `iv_atm_30d` for that ticker and computes rank/percentile
+- New `features/options.py` — `OPTIONS_FEATURE_COLS`, neutral `DEFAULT_FEATURES`, `get_options_features(db, ticker, on_date)` for single-row prediction, `attach_options_features(db, df)` for as-of join into a training DataFrame (uses `pd.merge_asof` with datetime conversion)
+- `models/directional.py` — appended `OPTIONS_FEATURE_COLS` to `FEATURE_COLS`, joins options features in `build_dataset`, `predict()` now uses `OPTIONS_DEFAULTS` for missing columns
+- `pipeline/scheduler.py` — new `job_fetch_options` runs daily at 6:45 ET (after price fetch, before sentiment); recommendation job now merges in `get_options_features` for each ticker
+- Tests: `test_options_fetcher.py` (13) and `test_options_features.py` (7) covering nearest-expiration logic, ATM-IV averaging, skew strike offset, full snapshot upsert, IV rank from history, no-options / yfinance-error fallback, same-day upsert idempotence, `get_options_features` defaults & on-date cutoff, `attach_options_features` as-of join + missing-ticker default
+
+**Decisions / notes**:
+- 25-delta skew uses a strike-offset proxy (±10% OTM) rather than true Greeks — yfinance does not return delta. Documented in module docstring.
+- `iv_rank_252d` falls back to 0.0 when no prior history exists; production rank values become meaningful only after the daily job has accumulated ~30+ snapshots
+- Model retraining with new features is intentionally deferred to **P9-007** (retrain & backtest) per the ticket bundle plan; this session adds the data pipeline + feature plumbing only
+- All 180 backend tests pass (was 160 → +20 new)
+
+**Current state**: P9-001 complete. Options snapshot table + daily fetcher + feature plumbing live. Model still serving from old weights — new IV features fed to it as `OPTIONS_DEFAULTS` until P9-007 retrain.
+**Next steps**: P9-002 (macro regime features) — same shape (snapshot table + fetcher + feature module + scheduler hook)
+
+---
+
+## 2026-04-24 — Session 8: P9-002..P9-007 — Phase 9 finish (features, calibration, backtest)
+
+**Agent**: Claude Opus 4.7
+**Tickets**: P9-002, P9-003, P9-004, P9-005, P9-006, P9-007
+
+**P9-002 (Macro regime features)**:
+- Added `^VIX` to `default_watchlist` so the daily price-history job pulls VIX OHLC alongside SPY
+- New `features/macro.py` — `MACRO_FEATURE_COLS = [vix_level, vix_percentile_252d, spy_drawdown_pct, spy_above_sma_50, spy_above_sma_200, spy_return_5d, spy_return_20d]`
+- `_build_macro_frame(db)` joins SPY+^VIX on date, forward-fills VIX-only gaps, computes 252d rolling rank, drawdown vs trailing-252d high, SMA-50/200 binary above-flags, 5d/20d returns
+- `get_macro_features` (single-row, on-date cutoff) and `attach_macro_features` (bulk as-of join via `pd.merge_asof`)
+- Defaults: vix=18, percentile=0.5, drawdown=0, both above_smas=1, returns=0
+- Tests: `test_macro_features.py` (5)
+
+**P9-003 (Sector relative-strength features)**:
+- `config.py`: `SECTOR_ETF_MAP` (AAPL→XLK, JPM→XLF, ...) + `sector_etf_for(ticker)` (defaults to "SPY"), all 11 sector ETFs added to `default_watchlist`
+- New `features/sector.py` — `SECTOR_FEATURE_COLS = [sector_return_5d, sector_return_20d, return_5d_vs_sector, return_20d_vs_sector]`
+- `attach_sector_features` joins per-ticker price history with the sector-ETF daily returns and computes ticker-vs-sector deltas
+- Tests: `test_sector_features.py` (6) including SPY-fallback path
+
+**P9-004 (Sentiment time-series features)**:
+- New `sentiment_history` table + alembic migration `h8i0j2k4l6m8` (one row per ticker per day)
+- New `features/sentiment.py` — `SENTIMENT_FEATURE_COLS = [sentiment_latest, sentiment_ma_7d, sentiment_ma_30d, sentiment_momentum, sentiment_zscore_30d, article_count_zscore_30d]`
+- `_safe_z(value, mean, std)` uses `abs(std) < 1e-9` tolerance — pandas `.std()` on near-constant floats returns a residual, plain `std == 0` was misclassifying constant series as having spread
+- `upsert_daily_sentiment(db, ticker, on_date, sentiment_score, confidence, article_count)` — idempotent
+- Scheduler `job_sentiment` now persists each ticker's `composite_sentiment` daily instead of discarding
+- Tests: `test_sentiment_features.py` (6) including <30d window, all-same-scores, missing ticker
+
+**P9-005 (Earnings proximity features)**:
+- New `earnings_calendar` table (alembic migration shared with P9-004 — `h8i0j2k4l6m8`)
+- New `pipeline/earnings_fetcher.py` — handles both yfinance dict shape (`{"Earnings Date": [...]}`) and the older DataFrame shape
+- New `features/earnings.py` — `EARNINGS_FEATURE_COLS = [days_to_earnings, days_since_earnings, earnings_within_3d, earnings_within_10d]`. `DAYS_TO_CAP = 90`. `days_to_earnings = -1` signals "unknown"
+- `config.skip_near_earnings` flag — when true, scheduler filters `earnings_within_3d=True` tickers out of recommendations
+- Scheduler `job_fetch_earnings` runs Sundays at 6 AM ET
+- Tests: `test_earnings_features.py` (12) — boundary flips at 3/10 days, cap behavior, unknown-ticker -1, skip-flag respected
+
+**P9-006 (Probability calibration)**:
+- `directional.py`: training now does time-ordered 70/15/15 split (train / calibration / test). After XGBoost fits on the train fold, wrap with `CalibratedClassifierCV(estimator=self.model, cv='prefit', method=method)` on the calibration fold; method auto-selects "isotonic" for ≥1000 calibration rows, "sigmoid" otherwise
+- Added `self.calibrator`, `self.brier_score`; `_proba(X)` helper routes to calibrator if present
+- `save()` / `load()` persist calibrator + brier
+- `_merged_defaults()` consolidates default dicts from all 5 phase-9 feature modules so `predict()` doesn't regress on missing columns
+- New `models/calibration_plot.py` — `reliability_data(y_true, y_prob, n_bins)` (quantile bins via sklearn `calibration_curve`), `save_reliability_plot(...)` uses headless matplotlib backend
+- Tests: `test_directional_calibration.py` (5) — calibrator persists round-trip, predicted probs spread wider than raw, brier score scalar
+- Note: sklearn 1.6 deprecates `cv='prefit'` (FutureWarning) — flagged for follow-up to switch to `FrozenEstimator`
+
+**P9-007 (Walk-forward backtest harness)**:
+- New `backtest/walk_forward.py` — `walk_forward(df, feature_cols, n_folds=4, train_min_rows=1000, confidence_threshold=0.5, fit_fn=None)` returns `BacktestResult(folds, aggregate, feature_cols)`
+- `_fit_xgb` builds standard XGBClassifier with positive-class weighting; `_trade_pnl` simulates asymmetric R:R (`payoff_win=1.0`, `payoff_loss=-1.5`)
+- `FoldResult` captures fold idx, train/test ranges, n_train/n_test, AUC, Brier, hit-rate, avg P&L per trade, n_trades
+- New `backtest/report.py` — `render_report(result, git_sha, old_metrics, title)` outputs aggregate, old-vs-new table, per-fold detail, ship-gate (`SHIP_AUC=0.55`, `SHIP_HIT_RATE=0.52`); `write_report(...)` writes to `backtest_reports/<date>-<git_sha>.md`
+- New CLI `scripts/run_backtest.py` (`--folds`, `--threshold`, `--train-min-rows`, `--git-sha`, `--no-fail`) — exits 1 if ship gate fails unless `--no-fail`
+- Tests: `test_walk_forward.py` (5) — fold count, ascending date splits, ship-gate logic, report renders
+- **NOT done in this session**: actually retraining/deploying the new model — requires production data (PostgreSQL on the homelab VM, ~1+ year of accumulated `options_snapshots` and `sentiment_history`). Marked as runbook follow-up below.
+
+**Decisions / fixes**:
+- `attach_options_features` `pd.merge_asof` MergeError on object dtypes — fixed by explicit `pd.to_datetime` before merge, restoring the original `date` column afterwards
+- `OptionsFetcher.fetch_one` returned `"ok"` for tickers with chain pages but no usable expirations — added guard: if both `exp_30` and `exp_90` are None, return `"no_options"`
+- `get_earnings_features` had a redundant `if 0 <= days_to > DAYS_TO_CAP` after the `elif`; simplified to `if days_to > DAYS_TO_CAP: days_to = DAYS_TO_CAP`
+- Sentiment scheduler used `avg_sentiment` (doesn't exist); the analyzer returns `composite_sentiment` — fixed
+- Removed stale `OPTIONS_DEFAULTS` import after switching `predict()` to `_merged_defaults()`
+
+**Test count**: 180 → 219 (+39 new across 6 test files)
+
+**Current state**: All 7 Phase 9 tickets `done`. Code paths in place: 5 new feature modules (options, macro, sector, sentiment-ts, earnings), calibrated XGBoost wrapper, walk-forward backtest harness + ship-gate CLI. Scheduler wires options + earnings + sentiment-history persistence. Model artifact on disk is still v1 (pre-phase-9 features); new feature columns currently feed in as defaults until retraining happens on the production VM.
+
+**Next steps (runbook, not session work)**:
+1. SSH to homelab VM, exec into backend container
+2. Run `python -m scripts.train_directional` (after extending its window flag to 5y) — this will produce a new pickle with calibrator + brier
+3. Run `python -m scripts.run_backtest --folds 4` against the production DB and confirm ship gate passes (AUC > 0.55, hit rate > 0.52)
+4. If pass: archive old artifact to `trained_models/archive/<date>/`, copy new pickle, restart backend
+5. Update this MODEL_REGISTRY.md with v2 metadata after the retrain
+

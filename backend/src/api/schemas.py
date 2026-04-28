@@ -30,6 +30,7 @@ class TickerListResponse(BaseModel):
 
 
 class RecommendationResponse(BaseModel):
+    id: int | None = None
     ticker: str
     date: date
     strategy: str

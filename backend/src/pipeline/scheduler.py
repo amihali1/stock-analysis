@@ -68,14 +68,36 @@ def job_compute_indicators():
 
 
 async def job_sentiment():
-    """7:00 AM ET — Fetch headlines and run sentiment analysis."""
+    """7:00 AM ET — Fetch headlines, run sentiment analysis, persist daily aggregate."""
     logger.info("Scheduler: starting sentiment analysis")
     try:
+        from datetime import date as _date
+
+        from src.db.session import SessionLocal
+        from src.features.sentiment import upsert_daily_sentiment
         from src.pipeline.sentiment import SentimentAnalyzer
+
         analyzer = SentimentAnalyzer()
         results = await analyzer.analyze_all()
         analyzer.close()
         scored = sum(1 for v in results.values() if v.get("scores_computed", 0) > 0)
+
+        # Persist daily aggregated sentiment (P9-004) so we can compute z-scores later.
+        today = _date.today()
+        db = SessionLocal()
+        try:
+            for ticker, info in results.items():
+                if info.get("scores_computed", 0) == 0:
+                    continue
+                upsert_daily_sentiment(
+                    db, ticker, today,
+                    sentiment_score=info.get("composite_sentiment"),
+                    confidence=None,
+                    article_count=int(info.get("scores_computed", 0)),
+                )
+        finally:
+            db.close()
+
         pipeline_sentiment_runs_total.labels(status="ok").inc()
         logger.info(f"Scheduler: sentiment complete — {scored} tickers scored")
         _record_run("sentiment", f"ok ({scored} tickers)")
@@ -83,6 +105,47 @@ async def job_sentiment():
         pipeline_sentiment_runs_total.labels(status="error").inc()
         logger.exception("Scheduler: sentiment analysis failed")
         _record_run("sentiment", "error")
+
+
+def job_fetch_earnings():
+    """Sunday 6:00 AM ET — Refresh upcoming earnings dates for the watchlist."""
+    logger.info("Scheduler: starting earnings calendar fetch")
+    try:
+        from src.pipeline.earnings_fetcher import EarningsFetcher
+        Base.metadata.create_all(engine)
+        fetcher = EarningsFetcher()
+        try:
+            results = fetcher.fetch_all()
+        finally:
+            fetcher.close()
+        ok = sum(1 for v in results.values() if v == "ok")
+        logger.info("Scheduler: earnings fetch complete — %d/%d tickers ok", ok, len(results))
+        _record_run("fetch_earnings", f"ok ({ok}/{len(results)} tickers)")
+    except Exception:
+        logger.exception("Scheduler: earnings fetch failed")
+        _record_run("fetch_earnings", "error")
+
+
+def job_fetch_options():
+    """6:45 AM ET — Fetch daily options snapshots (IV, skew, term structure)."""
+    logger.info("Scheduler: starting options snapshot fetch")
+    try:
+        from src.pipeline.options_fetcher import OptionsFetcher
+        Base.metadata.create_all(engine)
+        fetcher = OptionsFetcher()
+        try:
+            results = fetcher.fetch_all()
+        finally:
+            fetcher.close()
+        ok = sum(1 for v in results.values() if v == "ok")
+        logger.info(
+            "Scheduler: options snapshots complete — %d/%d tickers ok",
+            ok, len(results),
+        )
+        _record_run("fetch_options", f"ok ({ok}/{len(results)} tickers)")
+    except Exception:
+        logger.exception("Scheduler: options snapshot fetch failed")
+        _record_run("fetch_options", "error")
 
 
 def job_generate_recommendations():
@@ -136,6 +199,12 @@ def job_generate_recommendations():
                     continue
 
                 # Build features for directional model
+                from src.config import get_settings
+                from src.features.earnings import get_earnings_features
+                from src.features.macro import get_macro_features
+                from src.features.options import get_options_features
+                from src.features.sector import get_sector_features
+                from src.features.sentiment import get_sentiment_features
                 features = {
                     "rsi_14": ind.rsi_14 or 50,
                     "macd": ind.macd or 0,
@@ -155,6 +224,17 @@ def job_generate_recommendations():
                     "close_to_sma200_ratio": price.close / (ind.sma_200 or price.close),
                     "volatility_20d": 0.2,
                 }
+                features.update(get_options_features(db, ticker, price.date))
+                features.update(get_macro_features(db, price.date))
+                features.update(get_sector_features(db, ticker, price.date))
+                features.update(get_sentiment_features(db, ticker, price.date))
+                earnings_feats = get_earnings_features(db, ticker, price.date)
+                features.update(earnings_feats)
+
+                # Optional: skip recommendations within 3 days of earnings (P9-005)
+                if get_settings().skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
+                    logger.debug("Scheduler: %s skipped — earnings within 3 days", ticker)
+                    continue
 
                 try:
                     dir_prob, dir_conf = dir_model.predict(features)
@@ -350,6 +430,7 @@ def init_scheduler():
     # Weekdays only (mon-fri)
     scheduler.add_job(job_fetch_prices, CronTrigger(hour=6, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_prices", replace_existing=True)
     scheduler.add_job(job_compute_indicators, CronTrigger(hour=6, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="compute_indicators", replace_existing=True)
+    scheduler.add_job(job_fetch_options, CronTrigger(hour=6, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_options", replace_existing=True)
     scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
@@ -363,6 +444,9 @@ def init_scheduler():
 
     # Monthly model retraining: first Sunday of each month at 2:00 AM ET
     scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)
+
+    # Weekly earnings calendar refresh — Sunday 6:00 AM ET (P9-005)
+    scheduler.add_job(job_fetch_earnings, CronTrigger(hour=6, minute=0, timezone="US/Eastern", day_of_week="sun"), id="fetch_earnings", replace_existing=True)
 
     scheduler.start()
     logger.info("Scheduler started with 4 daily jobs + portfolio sync (5min) + monthly retrain")

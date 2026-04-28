@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import AuthGuard, { LogoutButton } from "@/components/AuthGuard";
+import TradingModeBadge from "@/components/TradingModeBadge";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -63,7 +64,22 @@ function Nav() {
         >
           Risk
         </Link>
-        <LogoutButton />
+        <Link
+          href="/trading"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Trading
+        </Link>
+        <Link
+          href="/execution-log"
+          className="text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          Execution
+        </Link>
+        <div className="ml-auto flex items-center gap-3">
+          <TradingModeBadge />
+          <LogoutButton />
+        </div>
       </div>
     </nav>
   );

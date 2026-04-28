@@ -37,6 +37,7 @@ backend/trained_models/*.pt
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # IDE
 .vscode/
