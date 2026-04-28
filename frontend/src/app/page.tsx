@@ -3,8 +3,16 @@
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { getRecommendations } from "@/lib/api";
-import type { Recommendation, Strategy } from "@/lib/types";
+import {
+  executeRecommendation,
+  getRecommendations,
+  getTradingSettings,
+} from "@/lib/api";
+import type {
+  Recommendation,
+  Strategy,
+  TradingMode,
+} from "@/lib/types";
 
 function scoreColor(score: number): string {
   if (score >= 0.7) return "text-green-400";
@@ -65,12 +73,19 @@ function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortAsc, setSortAsc] = useState(false);
+  const [tradingMode, setTradingMode] = useState<TradingMode>("disabled");
+  const [executing, setExecuting] = useState<number | null>(null);
+  const [execMessage, setExecMessage] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await getRecommendations(strategyFilter || undefined, 50);
+      const [data, settings] = await Promise.all([
+        getRecommendations(strategyFilter || undefined, 50),
+        getTradingSettings().catch(() => null),
+      ]);
       setRecs(data.recommendations);
+      if (settings) setTradingMode(settings.trading_mode);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -94,6 +109,35 @@ function Dashboard() {
     }
   };
 
+  const handleExecute = async (rec: Recommendation) => {
+    if (!rec.id) return;
+    if (
+      !confirm(
+        `Execute ${rec.strategy.toUpperCase()} on ${rec.ticker} (${tradingMode} mode)?`
+      )
+    ) {
+      return;
+    }
+    setExecuting(rec.id);
+    setExecMessage(null);
+    try {
+      const result = await executeRecommendation(rec.id);
+      const msg =
+        result.status === "submitted"
+          ? `Submitted ${rec.ticker} — order ${result.order_id ?? ""}`
+          : `${rec.ticker}: ${result.status}${result.reason ? " — " + result.reason : ""}`;
+      setExecMessage(msg);
+    } catch (e) {
+      setExecMessage(
+        e instanceof Error ? `Execute failed: ${e.message}` : "Execute failed"
+      );
+    } finally {
+      setExecuting(null);
+    }
+  };
+
+  const tradingEnabled = tradingMode !== "disabled";
+
   const sorted = [...recs].sort((a, b) => {
     let cmp = 0;
     if (sortKey === "ticker") cmp = a.ticker.localeCompare(b.ticker);
@@ -102,7 +146,7 @@ function Dashboard() {
   });
 
   const sortIcon = (key: SortKey) =>
-    sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : "";
+    sortKey === key ? (sortAsc ? " ▲" : " ▼") : "";
 
   return (
     <div>
@@ -131,6 +175,18 @@ function Dashboard() {
           />
         </div>
       </div>
+
+      {execMessage && (
+        <div className="mb-4 text-sm bg-blue-900/20 border border-blue-800 rounded p-3 text-blue-200 flex items-center justify-between">
+          <span>{execMessage}</span>
+          <button
+            onClick={() => setExecMessage(null)}
+            className="text-xs text-blue-300 hover:text-white"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       {loading && recs.length === 0 && (
         <div className="text-gray-500 text-center py-20">Loading recommendations...</div>
@@ -182,47 +238,62 @@ function Dashboard() {
                 >
                   Max Loss{sortIcon("max_loss")}
                 </th>
+                {tradingEnabled && <th className="py-3 px-3"></th>}
               </tr>
             </thead>
             <tbody>
               {sorted.map((rec, i) => (
-                <Link
+                <tr
                   key={`${rec.ticker}-${rec.strategy}-${i}`}
-                  href={`/analysis/${rec.ticker}`}
-                  className="contents"
+                  className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors"
                 >
-                  <tr className="border-b border-gray-800/50 hover:bg-gray-900/50 cursor-pointer transition-colors">
-                    <td className="py-3 px-3 font-mono font-bold">
-                      {rec.ticker}
-                    </td>
-                    <td className="py-3 px-3">
-                      {strategyBadge(rec.strategy)}
-                    </td>
-                    <td className="py-3 px-3">
-                      {riskBadge(rec.risk_type)}
-                    </td>
-                    <td
-                      className={`py-3 px-3 text-right font-mono font-bold ${scoreColor(rec.score)}`}
+                  <td className="py-3 px-3 font-mono font-bold">
+                    <Link
+                      href={`/analysis/${rec.ticker}`}
+                      className="text-white hover:text-blue-400"
                     >
-                      {rec.score.toFixed(2)}
+                      {rec.ticker}
+                    </Link>
+                  </td>
+                  <td className="py-3 px-3">{strategyBadge(rec.strategy)}</td>
+                  <td className="py-3 px-3">{riskBadge(rec.risk_type)}</td>
+                  <td
+                    className={`py-3 px-3 text-right font-mono font-bold ${scoreColor(rec.score)}`}
+                  >
+                    {rec.score.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono">
+                    {rec.sentiment_signal?.toFixed(2) ?? "—"}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono">
+                    {rec.entry_price ? `$${rec.entry_price.toFixed(2)}` : "—"}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono">
+                    {rec.stop_loss ? `$${rec.stop_loss.toFixed(2)}` : "—"}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono">
+                    {formatDollars(rec.position_size)}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-red-400">
+                    {formatDollars(rec.max_loss)}
+                  </td>
+                  {tradingEnabled && (
+                    <td className="py-3 px-3 text-right">
+                      <button
+                        disabled={!rec.id || executing === rec.id}
+                        onClick={() => handleExecute(rec)}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          tradingMode === "live"
+                            ? "border-red-700 text-red-300 hover:bg-red-900/30 disabled:opacity-50"
+                            : "border-yellow-700 text-yellow-300 hover:bg-yellow-900/30 disabled:opacity-50"
+                        }`}
+                        title={`Execute in ${tradingMode} mode`}
+                      >
+                        {executing === rec.id ? "…" : "Execute"}
+                      </button>
                     </td>
-                    <td className="py-3 px-3 text-right font-mono">
-                      {rec.sentiment_signal?.toFixed(2) ?? "—"}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono">
-                      {rec.entry_price ? `$${rec.entry_price.toFixed(2)}` : "—"}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono">
-                      {rec.stop_loss ? `$${rec.stop_loss.toFixed(2)}` : "—"}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono">
-                      {formatDollars(rec.position_size)}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono text-red-400">
-                      {formatDollars(rec.max_loss)}
-                    </td>
-                  </tr>
-                </Link>
+                  )}
+                </tr>
               ))}
             </tbody>
           </table>

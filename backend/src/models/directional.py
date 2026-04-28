@@ -10,10 +10,19 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import (
+    accuracy_score, brier_score_loss, f1_score, precision_score,
+    recall_score, roc_auc_score,
+)
 
 from src.db.models import PriceHistory, TechnicalIndicator
 from src.db.session import SessionLocal
+from src.features.earnings import EARNINGS_FEATURE_COLS, attach_earnings_features
+from src.features.macro import MACRO_FEATURE_COLS, attach_macro_features
+from src.features.options import OPTIONS_FEATURE_COLS, attach_options_features
+from src.features.sector import SECTOR_FEATURE_COLS, attach_sector_features
+from src.features.sentiment import SENTIMENT_FEATURE_COLS, attach_sentiment_features
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +45,12 @@ FEATURE_COLS = [
     "close_to_sma50_ratio",
     "close_to_sma200_ratio",
     "volatility_20d",
+    # Phase 9 features
+    *OPTIONS_FEATURE_COLS,        # P9-001
+    *MACRO_FEATURE_COLS,          # P9-002
+    *SECTOR_FEATURE_COLS,         # P9-003
+    *SENTIMENT_FEATURE_COLS,      # P9-004
+    *EARNINGS_FEATURE_COLS,       # P9-005
 ]
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
@@ -49,6 +64,8 @@ FORWARD_DAYS = 5
 class DirectionalModel:
     def __init__(self, model_path: Path | None = None):
         self.model: xgb.XGBClassifier | None = None
+        self.calibrator: CalibratedClassifierCV | None = None
+        self.brier_score: float | None = None
         self.model_path = model_path or DEFAULT_MODEL_PATH
         self.feature_cols = FEATURE_COLS
 
@@ -58,14 +75,30 @@ class DirectionalModel:
             data = pickle.load(f)
         self.model = data["model"]
         self.feature_cols = data.get("feature_cols", FEATURE_COLS)
-        logger.info(f"Loaded directional model from {self.model_path}")
+        self.calibrator = data.get("calibrator")
+        self.brier_score = data.get("brier_score")
+        logger.info(
+            "Loaded directional model from %s (calibrator=%s)",
+            self.model_path, "present" if self.calibrator is not None else "absent",
+        )
 
     def save(self) -> None:
         """Save trained model to disk."""
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "model": self.model,
+            "feature_cols": self.feature_cols,
+            "calibrator": self.calibrator,
+            "brier_score": self.brier_score,
+        }
         with open(self.model_path, "wb") as f:
-            pickle.dump({"model": self.model, "feature_cols": self.feature_cols}, f)
+            pickle.dump(payload, f)
         logger.info(f"Saved directional model to {self.model_path}")
+
+    def _proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Use the calibrated wrapper if available, else the raw booster."""
+        estimator = self.calibrator if self.calibrator is not None else self.model
+        return estimator.predict_proba(X)[:, 1]
 
     def predict(self, features: dict) -> tuple[float, float]:
         """Predict drop probability for a single sample.
@@ -77,13 +110,14 @@ class DirectionalModel:
             self.load()
 
         df = pd.DataFrame([features])
-        # Ensure columns match training order
+        # Ensure columns match training order; use neutral defaults per feature group
+        all_defaults = self._merged_defaults()
         for col in self.feature_cols:
             if col not in df.columns:
-                df[col] = 0.0
+                df[col] = all_defaults.get(col, 0.0)
         df = df[self.feature_cols]
 
-        prob = self.model.predict_proba(df)[0, 1]  # Probability of class 1 (drop)
+        prob = self._proba(df)[0]  # calibrated if available
         confidence = abs(prob - 0.5) * 2  # 0.0 = no confidence, 1.0 = max confidence
         return float(prob), float(confidence)
 
@@ -93,11 +127,26 @@ class DirectionalModel:
             self.load()
 
         X = df[self.feature_cols].copy()
-        probs = self.model.predict_proba(X)[:, 1]
+        probs = self._proba(X)
         result = df.copy()
         result["drop_probability"] = probs
         result["confidence"] = np.abs(probs - 0.5) * 2
         return result
+
+    @staticmethod
+    def _merged_defaults() -> dict[str, float]:
+        from src.features.earnings import DEFAULT_EARNINGS_FEATURES
+        from src.features.macro import DEFAULT_MACRO_FEATURES
+        from src.features.options import DEFAULT_FEATURES as OPTIONS_DEFAULTS
+        from src.features.sector import DEFAULT_SECTOR_FEATURES
+        from src.features.sentiment import DEFAULT_SENTIMENT_FEATURES
+        out: dict[str, float] = {}
+        out.update(OPTIONS_DEFAULTS)
+        out.update(DEFAULT_MACRO_FEATURES)
+        out.update(DEFAULT_SECTOR_FEATURES)
+        out.update(DEFAULT_SENTIMENT_FEATURES)
+        out.update(DEFAULT_EARNINGS_FEATURES)
+        return out
 
     def train(self, tickers: list[str] | None = None, n_folds: int = 3) -> dict:
         """Train the model with walk-forward validation.
@@ -171,13 +220,23 @@ class DirectionalModel:
                 f"rec={metrics['recall']:.3f} f1={metrics['f1']:.3f} auc={metrics['auc_roc']:.3f}"
             )
 
-        # Final model: train on all data except last fold_size for test
-        test_dates = dates[-fold_size:]
-        train_mask = ~df["date"].isin(test_dates)
-        test_mask = df["date"].isin(test_dates)
+        # Final model: time-ordered three-way split for train / calibration / test
+        # so we can fit a CalibratedClassifierCV(cv='prefit') on disjoint data.
+        n_dates = len(dates)
+        train_end = int(n_dates * 0.70)
+        calib_end = int(n_dates * 0.85)
+        train_dates_final = set(dates[:train_end])
+        calib_dates = set(dates[train_end:calib_end])
+        test_dates_final = set(dates[calib_end:])
+
+        train_mask = df["date"].isin(train_dates_final)
+        calib_mask = df["date"].isin(calib_dates)
+        test_mask = df["date"].isin(test_dates_final)
 
         X_train = df.loc[train_mask, self.feature_cols]
         y_train = df.loc[train_mask, "label"]
+        X_calib = df.loc[calib_mask, self.feature_cols]
+        y_calib = df.loc[calib_mask, "label"]
         X_test = df.loc[test_mask, self.feature_cols]
         y_test = df.loc[test_mask, "label"]
 
@@ -194,8 +253,28 @@ class DirectionalModel:
         )
         self.model.fit(X_train, y_train, verbose=False)
 
+        # Calibrate on the held-out calibration fold (P9-006).
+        # Isotonic for ≥1k samples, fall back to sigmoid for small calibration sets.
+        self.calibrator = None
+        if len(X_calib) >= 200 and len(set(y_calib)) > 1:
+            method = "isotonic" if len(X_calib) >= 1000 else "sigmoid"
+            try:
+                self.calibrator = CalibratedClassifierCV(
+                    estimator=self.model, cv="prefit", method=method,
+                )
+                self.calibrator.fit(X_calib, y_calib)
+                logger.info("Fitted %s calibrator on %d rows", method, len(X_calib))
+            except Exception:
+                logger.exception("Calibration failed; serving raw probabilities")
+                self.calibrator = None
+        else:
+            logger.warning("Calibration set too small (%d rows) — skipping", len(X_calib))
+
         y_pred = self.model.predict(X_test)
-        y_prob = self.model.predict_proba(X_test)[:, 1]
+        y_prob = self._proba(X_test)
+        # Brier score reflects calibration quality (lower = better).
+        brier = brier_score_loss(y_test, y_prob) if len(set(y_test)) > 1 else None
+        self.brier_score = float(brier) if brier is not None else None
 
         test_metrics = {
             "accuracy": accuracy_score(y_test, y_pred),
@@ -203,6 +282,8 @@ class DirectionalModel:
             "recall": recall_score(y_test, y_pred, zero_division=0),
             "f1": f1_score(y_test, y_pred, zero_division=0),
             "auc_roc": roc_auc_score(y_test, y_prob) if len(set(y_test)) > 1 else 0.0,
+            "brier_score": self.brier_score,
+            "calibrated": self.calibrator is not None,
         }
         logger.info(
             f"Test: acc={test_metrics['accuracy']:.3f} prec={test_metrics['precision']:.3f} "
@@ -302,7 +383,18 @@ def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
 
     df = pd.concat(all_ticker_dfs, ignore_index=True)
 
-    # Drop rows with NaN features or missing labels
+    # Attach Phase 9 features via DB joins.
+    db = SessionLocal()
+    try:
+        df = attach_options_features(db, df)
+        df = attach_macro_features(db, df)
+        df = attach_sector_features(db, df)
+        df = attach_sentiment_features(db, df)
+        df = attach_earnings_features(db, df)
+    finally:
+        db.close()
+
+    # Drop rows with NaN features or missing labels (options cols are filled by defaults)
     feature_cols_with_label = FEATURE_COLS + ["label"]
     df = df.dropna(subset=feature_cols_with_label)
 

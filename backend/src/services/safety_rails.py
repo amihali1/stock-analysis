@@ -18,11 +18,14 @@ class TradingSafetyRails:
     """Hard safety limits for trading. All checks must pass before any order reaches Alpaca."""
 
     def __init__(self, db: Session):
+        from src.services.trading_settings import get_trading_settings
+
         self.db = db
         settings = get_settings()
-        self.mode = settings.trading_mode
-        self.max_daily_loss = settings.max_daily_loss
-        self.max_open_positions = settings.max_open_positions
+        overrides = get_trading_settings(db, defaults=settings)
+        self.mode = overrides["trading_mode"]
+        self.max_daily_loss = overrides["max_daily_loss"]
+        self.max_open_positions = overrides["max_open_positions"]
         self.max_single_position = settings.max_position_size
         self.max_daily_orders = settings.max_daily_orders
         self.allowed_hours_only = settings.allowed_hours_only
@@ -124,3 +127,43 @@ class TradingSafetyRails:
             passed_safety=1,
         ))
         self.db.commit()
+
+    def safety_status(self) -> dict:
+        """Snapshot of current rail state for the operator UI."""
+        today = date.today()
+        today_start = datetime(today.year, today.month, today.day)
+
+        open_count = self.db.query(PaperTrade).filter_by(status="open").count()
+        try:
+            from src.db.models import AlpacaPosition
+            open_count += self.db.query(AlpacaPosition).count()
+        except Exception:
+            pass
+
+        order_count = (
+            self.db.query(TradingLog)
+            .filter(TradingLog.action == "submit", TradingLog.created_at >= today_start)
+            .count()
+        )
+
+        # Daily realized P&L from paper trades closed today (Alpaca daily P&L lives on the account itself).
+        closed_today = (
+            self.db.query(PaperTrade)
+            .filter(PaperTrade.status == "closed", PaperTrade.closed_at >= today_start)
+            .all()
+        )
+        daily_realized_pl = sum((t.pnl or 0.0) for t in closed_today)
+        daily_loss = -daily_realized_pl if daily_realized_pl < 0 else 0.0
+
+        return {
+            "trading_mode": self.mode,
+            "open_positions": open_count,
+            "max_open_positions": self.max_open_positions,
+            "daily_orders": order_count,
+            "max_daily_orders": self.max_daily_orders,
+            "daily_loss": round(daily_loss, 2),
+            "max_daily_loss": self.max_daily_loss,
+            "max_single_position": self.max_single_position,
+            "market_hours_only": self.allowed_hours_only,
+            "blocked_tickers": sorted(self.blocked_tickers),
+        }

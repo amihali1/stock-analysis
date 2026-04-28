@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     default_admin_username: str = "admin"
     default_admin_password: str = "admin"
 
+    # Phase 9 — feature flags
+    skip_near_earnings: bool = False  # If true, scheduler filters out earnings_within_3d=True
+
     # Watchlist
     default_watchlist: list[str] = [
         # Tech
@@ -59,9 +62,39 @@ class Settings(BaseSettings):
         "XOM", "CVX", "COP", "SLB", "EOG",
         # Industrial
         "CAT", "BA", "HON", "GE", "MMM",
-        # ETFs for macro context
-        "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "XLV",
+        # Macro context
+        "SPY", "QQQ", "IWM", "^VIX",
+        # Sector ETFs (P9-003)
+        "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLC", "XLRE",
     ]
+
+
+# Static ticker → sector-ETF map (P9-003). Tickers not listed default to SPY.
+SECTOR_ETF_MAP: dict[str, str] = {
+    # Tech → XLK
+    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "INTC": "XLK", "CRM": "XLK",
+    # Communication services → XLC
+    "GOOGL": "XLC", "META": "XLC", "DIS": "XLC",
+    # Consumer discretionary → XLY
+    "AMZN": "XLY", "TSLA": "XLY", "HD": "XLY", "NKE": "XLY", "SBUX": "XLY", "MCD": "XLY",
+    # Consumer staples → XLP
+    "WMT": "XLP", "COST": "XLP",
+    # Financials → XLF
+    "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "WFC": "XLF", "C": "XLF",
+    "BLK": "XLF", "SCHW": "XLF",
+    # Healthcare → XLV
+    "JNJ": "XLV", "UNH": "XLV", "PFE": "XLV", "ABBV": "XLV", "MRK": "XLV",
+    "LLY": "XLV", "BMY": "XLV",
+    # Energy → XLE
+    "XOM": "XLE", "CVX": "XLE", "COP": "XLE", "SLB": "XLE", "EOG": "XLE",
+    # Industrials → XLI
+    "CAT": "XLI", "BA": "XLI", "HON": "XLI", "GE": "XLI", "MMM": "XLI",
+}
+
+
+def sector_etf_for(ticker: str) -> str:
+    """Return the sector ETF for a ticker, defaulting to SPY when unknown."""
+    return SECTOR_ETF_MAP.get(ticker, "SPY")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

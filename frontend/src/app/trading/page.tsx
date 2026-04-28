@@ -9,6 +9,7 @@ import {
   triggerPortfolioSync,
 } from "@/lib/api";
 import type { PortfolioSummary, AlpacaOrder } from "@/lib/types";
+import TradingControls from "@/components/TradingControls";
 
 function MetricCard({
   label,
@@ -185,6 +186,11 @@ export default function TradingPage() {
           Alpaca not connected: {summary.error}
         </div>
       )}
+
+      {/* Trading Controls */}
+      <div className="mb-6">
+        <TradingControls />
+      </div>
 
       {/* Open Positions */}
       <div className="bg-gray-900 rounded-lg p-4 mb-6">

@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from src.api.routes import health, recommendations, analysis, paper_trades, backtest, alerts, watchlist, options, portfolio, execution
+from src.api.routes import health, recommendations, analysis, paper_trades, backtest, alerts, watchlist, options, portfolio, execution, trading, validation
 from src.auth.routes import router as auth_router, ensure_default_admin
 from src.auth.jwt import verify_token
 from src.auth.middleware import PUBLIC_PATHS
@@ -89,3 +89,5 @@ app.include_router(watchlist.router, prefix="/api", tags=["watchlist"])
 app.include_router(options.router, prefix="/api", tags=["options"])
 app.include_router(portfolio.router, prefix="/api", tags=["portfolio"])
 app.include_router(execution.router, prefix="/api", tags=["execution"])
+app.include_router(trading.router, prefix="/api", tags=["trading"])
+app.include_router(validation.router, prefix="/api", tags=["validation"])

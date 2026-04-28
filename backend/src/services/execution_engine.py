@@ -41,7 +41,9 @@ class ExecutionEngine:
 
         Returns list of execution results.
         """
-        if not self.settings.auto_execute_enabled:
+        from src.services.trading_settings import get_trading_settings
+        overrides = get_trading_settings(self.db, defaults=self.settings)
+        if not overrides["auto_execute_enabled"]:
             logger.info("Auto-execution is disabled, skipping")
             return []
 
@@ -50,7 +52,7 @@ class ExecutionEngine:
             self.db.query(Recommendation)
             .filter(
                 Recommendation.date == today,
-                Recommendation.score >= self.settings.min_score_threshold,
+                Recommendation.score >= overrides["min_score_threshold"],
             )
             .order_by(Recommendation.score.desc())
             .all()

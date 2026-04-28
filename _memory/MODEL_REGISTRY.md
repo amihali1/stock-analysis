@@ -41,3 +41,28 @@ Track trained models, their hyperparameters, and performance metrics.
 - **Test metrics**: MAE=0.1085, RMSE=0.1662, Corr=0.3264
 - **File**: `trained_models/volatility_lstm_v1.pt`
 - **Notes**: Trained on CPU (~50s). Early stopped at epoch 11. Positive correlation with realized vol.
+
+---
+
+### Phase 9 — Pending Directional v2 Retrain
+
+**Status**: code path ready, retrain not yet executed (requires production DB on homelab VM)
+
+The directional model on disk (`directional_xgb_v1.pkl`) was trained on 17 features. The codebase now expects **40 features** — the original 17 plus 23 new phase-9 columns:
+
+- **Options IV (6)** — `iv_atm_30d`, `iv_atm_90d`, `iv_rank_252d`, `iv_percentile_252d`, `put_call_skew_25d`, `term_structure_slope` (+ `has_options` flag, not in feature list)
+- **Macro regime (7)** — `vix_level`, `vix_percentile_252d`, `spy_drawdown_pct`, `spy_above_sma_50`, `spy_above_sma_200`, `spy_return_5d`, `spy_return_20d`
+- **Sector relative-strength (4)** — `sector_return_5d`, `sector_return_20d`, `return_5d_vs_sector`, `return_20d_vs_sector`
+- **Sentiment time-series (6)** — `sentiment_latest`, `sentiment_ma_7d`, `sentiment_ma_30d`, `sentiment_momentum`, `sentiment_zscore_30d`, `article_count_zscore_30d`
+- **Earnings proximity (4)** — `days_to_earnings`, `days_since_earnings`, `earnings_within_3d`, `earnings_within_10d`
+
+Until the v2 retrain runs, `predict()` substitutes neutral defaults from `_merged_defaults()` for these columns, so v1 still serves with its original 17-feature signal.
+
+**v2 plan (matches P9-007 acceptance criteria)**:
+- **Window**: 5 years (or yfinance max per ticker), drop tickers without sufficient history rather than padding zeros
+- **Split**: time-ordered 70 train / 15 calibration / 15 test
+- **Calibration**: `CalibratedClassifierCV(cv='prefit', method='isotonic')` if calib fold ≥ 1000 rows, else `method='sigmoid'`
+- **Validation**: walk-forward backtest via `scripts/run_backtest.py --folds 4`
+- **Ship gate**: AUC > 0.55 AND hit rate > 0.52 AND Brier improved vs v1
+- **Old artifact**: archive to `trained_models/archive/<date>/directional_xgb_v1.pkl` (do not overwrite)
+- **Metadata to record at v2 time**: training rows, positive rate, hyperparams, full test metrics (acc/prec/rec/f1/AUC/Brier), top-10 feature importances, walk-forward fold table from the backtest report

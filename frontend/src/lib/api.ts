@@ -15,6 +15,8 @@ import type {
   AlpacaOrder,
   ExecutionLogEntry,
   ExecutionResult,
+  TradingSettings,
+  SafetyStatus,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -325,4 +327,23 @@ export async function getExecutionLog(
   limit = 50
 ): Promise<ExecutionLogEntry[]> {
   return fetchAPI<ExecutionLogEntry[]>(`/api/execute/log?limit=${limit}`);
+}
+
+// Trading settings & safety status
+
+export async function getTradingSettings(): Promise<TradingSettings> {
+  return fetchAPI<TradingSettings>("/api/trading/settings");
+}
+
+export async function updateTradingSettings(
+  updates: Partial<TradingSettings> & { confirm?: string }
+): Promise<TradingSettings> {
+  return fetchAPI<TradingSettings>("/api/trading/settings", {
+    method: "PUT",
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function getSafetyStatus(): Promise<SafetyStatus> {
+  return fetchAPI<SafetyStatus>("/api/trading/safety-status");
 }

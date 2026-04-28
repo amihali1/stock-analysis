@@ -2,6 +2,7 @@ export type Strategy = "short" | "options" | "spread";
 export type RiskType = "defined" | "undefined";
 
 export interface Recommendation {
+  id: number | null;
   ticker: string;
   date: string;
   strategy: Strategy;
@@ -281,6 +282,29 @@ export interface ExecutionResult {
   status: string;
   order_id?: string;
   reason?: string;
+}
+
+export type TradingMode = "disabled" | "paper" | "live";
+
+export interface TradingSettings {
+  trading_mode: TradingMode;
+  auto_execute_enabled: boolean;
+  min_score_threshold: number;
+  max_daily_loss: number;
+  max_open_positions: number;
+}
+
+export interface SafetyStatus {
+  trading_mode: TradingMode;
+  open_positions: number;
+  max_open_positions: number;
+  daily_orders: number;
+  max_daily_orders: number;
+  daily_loss: number;
+  max_daily_loss: number;
+  max_single_position: number;
+  market_hours_only: boolean;
+  blocked_tickers: string[];
 }
 
 export interface BacktestCompareResponse {
