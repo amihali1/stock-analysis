@@ -3,39 +3,8 @@
 import { useEffect, useState } from "react";
 import SectorAllocation from "@/components/SectorAllocation";
 import CorrelationHeatmap from "@/components/CorrelationHeatmap";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-interface PortfolioMetrics {
-  total_exposure: number;
-  total_max_loss: number;
-  open_positions: number;
-  max_positions: number;
-  beta_to_spy: number | null;
-  tickers: string[];
-}
-
-interface SectorData {
-  amount: number;
-  percentage: number;
-  over_limit: boolean;
-}
-
-interface CorrelationData {
-  tickers: string[];
-  matrix: number[][];
-  window: number;
-}
-
-interface RiskReport {
-  metrics: PortfolioMetrics;
-  sector_exposure: {
-    sectors: Record<string, SectorData>;
-    total_exposure: number;
-    max_sector_pct: number;
-  };
-  correlation: CorrelationData | null;
-}
+import { getPortfolioRisk, SessionExpiredError } from "@/lib/api";
+import type { PortfolioRiskReport } from "@/lib/types";
 
 function metricCard(label: string, value: string, color = "text-white") {
   return (
@@ -51,18 +20,17 @@ function metricCard(label: string, value: string, color = "text-white") {
 }
 
 export default function PortfolioPage() {
-  const [report, setReport] = useState<RiskReport | null>(null);
+  const [report, setReport] = useState<PortfolioRiskReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/portfolio/risk`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    getPortfolioRisk()
       .then(setReport)
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (e instanceof SessionExpiredError) return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
       .finally(() => setLoading(false));
   }, []);
 

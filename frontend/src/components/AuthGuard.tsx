@@ -15,7 +15,15 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       return;
     }
     if (!isAuthenticated()) {
-      router.replace("/login");
+      const next =
+        typeof window !== "undefined"
+          ? window.location.pathname + window.location.search
+          : pathname;
+      const target =
+        next && next !== "/login"
+          ? `/login?next=${encodeURIComponent(next)}`
+          : "/login";
+      router.replace(target);
     } else {
       setChecked(true);
     }

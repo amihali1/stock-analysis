@@ -17,9 +17,27 @@ import type {
   ExecutionResult,
   TradingSettings,
   SafetyStatus,
+  PortfolioRiskReport,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export class SessionExpiredError extends Error {
+  constructor() {
+    super("Session expired");
+    this.name = "SessionExpiredError";
+  }
+}
+
+function redirectToLogin(): void {
+  if (typeof window === "undefined") return;
+  const next = window.location.pathname + window.location.search;
+  const target =
+    next && next !== "/login"
+      ? `/login?next=${encodeURIComponent(next)}`
+      : "/login";
+  window.location.replace(target);
+}
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -80,10 +98,8 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
       }
     }
     clearTokens();
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
-    throw new Error("Session expired");
+    redirectToLogin();
+    throw new SessionExpiredError();
   }
 
   if (!res.ok) {
@@ -283,6 +299,10 @@ export async function testAlertSetting(
 
 export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   return fetchAPI<PortfolioSummary>("/api/portfolio");
+}
+
+export async function getPortfolioRisk(): Promise<PortfolioRiskReport> {
+  return fetchAPI<PortfolioRiskReport>("/api/portfolio/risk");
 }
 
 export async function getPortfolioOrders(
