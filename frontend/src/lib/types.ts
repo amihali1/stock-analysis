@@ -1,6 +1,37 @@
 export type Strategy = "short" | "options" | "spread";
 export type RiskType = "defined" | "undefined";
 
+export interface PortfolioRiskMetrics {
+  total_exposure: number;
+  total_max_loss: number;
+  open_positions: number;
+  max_positions: number;
+  beta_to_spy: number | null;
+  tickers: string[];
+}
+
+export interface PortfolioRiskSectorData {
+  amount: number;
+  percentage: number;
+  over_limit: boolean;
+}
+
+export interface PortfolioRiskCorrelation {
+  tickers: string[];
+  matrix: number[][];
+  window: number;
+}
+
+export interface PortfolioRiskReport {
+  metrics: PortfolioRiskMetrics;
+  sector_exposure: {
+    sectors: Record<string, PortfolioRiskSectorData>;
+    total_exposure: number;
+    max_sector_pct: number;
+  };
+  correlation: PortfolioRiskCorrelation | null;
+}
+
 export interface Recommendation {
   id: number | null;
   ticker: string;
