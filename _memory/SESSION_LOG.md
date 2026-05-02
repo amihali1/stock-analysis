@@ -474,3 +474,55 @@ a backfill so Phase 8 isn't accidentally re-done.
 4. If pass: archive old artifact to `trained_models/archive/<date>/`, copy new pickle, restart backend
 5. Update this MODEL_REGISTRY.md with v2 metadata after the retrain
 
+## 2026-05-01 — P10-001: Analyst rating-change features (commit 282c2bd)
+
+**Why**: Hyperparameter sweep proved the v2 model is at AUC 0.555 because it's
+information-saturated, not overfitting. Cross-asset macro features regressed AUC.
+Per `directional_model_information_ceiling.md`, the path forward is per-ticker
+event features that add signal independent of price action. Analyst rating
+changes are the cheapest first cut (free via yfinance, well-documented signal).
+
+**Done**:
+- Migration `i9j1k3l5m7n9_add_analyst_ratings.py` — analyst_ratings table with
+  unique (ticker, date, firm, to_grade) index for idempotent backfill
+- `AnalystRating` SQLAlchemy model in `db/models.py`
+- `src/features/analyst.py` — 6 windowed-aggregate features:
+  days_since_downgrade/upgrade (capped 365), downgrades_30d, upgrades_30d,
+  net_rating_actions_60d, analyst_action_5d
+- `scripts/backfill_analyst_ratings.py` — yfinance `Ticker.upgrades_downgrades`,
+  idempotent, action normalized to {up,down,init,main,reit}
+- Wired through `directional.py` FEATURE_COLS, `_merged_defaults`, build_dataset
+  attach chain; also through `scheduler.py` and `diagnose_recs_v2.py` inference
+  feature dicts
+- 7 tests in `test_analyst_features.py` covering default path, recency,
+  windowing boundaries, day cap, case normalization, future-date filter,
+  per-ticker `attach_analyst_features` join
+
+**NOT done**: backfill + v3 retrain — SSH to 10.0.0.47 from this session is
+broken (publickey auth refused for both `andym` and `ubuntu`). Runbook below.
+
+**Decisions**:
+- Used unique index on `(ticker, date, firm, to_grade)` rather than just
+  `(ticker, date)` — multiple firms can issue ratings on the same day
+- Default `days_since_*` = -1.0 (semantically distinct from "very long ago"),
+  consistent with `earnings.py` convention
+- Action normalization is permissive: any prefix-match keeps the canonical
+  short form; unknown actions truncated to 20 chars rather than dropped
+
+**Runbook (must run on GPU VM)**:
+1. SSH to `10.0.0.47`, `cd /opt/stock-analysis/backend`
+2. `git pull` to get commit 282c2bd onto master
+3. `docker compose up -d --build` (so the new alembic version + analyst.py
+   land in the image — backfill script is run from inside the container)
+4. `docker exec backend-backend-1 alembic upgrade head` — creates analyst_ratings
+5. `docker exec backend-backend-1 python -m scripts.backfill_analyst_ratings`
+   — populates ratings for all watchlist tickers
+6. `docker exec backend-backend-1 python -m scripts.train_directional_v2`
+   — trains v3 with the new feature group; compare test_metrics.auc_roc
+   vs v2's 0.555. If AUC ≥ 0.560 with calibrated=True, copy v3 pickle into
+   `trained_models/directional_xgb_v1.pkl` and restart backend
+7. `docker exec backend-backend-1 python -m scripts.diagnose_recs_v2` — sanity
+   check that dir_prob distribution still looks reasonable (not collapsed
+   to 0 or 1) and at least a few tickers cross the 0.5 score gate
+
+
