@@ -12,6 +12,7 @@ from src.config import get_settings
 from src.db.models import PriceHistory, SentimentScore, TechnicalIndicator
 from src.db.session import SessionLocal
 from src.db.watchlist import get_watchlist_tickers
+from src.features.analyst import get_analyst_features
 from src.features.earnings import get_earnings_features
 from src.features.macro import get_macro_features
 from src.features.options import get_options_features
@@ -77,6 +78,7 @@ def main() -> int:
         features.update(get_sector_features(db, ticker, price.date))
         features.update(get_sentiment_features(db, ticker, price.date))
         features.update(get_earnings_features(db, ticker, price.date))
+        features.update(get_analyst_features(db, ticker, price.date))
         try:
             dp, dc = model.predict(features)
         except Exception:

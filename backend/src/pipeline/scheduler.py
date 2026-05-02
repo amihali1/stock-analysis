@@ -200,6 +200,7 @@ def job_generate_recommendations():
 
                 # Build features for directional model
                 from src.config import get_settings
+                from src.features.analyst import get_analyst_features
                 from src.features.earnings import get_earnings_features
                 from src.features.macro import get_macro_features
                 from src.features.options import get_options_features
@@ -230,6 +231,7 @@ def job_generate_recommendations():
                 features.update(get_sentiment_features(db, ticker, price.date))
                 earnings_feats = get_earnings_features(db, ticker, price.date)
                 features.update(earnings_feats)
+                features.update(get_analyst_features(db, ticker, price.date))
 
                 # Optional: skip recommendations within 3 days of earnings (P9-005)
                 if get_settings().skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:

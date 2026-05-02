@@ -334,6 +334,30 @@ class EarningsCalendar(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AnalystRating(Base):
+    """Per-firm analyst rating change for a ticker (P10-001)."""
+
+    __tablename__ = "analyst_ratings"
+    __table_args__ = (
+        Index("ix_analyst_ratings_ticker_date", "ticker", "date"),
+        Index(
+            "ix_analyst_ratings_unique",
+            "ticker", "date", "firm", "to_grade",
+            unique=True,
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    date = Column(Date, nullable=False)
+    firm = Column(String(100))
+    from_grade = Column(String(50))
+    to_grade = Column(String(50))
+    action = Column(String(20))  # up, down, init, main, reit
+    source = Column(String(20), default="yfinance")
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class OptionsSnapshot(Base):
     """Daily per-ticker summary of options-market state used as model features."""
 

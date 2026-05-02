@@ -18,6 +18,7 @@ from sklearn.metrics import (
 
 from src.db.models import PriceHistory, TechnicalIndicator
 from src.db.session import SessionLocal
+from src.features.analyst import ANALYST_FEATURE_COLS, attach_analyst_features
 from src.features.earnings import EARNINGS_FEATURE_COLS, attach_earnings_features
 from src.features.macro import MACRO_FEATURE_COLS, attach_macro_features
 from src.features.options import OPTIONS_FEATURE_COLS, attach_options_features
@@ -51,6 +52,7 @@ FEATURE_COLS = [
     *MACRO_FEATURE_COLS,          # P9-002
     *SECTOR_FEATURE_COLS,         # P9-003
     *EARNINGS_FEATURE_COLS,       # P9-005
+    *ANALYST_FEATURE_COLS,        # P10-001
 ]
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
@@ -135,6 +137,7 @@ class DirectionalModel:
 
     @staticmethod
     def _merged_defaults() -> dict[str, float]:
+        from src.features.analyst import DEFAULT_ANALYST_FEATURES
         from src.features.earnings import DEFAULT_EARNINGS_FEATURES
         from src.features.macro import DEFAULT_MACRO_FEATURES
         from src.features.options import DEFAULT_FEATURES as OPTIONS_DEFAULTS
@@ -146,6 +149,7 @@ class DirectionalModel:
         out.update(DEFAULT_SECTOR_FEATURES)
         out.update(DEFAULT_SENTIMENT_FEATURES)
         out.update(DEFAULT_EARNINGS_FEATURES)
+        out.update(DEFAULT_ANALYST_FEATURES)
         return out
 
     def train(self, tickers: list[str] | None = None, n_folds: int = 3) -> dict:
@@ -391,6 +395,7 @@ def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
         df = attach_sector_features(db, df)
         df = attach_sentiment_features(db, df)
         df = attach_earnings_features(db, df)
+        df = attach_analyst_features(db, df)
     finally:
         db.close()
 
