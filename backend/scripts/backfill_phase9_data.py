@@ -29,7 +29,16 @@ from src.db.session import SessionLocal
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("backfill")
 
-VIX_START = "2024-04-01"
+MACRO_START = "2024-04-01"
+
+# Cross-asset macro tickers backfilled into price_history. Each is queried by
+# the macro feature builder via its standard ticker symbol.
+MACRO_TICKERS: list[tuple[str, str]] = [
+    ("^VIX", "CBOE Volatility Index"),
+    ("^TNX", "10-Year Treasury Yield"),
+    ("^IRX", "13-Week Treasury Yield"),
+    ("UUP",  "Invesco DB US Dollar Index Bullish Fund"),
+]
 
 
 def ensure_stock(db, ticker: str, name: str) -> None:
@@ -41,21 +50,21 @@ def ensure_stock(db, ticker: str, name: str) -> None:
     logger.info("Added stock row for %s", ticker)
 
 
-def backfill_vix(db) -> int:
-    ensure_stock(db, "^VIX", "CBOE Volatility Index")
+def backfill_index_ticker(db, ticker: str, name: str) -> int:
+    """Insert daily OHLC rows from yfinance into price_history for a non-equity ticker."""
+    ensure_stock(db, ticker, name)
     end = date.today().isoformat()
-    logger.info("Fetching ^VIX from %s to %s", VIX_START, end)
-    raw = yf.download("^VIX", start=VIX_START, end=end, progress=False, auto_adjust=False)
+    logger.info("Fetching %s from %s to %s", ticker, MACRO_START, end)
+    raw = yf.download(ticker, start=MACRO_START, end=end, progress=False, auto_adjust=False)
     if raw.empty:
-        logger.error("yfinance returned empty ^VIX history")
+        logger.error("yfinance returned empty history for %s", ticker)
         return 0
 
-    # yfinance returns multi-index columns when given a single ticker; flatten.
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = [c[0] for c in raw.columns]
 
     existing_dates = {
-        d for (d,) in db.query(PriceHistory.date).filter_by(ticker="^VIX").all()
+        d for (d,) in db.query(PriceHistory.date).filter_by(ticker=ticker).all()
     }
     inserted = 0
     for ts, row in raw.iterrows():
@@ -63,7 +72,7 @@ def backfill_vix(db) -> int:
         if d in existing_dates:
             continue
         db.add(PriceHistory(
-            ticker="^VIX",
+            ticker=ticker,
             date=d,
             open=float(row.get("Open", 0) or 0),
             high=float(row.get("High", 0) or 0),
@@ -74,7 +83,7 @@ def backfill_vix(db) -> int:
         ))
         inserted += 1
     db.commit()
-    logger.info("VIX: inserted %d new rows (already had %d)", inserted, len(existing_dates))
+    logger.info("%s: inserted %d new rows (already had %d)", ticker, inserted, len(existing_dates))
     return inserted
 
 
@@ -119,12 +128,15 @@ def main() -> int:
     settings = get_settings()
     db = SessionLocal()
     try:
-        vix_added = backfill_vix(db)
+        macro_added: dict[str, int] = {}
+        for tk, name in MACRO_TICKERS:
+            macro_added[tk] = backfill_index_ticker(db, tk, name)
         tickers = [t for t in settings.default_watchlist if not t.startswith("^")]
         logger.info("Backfilling earnings for %d tickers", len(tickers))
         earn_added, earn_failed = backfill_earnings(db, tickers)
         print()
-        print(f"VIX rows added:        {vix_added}")
+        for tk, n in macro_added.items():
+            print(f"{tk:<10} rows added: {n}")
         print(f"Earnings rows added:   {earn_added}")
         print(f"Tickers failed:        {earn_failed}")
     finally:
