@@ -45,11 +45,11 @@ FEATURE_COLS = [
     "close_to_sma50_ratio",
     "close_to_sma200_ratio",
     "volatility_20d",
-    # Phase 9 features
-    *OPTIONS_FEATURE_COLS,        # P9-001
+    # Phase 9 features (only those with historical coverage; OPTIONS_FEATURE_COLS
+    # and SENTIMENT_FEATURE_COLS are excluded from training because we lack
+    # historical IV chains and historical sentiment scoring beyond ~2 weeks).
     *MACRO_FEATURE_COLS,          # P9-002
     *SECTOR_FEATURE_COLS,         # P9-003
-    *SENTIMENT_FEATURE_COLS,      # P9-004
     *EARNINGS_FEATURE_COLS,       # P9-005
 ]
 
