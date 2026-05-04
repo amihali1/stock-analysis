@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Trading constraints
     max_position_size: float = 1000.0
-    min_confidence: float = 0.75  # Minimum per-model confidence to generate a recommendation
+    min_confidence: float = 0.75  # Deprecated — kept for back-compat; see min_directional_lift / min_sentiment_confidence below
 
     # Alpaca
     alpaca_api_key: str = ""
@@ -56,6 +56,19 @@ class Settings(BaseSettings):
     # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
     min_dir_prob_lift: float = 1.3
     recommendations_top_k: int = 10  # max recs emitted per scheduler run, ranked by score
+
+    # P10-004 — replaces the structurally-unreachable absolute `min_confidence=0.75`
+    # gate (which used abs(prob-0.5)*2 — bounded ~0.48 for our calibrated rare-event
+    # dir_prob range of [0.10, 0.27]). Now: directional confidence is gated upstream
+    # by min_dir_prob_lift (rec_ranker.py); the per-rec gate uses a *relative*
+    # bearish-lift floor as a safety net when callers bypass the ranker.
+    # Formula: directional_lift = max(0, dir_prob - base_rate) / (1 - base_rate)
+    # 0.05 ≈ dir_prob >= 0.216 (slightly looser than the ranker's 0.2275 default).
+    min_directional_lift: float = 0.05
+    # Sentiment confidence is LLM-self-reported per article and clusters around
+    # 0.80 in production (qwen3.5:9b). Floor 0.40 filters genuinely-noisy results
+    # without unreachability problems.
+    min_sentiment_confidence: float = 0.40
 
     # Watchlist
     default_watchlist: list[str] = [

@@ -187,8 +187,9 @@ class AlertService:
     async def check_high_conviction_alerts(self, score_threshold: float = 0.85):
         """Check for new high-conviction recommendations.
 
-        Since the ensemble already filters at min_confidence (0.75), this
-        threshold is intentionally higher to surface only standout signals.
+        Since the ensemble already filters at min_directional_lift +
+        min_sentiment_confidence (P10-004), this threshold is intentionally
+        higher to surface only standout signals beyond the gate.
         Only defined-risk trades or very strong undefined-risk signals alert.
         """
         from src.db.models import Recommendation
