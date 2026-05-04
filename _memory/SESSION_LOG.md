@@ -525,4 +525,40 @@ broken (publickey auth refused for both `andym` and `ubuntu`). Runbook below.
    check that dir_prob distribution still looks reasonable (not collapsed
    to 0 or 1) and at least a few tickers cross the 0.5 score gate
 
+## 2026-05-04 — P10-002: Replace absolute score gate with dir_prob lift + top-K (commit 996e1dd)
+
+**Why**: Prior diagnostic showed median dir_prob=0.122 in production. The
+hardcoded `score >= 0.5` gate at scheduler.py:277 with weights
+(0.4*dir_prob + 0.3*vol + 0.3*sent) effectively required dir_prob >= 0.7,
+which for a calibrated rare-event classifier (base rate ~17.5%) is a
+quarterly-frequency event. Zero recs was the model's *correct* output
+under that gate, regardless of v2/v3 quality.
+
+**Done**:
+- 3 new settings: `directional_base_rate=0.175`, `min_dir_prob_lift=1.5`,
+  `recommendations_top_k=10`
+- New module `src/pipeline/rec_ranker.py` with pure-functional
+  `select_candidates(candidates, base_rate, lift, top_k)` that filters on
+  dir_prob >= base_rate * lift, sorts by composite score desc, returns top-K
+- Refactored `job_generate_recommendations` from per-ticker score-gate-then-
+  cascade into collect-then-rank-then-emit. Composite score is now a
+  *ranker* not a *gate*; `meets_confidence` still applied per selected rec
+- 8 unit tests in `test_rec_ranker.py` — all pass locally on Windows Python
+  without docker (only pydantic dep)
+
+**Trade-off accepted**: With base_rate * 1.5 = 0.2625 floor, on a flat
+market with all dir_prob ~0.18 we still produce zero recs (correctly).
+On a meaningfully-bearish day with several tickers at dir_prob > 0.26,
+we surface up to 10 ranked by composite score. This is the right shape:
+"top opportunities when they exist, silence otherwise."
+
+**Tunable**: If after deploy the rec count is still 0 most days, lower
+`min_dir_prob_lift` toward 1.0 (= "any ticker the model thinks beats the
+base rate"). If too noisy, raise `recommendations_top_k` cap or add a
+hard floor on composite score.
+
+**NOT done**: Live verification — needs SSH to GPU VM. Add to runbook:
+after deploy, watch the first scheduler run's log line for
+"X candidates evaluated, Y below dir_prob floor" to tune the lift.
+
 
