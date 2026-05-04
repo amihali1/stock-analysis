@@ -561,4 +561,190 @@ hard floor on composite score.
 after deploy, watch the first scheduler run's log line for
 "X candidates evaluated, Y below dir_prob floor" to tune the lift.
 
+## 2026-05-04 — Backfill dedupe fix + v3 training script (commits 5074f01, 07bc12e)
 
+**Why**: P10-001 backfill landed zero rows on the VM despite the script reporting
+"queued" for thousands. Root cause: yfinance `Ticker.upgrades_downgrades` returns
+same-key rows for some tickers (intraday re-rates, upstream dupes). The unique
+index on `(ticker, date, firm, to_grade)` rejected the **entire SQLAlchemy INSERT
+batch** on the first duplicate, so a single repeat blew away the whole per-ticker
+batch. Once that was unblocked, train v3 with the analyst feature group on the
+populated table and tune the new dir_prob lift floor against the resulting
+distribution.
+
+**5074f01 — fix(backfill): dedupe yfinance rows within batch**:
+- `scripts/backfill_analyst_ratings.py`: track `(ticker, date, firm, to_grade)`
+  keys seen within the per-ticker batch, skip dupes client-side before the
+  INSERT. Avoids the rollback-the-whole-batch failure mode of relying on the
+  DB unique constraint as a dedupe.
+- Re-run on VM: 12,011 new rows across 38 tickers, 0 failures (was 0 rows / 38
+  failures pre-fix).
+
+**07bc12e — feat(rec): v3 training script + lower dir_prob lift floor to 1.3**:
+- New `scripts/train_directional_v3.py` — same shape as v2 trainer but appends
+  `ANALYST_FEATURE_COLS` (the 6 P10-001 features) to FEATURE_COLS and writes
+  pickle to `trained_models/directional_xgb_v3.pkl`.
+- VM training run results: AUC 0.5505 (vs v2's 0.5423, +0.008), Brier 0.1566
+  (vs 0.1628, -0.006). Modest but the right *direction* — analyst features
+  show importance 0.013-0.021 each, not redundant with price/options data.
+  Updated `directional_model_information_ceiling.md` with this finding.
+- `config.py`: `min_dir_prob_lift` default 1.5 → 1.3. Spot-checked v3 dir_prob
+  distribution against today's watchlist: max=0.260 (DIS), median=0.123. The
+  1.5 lift (floor 0.2625) yields zero candidates on a flat-bullish day; 1.3
+  (floor 0.2275) catches the top ~4 most-bearish picks (DIS, GE, COP, SLB),
+  which is the right shape for the rare-event setup.
+
+**Current state**: Phase 10 has 2 done tickets (P10-001, P10-002) plus this
+follow-up commit pair.
+
+## 2026-05-04 — Verification session: v3 confirmed in prod, new structural blocker found
+
+**SSH access**: `ssh proxmox@10.0.0.47` works fine — earlier memory note that auth
+was broken was wrong (`andym` and `ubuntu` users don't have keys, but `proxmox`
+does and has docker access).
+
+**v3 promotion confirmed**: `md5sum` shows `directional_xgb_v1.pkl` ==
+`directional_xgb_v3.pkl` on the VM (decdfa6...), with `directional_xgb_v1.pkl.bak.20260504`
+holding the pre-promotion v1 (different hash). The promotion was already done
+prior to this session — the backend container was rebuilt at 13:09 UTC today
+with v3 baked in via the Dockerfile's `COPY trained_models/`.
+
+**Ollama config also resolved**: `OLLAMA_MODEL=qwen3.5:9b` in `.env` (was
+previously misconfigured to `gemma4:e4b` per memory). `OllamaClient.generate()`
+returns immediately, `sentiment_history.MAX(date) = today`. Updated memory to
+mark `ollama_model_misconfigured.md` as resolved.
+
+**End-to-end diagnostic** (manually triggered `job_generate_recommendations`
+inside backend container, with stdout logging configured):
+```
+49 candidates evaluated, 45 below dir_prob floor (base_rate*1.30),
+4 filtered for confidence → 0 new recs
+```
+
+**Finding**: P10-002 fixed the absolute-score gate (`score >= 0.5`) but the
+*next* gate, `Ensemble.meets_confidence` against `min_confidence=0.75`, is
+structurally unreachable for the calibrated v3 model. For directional_prob
+in [0.10, 0.27] (the realistic range for the bearish rare-event setup),
+`directional_confidence = abs(prob - 0.5) * 2` maxes around 0.48 — far below
+the 0.75 floor. Same pathology as the original score gate, one step deeper.
+
+**Why this wasn't caught earlier**: the score gate was the visible blocker
+because it failed first. With it removed, 4 tickers now reach the confidence
+gate — and the unreachability of *that* one is now the visible blocker.
+
+**Memory writes (this session)**:
+- New: `meets_confidence_unreachable.md` documents the finding with the exact
+  diagnostic command and 4 candidate fixes (lower min_confidence, relative
+  lift gate, drop sentiment from AND, decoupled per-signal floors)
+- Updated: `vm_runtime_layout.md` — recommendations table has no
+  `direction_confidence` columns; SSH user is `proxmox`
+- Updated: `directional_model_information_ceiling.md` — v3 IS promoted, with
+  live-day diagnostic line
+- Updated: `ollama_model_misconfigured.md` — marked RESOLVED
+- Updated: `MEMORY.md` index (also caught a missing entry for the
+  model-ceiling memory)
+
+**Code changes**: none. This session was diagnostic + memory hygiene only.
+
+**Next steps (require user input)**: pick a confidence-gate fix from the four
+listed in `meets_confidence_unreachable.md` before P10-003 (short-interest
+features) — even with better signal, the new features hit the same gate wall.
+
+## 2026-05-04 — P10-004: confidence-lift gate replaces absolute min_confidence (commit 57359bb)
+
+**Why**: Diagnostic showed `meets_confidence` against `min_confidence=0.75` was
+structurally unreachable for the calibrated v3 model (`abs(prob-0.5)*2` maxes
+~0.48 for the realistic [0.10, 0.27] dir_prob range). Picked option #2 from
+`meets_confidence_unreachable.md`: replace the absolute floor with a relative
+"lift over base rate" measure, mirroring the P10-002 ranker fix one layer down.
+
+**`config.py`**:
+- Marked `min_confidence=0.75` as deprecated (kept for back-compat).
+- Added `min_directional_lift=0.05` (relative bearish lift floor, normalized
+  to [0,1] over the base-rate-to-1.0 headroom).
+- Added `min_sentiment_confidence=0.40` (separate floor on LLM confidence).
+
+**`models/ensemble.py`**:
+- `Ensemble.__init__` now takes `min_directional_lift` + `min_sentiment_confidence`;
+  legacy `min_confidence` kwarg still accepted and routed to the sentiment floor.
+- `score()` computes `directional_lift = max(0, dir_prob - base_rate) / (1 - base_rate)`
+  (only meaningful when bearish direction is the rare event we're predicting).
+- `meets_confidence = directional_lift >= min_directional_lift AND
+   sentiment_confidence >= min_sentiment_confidence`.
+
+**Tests**: updated 5 ensemble tests in `test_position_sizer.py` to use the new
+gate; added `test_legacy_min_confidence_kwarg_maps_to_sentiment_floor`. All 25
+position-sizer tests pass.
+
+**Comments only**: `services/alerting.py` docstring updated to reflect the new
+two-floor regime.
+
+**Current state**: Code shipped. Live verification deferred to runbook
+(requires triggering `job_generate_recommendations` after both this and P10-003
+land on the VM).
+
+## 2026-05-04 — P10-003: short interest features (uncommitted, code complete)
+
+**Why**: Per `directional_model_information_ceiling.md` priority list, short
+interest is the next independent information source — rising short interest
+and squeezes both produce price action that the technical/options/macro/sector/
+sentiment/earnings/analyst features can't predict on their own. Mirror the
+P10-001 architecture: model + migration + feature module + backfill + wiring.
+
+**Database**:
+- `db/models.py` — added `ShortInterestSnapshot(ticker, report_date, shares_short,
+  short_percent_of_float, short_ratio_days_to_cover, has_data, fetched_at)` with
+  unique index on `(ticker, report_date)`.
+- `alembic/versions/j0k2l4m6n8o0_add_short_interest_snapshots.py` — new migration
+  (down_revision=`i9j1k3l5m7n9`).
+
+**Feature module** (`src/features/short_interest.py`):
+- 6 features: `short_percent_of_float`, `short_ratio_days_to_cover`,
+  `short_interest_change_pct`, `short_interest_zscore_180d`,
+  `days_since_short_report`, `has_short_data`.
+- Sane defaults (0.03 / 2.0 / 0.0 / 0.0 / -1.0 / 0.0) for tickers without a
+  snapshot — table accumulates over time as the fetcher runs.
+- `_compute()` filters to past snapshots, computes change-pct from prior
+  snapshot, z-score over trailing 180d (requires ≥3 points), caps days-since
+  at 180 (FINRA cycles every ~15d).
+- `attach_short_interest_features()` does a per-ticker cached bulk join for
+  training datasets.
+
+**Backfill** (`scripts/backfill_short_interest.py`):
+- yfinance.info returns up to 2 historical points per ticker
+  (`dateShortInterest`/`sharesShort` and `sharesShortPreviousMonthDate`/
+  `sharesShortPriorMonth`). Each backfill run can therefore add 0-2 rows.
+- Idempotent on `(ticker, report_date)` with batch-internal dedupe (lesson
+  from the P10-001 dedupe fix).
+- Stub row with `has_data=0` written for tickers with no data and no prior
+  rows so the table still surfaces them.
+
+**Model wiring**:
+- `models/directional.py` — appended `SHORT_INTEREST_FEATURE_COLS` to
+  `FEATURE_COLS`, merged defaults into `_merged_defaults`, called
+  `attach_short_interest_features(db, df)` in `build_dataset`.
+- `pipeline/scheduler.py` — added `get_short_interest_features` to the live
+  inference feature dict.
+- `scripts/diagnose_recs_v2.py` — added the same to the diagnostic.
+
+**Trainer** (`scripts/train_directional_v4.py`):
+- Mirrors v3 trainer; writes `directional_xgb_v4.pkl`. Prints side-by-side
+  comparison vs v3's metrics + per-feature importance for the new short-interest
+  group.
+
+**Tests** (`tests/test_short_interest_features.py`):
+- 10 tests covering defaults, most-recent-snapshot retrieval, change-pct,
+  z-score (insufficient + sufficient samples), days-since cap, future-snapshot
+  filter, `has_data=0` exclusion, bulk attach, empty-DataFrame attach.
+- All 10 pass in container; full suite 245 pass / 1 fail (the one failure is
+  a pre-existing matplotlib-not-installed in `test_save_reliability_plot_writes_file`
+  — unrelated to P10-003).
+
+**Runbook (deferred to VM)**:
+1. `docker exec backend-backend-1 alembic upgrade head` to apply migration.
+2. `docker exec backend-backend-1 python -m scripts.backfill_short_interest`
+   to populate (~38 tickers × up to 2 snapshots each = ~70 rows day 0).
+3. `docker exec backend-backend-1 python -m scripts.train_directional_v4`
+   and compare vs v3's 0.5505 AUC. Promote v4 → v1.pkl if AUC moves up.
+4. Trigger `job_generate_recommendations` and verify the P10-004 gate now
+   produces non-zero recs.
