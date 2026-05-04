@@ -61,6 +61,10 @@ def backfill_one(db, ticker: str) -> tuple[int, int]:
         ).filter_by(ticker=ticker).all()
     }
 
+    # Dedupe within yfinance's returned df — multiple rows can share
+    # (date, firm, to_grade) when re-rated intraday or duplicated upstream;
+    # the unique index would reject the whole batch otherwise.
+    seen_in_batch: set[tuple] = set()
     inserted = 0
     total = 0
     for ts, row in df.iterrows():
@@ -71,8 +75,10 @@ def backfill_one(db, ticker: str) -> tuple[int, int]:
         from_grade = str(row.get("FromGrade", "") or "")[:50]
         action = _normalize_action(row.get("Action"))
 
-        if (d, firm, to_grade) in existing_keys:
+        key = (d, firm, to_grade)
+        if key in existing_keys or key in seen_in_batch:
             continue
+        seen_in_batch.add(key)
         db.add(AnalystRating(
             ticker=ticker,
             date=d,
