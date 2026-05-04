@@ -32,7 +32,7 @@ class OllamaClient:
     async def generate(self, prompt: str, model: str | None = None) -> str:
         """Send a prompt to Ollama and return the response text."""
         model = model or self.model
-        payload = {"model": model, "prompt": prompt, "stream": False}
+        payload = {"model": model, "prompt": prompt, "stream": False, "think": False}
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await self._request_with_retry(

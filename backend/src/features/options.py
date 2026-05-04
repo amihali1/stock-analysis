@@ -90,12 +90,12 @@ def attach_options_features(db: Session, df: pd.DataFrame) -> pd.DataFrame:
 
     snaps = pd.DataFrame(snap_records)
     snaps["date"] = pd.to_datetime(snaps["date"])
-    snaps = snaps.sort_values(["ticker", "date"])
+    snaps = snaps.sort_values("date").reset_index(drop=True)
 
     df_sorted = df.copy()
     df_sorted["_orig_date"] = df_sorted["date"]
     df_sorted["date"] = pd.to_datetime(df_sorted["date"])
-    df_sorted = df_sorted.sort_values(["ticker", "date"]).reset_index(drop=True)
+    df_sorted = df_sorted.sort_values("date").reset_index(drop=True)
 
     merged = pd.merge_asof(
         df_sorted,

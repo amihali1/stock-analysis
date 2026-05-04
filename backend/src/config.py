@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # Phase 9 — feature flags
     skip_near_earnings: bool = False  # If true, scheduler filters out earnings_within_3d=True
 
+    # Recommendation gating (replaces hardcoded score < 0.5 gate that produced zero recs
+    # on a calibrated rare-event classifier — composite score now ranks, dir_prob gates)
+    directional_base_rate: float = 0.175  # P(label=1) on training set; "drop > 3% in 5d"
+    # lift=1.3 → 0.2275 floor. Empirically (v3, May 2026) catches the watchlist's
+    # top 2-4 most-bearish picks per day. Bump to 1.5 (0.2625) for stricter quality
+    # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
+    min_dir_prob_lift: float = 1.3
+    recommendations_top_k: int = 10  # max recs emitted per scheduler run, ranked by score
+
     # Watchlist
     default_watchlist: list[str] = [
         # Tech
