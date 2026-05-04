@@ -152,15 +152,18 @@ def job_generate_recommendations():
     """7:30 AM ET — Run ML models and generate recommendations."""
     logger.info("Scheduler: starting recommendation generation")
     try:
+        from src.config import get_settings
         from src.db.session import SessionLocal
         from src.db.models import PriceHistory, TechnicalIndicator, SentimentScore, Recommendation, Stock
         from src.models.directional import DirectionalModel
         from src.models.volatility import VolatilityModel
         from src.models.ensemble import Ensemble, SignalInputs
         from src.models.position_sizer import PositionSizer
+        from src.pipeline.rec_ranker import Candidate, select_candidates
         from datetime import date
         from sqlalchemy import func
 
+        settings = get_settings()
         db = SessionLocal()
         dir_model = DirectionalModel()
         vol_model = VolatilityModel()
@@ -174,6 +177,8 @@ def job_generate_recommendations():
         today = date.today()
         count = 0
         filtered_count = 0
+        below_floor_count = 0
+        candidates: list[Candidate] = []
 
         try:
             from src.db.watchlist import get_watchlist_tickers
@@ -199,7 +204,6 @@ def job_generate_recommendations():
                     continue
 
                 # Build features for directional model
-                from src.config import get_settings
                 from src.features.analyst import get_analyst_features
                 from src.features.earnings import get_earnings_features
                 from src.features.macro import get_macro_features
@@ -234,7 +238,7 @@ def job_generate_recommendations():
                 features.update(get_analyst_features(db, ticker, price.date))
 
                 # Optional: skip recommendations within 3 days of earnings (P9-005)
-                if get_settings().skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
+                if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
                     logger.debug("Scheduler: %s skipped — earnings within 3 days", ticker)
                     continue
 
@@ -272,10 +276,30 @@ def job_generate_recommendations():
                 )
 
                 score = ensemble.score(inputs)
+                candidates.append(Candidate(
+                    ticker=ticker,
+                    score=score,
+                    directional_prob=dir_prob,
+                    extras={"price_close": price.close},
+                ))
 
-                # Only generate recommendations for strong, high-confidence signals
-                if score.score < 0.5:
-                    continue
+            # Rank: dir_prob beats base_rate * lift, sort by composite score, cap at top-K.
+            # The composite score is now a ranker, not a gate — see rec_ranker.py for why.
+            selected = select_candidates(
+                candidates,
+                base_rate=settings.directional_base_rate,
+                min_dir_prob_lift=settings.min_dir_prob_lift,
+                top_k=settings.recommendations_top_k,
+            )
+            below_floor_count = len(candidates) - len(
+                [c for c in candidates
+                 if c.directional_prob >= settings.directional_base_rate * settings.min_dir_prob_lift]
+            )
+
+            for cand in selected:
+                ticker = cand.ticker
+                score = cand.score
+                close_price = cand.extras["price_close"]
 
                 if not score.meets_confidence:
                     filtered_count += 1
@@ -284,7 +308,7 @@ def job_generate_recommendations():
                     continue
 
                 # Prefer defined-risk strategies: try spread first
-                spread_rec = sizer.size_spread(score, price.close)
+                spread_rec = sizer.size_spread(score, close_price)
                 if spread_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, strategy="spread",
@@ -303,10 +327,9 @@ def job_generate_recommendations():
                     )
                     db.add(rec)
                     count += 1
-                    continue  # Defined-risk spread found — skip naked alternatives
+                    continue
 
-                # Fallback: long put (defined-risk, max loss = premium)
-                options_rec = sizer.size_options(score, price.close)
+                options_rec = sizer.size_options(score, close_price)
                 if options_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, strategy="options",
@@ -326,10 +349,9 @@ def job_generate_recommendations():
                     )
                     db.add(rec)
                     count += 1
-                    continue  # Long put found — skip naked short
+                    continue
 
-                # Last resort: naked short (undefined-risk, flagged)
-                short_rec = sizer.size_short(score, price.close)
+                short_rec = sizer.size_short(score, close_price)
                 if short_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, strategy="short",
@@ -353,7 +375,11 @@ def job_generate_recommendations():
             db.close()
 
         pipeline_recommendations_generated_total.inc(count)
-        logger.info(f"Scheduler: recommendations complete — {count} new, {filtered_count} filtered below confidence threshold")
+        logger.info(
+            "Scheduler: recommendations complete — %d new, %d candidates evaluated, "
+            "%d below dir_prob floor (base_rate*%.2f), %d filtered for confidence",
+            count, len(candidates), below_floor_count, settings.min_dir_prob_lift, filtered_count,
+        )
         _record_run("recommendations", f"ok ({count} recs, {filtered_count} filtered)")
 
     except Exception:
