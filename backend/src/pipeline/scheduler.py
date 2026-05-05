@@ -210,6 +210,7 @@ def job_generate_recommendations():
                 from src.features.options import get_options_features
                 from src.features.sector import get_sector_features
                 from src.features.sentiment import get_sentiment_features
+                from src.features.short_interest import get_short_interest_features
                 features = {
                     "rsi_14": ind.rsi_14 or 50,
                     "macd": ind.macd or 0,
@@ -236,6 +237,7 @@ def job_generate_recommendations():
                 earnings_feats = get_earnings_features(db, ticker, price.date)
                 features.update(earnings_feats)
                 features.update(get_analyst_features(db, ticker, price.date))
+                features.update(get_short_interest_features(db, ticker, price.date))
 
                 # Optional: skip recommendations within 3 days of earnings (P9-005)
                 if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:

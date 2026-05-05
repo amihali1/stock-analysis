@@ -39,17 +39,30 @@ class Ensemble:
         weight_directional: float = 0.4,
         weight_volatility: float = 0.3,
         weight_sentiment: float = 0.3,
+        directional_base_rate: float | None = None,
+        min_directional_lift: float | None = None,
+        min_sentiment_confidence: float | None = None,
+        # Deprecated — single absolute floor was unreachable for the calibrated
+        # rare-event directional model (see meets_confidence_unreachable memory).
+        # When supplied, it sets min_sentiment_confidence; the directional half
+        # is now handled by the relative directional_lift gate below.
         min_confidence: float | None = None,
     ):
         total = weight_directional + weight_volatility + weight_sentiment
         self.w_dir = weight_directional / total
         self.w_vol = weight_volatility / total
         self.w_sent = weight_sentiment / total
-        if min_confidence is not None:
-            self.min_confidence = min_confidence
+
+        from src.config import get_settings
+        settings = get_settings()
+        self.base_rate = directional_base_rate if directional_base_rate is not None else settings.directional_base_rate
+        self.min_directional_lift = min_directional_lift if min_directional_lift is not None else settings.min_directional_lift
+        if min_sentiment_confidence is not None:
+            self.min_sentiment_confidence = min_sentiment_confidence
+        elif min_confidence is not None:
+            self.min_sentiment_confidence = min_confidence
         else:
-            from src.config import get_settings
-            self.min_confidence = get_settings().min_confidence
+            self.min_sentiment_confidence = settings.min_sentiment_confidence
 
     def score(self, inputs: SignalInputs) -> EnsembleScore:
         """Compute ensemble score from individual signals.
@@ -58,10 +71,13 @@ class Ensemble:
         Volatility signal: higher predicted vol = more opportunity for options (0-1)
         Sentiment signal: negative sentiment = bearish = higher signal (0-1)
 
-        meets_confidence is True when the directional model and the sentiment
-        analyzer both report confidence >= min_confidence. The LSTM produces no
-        per-prediction confidence, so vol is excluded from the gate — it still
-        contributes to the weighted score.
+        meets_confidence uses a relative directional-lift gate (mirror of
+        rec_ranker.py's dir_prob lift) plus an absolute sentiment-confidence
+        floor. This replaces the prior `abs(prob - 0.5) * 2 >= 0.75` directional
+        check, which was structurally unreachable for the calibrated rare-event
+        directional model (max observed dir_conf was ~0.48 on bearish picks).
+        Volatility is excluded from the gate — the LSTM has no per-prediction
+        confidence — but still contributes to the weighted score.
         """
         dir_signal = inputs.directional_prob
 
@@ -80,9 +96,17 @@ class Ensemble:
             + self.w_sent * sent_signal
         )
 
+        # Bearish-lift: how far above the unconditional base rate the model's
+        # bearish prediction sits, normalized to [0, 1]. 0 = at-or-below base rate
+        # (no informative bearish signal); 1 = perfect certainty of drop.
+        if self.base_rate < 1.0 and inputs.directional_prob > self.base_rate:
+            directional_lift = (inputs.directional_prob - self.base_rate) / (1.0 - self.base_rate)
+        else:
+            directional_lift = 0.0
+
         meets_confidence = (
-            inputs.directional_confidence >= self.min_confidence
-            and inputs.sentiment_confidence >= self.min_confidence
+            directional_lift >= self.min_directional_lift
+            and inputs.sentiment_confidence >= self.min_sentiment_confidence
         )
 
         return EnsembleScore(

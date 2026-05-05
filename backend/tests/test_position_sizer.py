@@ -59,36 +59,58 @@ class TestEnsemble:
         assert 0 <= result.volatility_signal <= 1
         assert 0 <= result.sentiment_signal <= 1
 
-    def test_meets_confidence_when_both_models_confident(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_confidence=0.8, sentiment_confidence=0.85)
+    def test_meets_confidence_when_directional_lifts_and_sentiment_clears(self):
+        # dir_prob=0.30 with base_rate=0.175 → lift=(0.30-0.175)/0.825=0.152 > 0.05 default
+        # sent_conf=0.85 > 0.40 default
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.85)
         result = ensemble.score(inputs)
         assert result.meets_confidence is True
 
-    def test_fails_confidence_when_directional_confidence_low(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_confidence=0.5, sentiment_confidence=0.9)
+    def test_fails_confidence_when_directional_lift_below_floor(self):
+        # dir_prob=0.18 → lift=(0.18-0.175)/0.825=0.006, below 0.05 floor
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        inputs = make_inputs(directional_prob=0.18, sentiment_confidence=0.85)
+        result = ensemble.score(inputs)
+        assert result.meets_confidence is False
+
+    def test_fails_confidence_when_dir_prob_at_or_below_base_rate(self):
+        # Bullish-side probabilities have lift=0 by construction; never pass the gate.
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        inputs = make_inputs(directional_prob=0.10, sentiment_confidence=0.85)
         result = ensemble.score(inputs)
         assert result.meets_confidence is False
 
     def test_fails_confidence_when_sentiment_confidence_low(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_confidence=0.9, sentiment_confidence=0.4)
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.20)
         result = ensemble.score(inputs)
         assert result.meets_confidence is False
 
-    def test_confidence_at_exact_threshold(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        inputs = make_inputs(directional_confidence=0.75, sentiment_confidence=0.75)
+    def test_lift_at_exact_threshold(self):
+        # dir_prob s.t. lift=0.05 exactly: 0.05 = (p-0.175)/0.825 → p = 0.21625
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        inputs = make_inputs(directional_prob=0.21625, sentiment_confidence=0.40)
         result = ensemble.score(inputs)
         assert result.meets_confidence is True
 
     def test_vol_does_not_affect_meets_confidence(self):
-        ensemble = Ensemble(min_confidence=0.75)
-        low_vol = make_inputs(directional_confidence=0.9, sentiment_confidence=0.9, predicted_vol=0.05)
-        high_vol = make_inputs(directional_confidence=0.9, sentiment_confidence=0.9, predicted_vol=0.9)
+        ensemble = Ensemble(directional_base_rate=0.175, min_directional_lift=0.05, min_sentiment_confidence=0.40)
+        low_vol = make_inputs(directional_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.05)
+        high_vol = make_inputs(directional_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.9)
         assert ensemble.score(low_vol).meets_confidence is True
         assert ensemble.score(high_vol).meets_confidence is True
+
+    def test_legacy_min_confidence_kwarg_maps_to_sentiment_floor(self):
+        # Back-compat: passing min_confidence sets the sentiment floor only.
+        # Directional uses default min_directional_lift from settings.
+        ensemble = Ensemble(min_confidence=0.90)
+        # sentiment_confidence below the legacy 0.90 floor → fails
+        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.85)
+        assert ensemble.score(inputs).meets_confidence is False
+        # sentiment_confidence above 0.90 → passes
+        inputs2 = make_inputs(directional_prob=0.30, sentiment_confidence=0.95)
+        assert ensemble.score(inputs2).meets_confidence is True
 
 
 class TestPositionSizerShort:

@@ -377,3 +377,28 @@ class OptionsSnapshot(Base):
     term_structure_slope = Column(Float)
     has_options = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ShortInterestSnapshot(Base):
+    """Per-ticker snapshot of FINRA short-interest report (P10-003).
+
+    yfinance.info returns the latest two FINRA bi-monthly settlement reports
+    via `dateShortInterest`/`sharesShort` and `sharesShortPreviousMonthDate`/
+    `sharesShortPriorMonth`. Each backfill run can therefore add up to two
+    historical points per ticker. Real time-series features (z-score, change-pct)
+    become meaningful after ~6-12 months of accumulated snapshots.
+    """
+
+    __tablename__ = "short_interest_snapshots"
+    __table_args__ = (
+        Index("ix_short_interest_ticker_report", "ticker", "report_date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    report_date = Column(Date, nullable=False)  # FINRA settlement date
+    shares_short = Column(Float)
+    short_percent_of_float = Column(Float)
+    short_ratio_days_to_cover = Column(Float)
+    has_data = Column(Integer, default=1)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
