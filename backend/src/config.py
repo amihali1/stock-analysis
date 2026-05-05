@@ -71,22 +71,57 @@ class Settings(BaseSettings):
     min_sentiment_confidence: float = 0.40
 
     # Watchlist
+    # Expanded May 2026 from ~50 mega-caps to ~150 names. Mega-caps alone are
+    # too stable to often cross the >3%-drop-in-5d label, leaving the rare-event
+    # classifier with too few above-floor candidates per day. Bias of additions
+    # is toward higher-beta names (semis, biotech, retail, REITs, EV, fintech).
     default_watchlist: list[str] = [
-        # Tech
+        # --- Mega-cap tech (existing) ---
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "INTC", "CRM",
-        # Finance
+        # --- Mega-cap finance (existing) ---
         "JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW",
-        # Healthcare
+        # --- Mega-cap healthcare (existing) ---
         "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "BMY",
-        # Consumer
+        # --- Mega-cap consumer (existing) ---
         "WMT", "COST", "HD", "NKE", "SBUX", "MCD", "DIS",
-        # Energy
+        # --- Energy (existing) ---
         "XOM", "CVX", "COP", "SLB", "EOG",
-        # Industrial
+        # --- Industrial (existing) ---
         "CAT", "BA", "HON", "GE", "MMM",
-        # Macro context
+
+        # --- Tech / semis (expansion) ---
+        "TSM", "AVGO", "QCOM", "TXN", "AMAT", "MU", "ASML", "LRCX", "KLAC",
+        "ADBE", "ORCL", "IBM", "CSCO", "NOW", "PANW",
+        # --- Software / internet (expansion) ---
+        "NFLX", "PYPL", "SHOP", "SNAP", "PINS", "ROKU", "SPOT", "UBER", "LYFT",
+        "ZM", "DOCU", "SQ",
+        # --- Communication services (expansion) ---
+        "T", "VZ", "CMCSA", "TMUS", "CHTR",
+        # --- Consumer discretionary (expansion) ---
+        "TGT", "LOW", "TJX", "ROST", "BBY", "GM", "F", "EBAY", "ETSY", "ABNB",
+        "BKNG", "MAR",
+        # --- High-volatility fintech / EV (expansion) ---
+        "COIN", "HOOD", "SOFI", "RIVN",
+        # --- Consumer staples (expansion) ---
+        "PG", "KO", "PEP", "MO", "PM", "KHC",
+        # --- Healthcare / biotech (expansion) ---
+        "ABT", "TMO", "DHR", "MRNA", "BIIB", "REGN", "VRTX", "GILD", "AMGN", "CVS",
+        # --- Financials / payments (expansion) ---
+        "BRK-B", "USB", "PNC", "TFC", "HBAN", "AIG", "PRU", "MET", "ALL", "V", "MA",
+        # --- Industrials (expansion) ---
+        "UPS", "FDX", "RTX", "LMT", "NOC", "GD", "DE", "EMR",
+        # --- Energy (expansion) ---
+        "HAL", "OXY", "MPC", "PSX", "VLO",
+        # --- Materials (expansion) ---
+        "FCX", "NEM", "LIN", "APD",
+        # --- REITs (expansion) ---
+        "PLD", "AMT", "EQIX", "CCI", "O", "SPG",
+        # --- Homebuilders (expansion) ---
+        "DHI", "LEN", "NVR", "PHM",
+
+        # --- Macro context (existing) ---
         "SPY", "QQQ", "IWM", "^VIX",
-        # Sector ETFs (P9-003)
+        # --- Sector ETFs (P9-003, existing) ---
         "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLC", "XLRE",
     ]
 
@@ -95,22 +130,43 @@ class Settings(BaseSettings):
 SECTOR_ETF_MAP: dict[str, str] = {
     # Tech → XLK
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "INTC": "XLK", "CRM": "XLK",
+    "TSM": "XLK", "AVGO": "XLK", "QCOM": "XLK", "TXN": "XLK", "AMAT": "XLK", "MU": "XLK",
+    "ASML": "XLK", "LRCX": "XLK", "KLAC": "XLK", "ADBE": "XLK", "ORCL": "XLK", "IBM": "XLK",
+    "CSCO": "XLK", "NOW": "XLK", "PANW": "XLK", "ZM": "XLK", "DOCU": "XLK",
     # Communication services → XLC
-    "GOOGL": "XLC", "META": "XLC", "DIS": "XLC",
+    "GOOGL": "XLC", "META": "XLC", "DIS": "XLC", "NFLX": "XLC", "T": "XLC", "VZ": "XLC",
+    "CMCSA": "XLC", "TMUS": "XLC", "CHTR": "XLC", "SNAP": "XLC", "PINS": "XLC",
+    "ROKU": "XLC", "SPOT": "XLC",
     # Consumer discretionary → XLY
     "AMZN": "XLY", "TSLA": "XLY", "HD": "XLY", "NKE": "XLY", "SBUX": "XLY", "MCD": "XLY",
+    "TGT": "XLY", "LOW": "XLY", "TJX": "XLY", "ROST": "XLY", "BBY": "XLY", "GM": "XLY",
+    "F": "XLY", "EBAY": "XLY", "ETSY": "XLY", "ABNB": "XLY", "BKNG": "XLY", "MAR": "XLY",
+    "RIVN": "XLY", "UBER": "XLY", "LYFT": "XLY", "DHI": "XLY", "LEN": "XLY", "NVR": "XLY",
+    "PHM": "XLY",
     # Consumer staples → XLP
-    "WMT": "XLP", "COST": "XLP",
-    # Financials → XLF
+    "WMT": "XLP", "COST": "XLP", "PG": "XLP", "KO": "XLP", "PEP": "XLP", "MO": "XLP",
+    "PM": "XLP", "KHC": "XLP",
+    # Financials → XLF (incl. payments / fintech)
     "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "WFC": "XLF", "C": "XLF",
-    "BLK": "XLF", "SCHW": "XLF",
+    "BLK": "XLF", "SCHW": "XLF", "BRK-B": "XLF", "USB": "XLF", "PNC": "XLF", "TFC": "XLF",
+    "HBAN": "XLF", "AIG": "XLF", "PRU": "XLF", "MET": "XLF", "ALL": "XLF", "V": "XLF",
+    "MA": "XLF", "PYPL": "XLF", "SQ": "XLF", "SHOP": "XLF", "COIN": "XLF", "HOOD": "XLF",
+    "SOFI": "XLF",
     # Healthcare → XLV
     "JNJ": "XLV", "UNH": "XLV", "PFE": "XLV", "ABBV": "XLV", "MRK": "XLV",
-    "LLY": "XLV", "BMY": "XLV",
+    "LLY": "XLV", "BMY": "XLV", "ABT": "XLV", "TMO": "XLV", "DHR": "XLV", "MRNA": "XLV",
+    "BIIB": "XLV", "REGN": "XLV", "VRTX": "XLV", "GILD": "XLV", "AMGN": "XLV", "CVS": "XLV",
     # Energy → XLE
     "XOM": "XLE", "CVX": "XLE", "COP": "XLE", "SLB": "XLE", "EOG": "XLE",
+    "HAL": "XLE", "OXY": "XLE", "MPC": "XLE", "PSX": "XLE", "VLO": "XLE",
     # Industrials → XLI
     "CAT": "XLI", "BA": "XLI", "HON": "XLI", "GE": "XLI", "MMM": "XLI",
+    "UPS": "XLI", "FDX": "XLI", "RTX": "XLI", "LMT": "XLI", "NOC": "XLI", "GD": "XLI",
+    "DE": "XLI", "EMR": "XLI",
+    # Materials → XLB
+    "FCX": "XLB", "NEM": "XLB", "LIN": "XLB", "APD": "XLB",
+    # Real Estate → XLRE
+    "PLD": "XLRE", "AMT": "XLRE", "EQIX": "XLRE", "CCI": "XLRE", "O": "XLRE", "SPG": "XLRE",
 }
 
 
