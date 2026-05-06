@@ -13,10 +13,13 @@ class Settings(BaseSettings):
 
     # API Keys (optional, loaded from .env)
     fred_api_key: str = ""
-    newsapi_key: str = ""
-    reddit_client_id: str = ""
-    reddit_client_secret: str = ""
-    reddit_user_agent: str = "stock-analysis/0.1"
+
+    # Sentiment pipeline
+    # Skip headlines older than this many days before sending to Ollama.
+    # Stale news has no bearing on a 5-day directional prediction and just
+    # burns LLM time. Default 7d (~one news cycle); empirically about 60% of
+    # Finviz headlines fall within this window.
+    sentiment_max_headline_age_days: int = 7
 
     # Trading constraints
     max_position_size: float = 1000.0

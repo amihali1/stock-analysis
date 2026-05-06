@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from src.db.models import Stock, SentimentScore
 from src.db.session import SessionLocal
 from src.services.ollama_client import OllamaClient
-from src.services.headline_fetcher import FinvizFetcher, NewsApiFetcher, RedditFetcher, Headline
+from src.services.headline_fetcher import FinvizFetcher, YahooRssFetcher, Headline
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,8 @@ class SentimentAnalyzer:
         self._owns_db = db is None
         self.db = db or SessionLocal()
         self.ollama = OllamaClient()
-        self.fetchers = [FinvizFetcher(), NewsApiFetcher(), RedditFetcher()]
+        self.fetchers = [FinvizFetcher(), YahooRssFetcher()]
+        self.max_headline_age_days = get_settings().sentiment_max_headline_age_days
 
     def close(self):
         if self._owns_db:
@@ -67,9 +68,30 @@ class SentimentAnalyzer:
 
         if not headlines:
             logger.warning(f"{ticker}: no headlines found from any source")
-            return {"ticker": ticker, "headlines": 0, "scores": []}
+            return {"ticker": ticker, "headlines": 0, "scores_computed": 0, "composite_sentiment": None}
 
-        logger.info(f"{ticker}: analyzing {len(headlines)} headlines")
+        # Recency gate: skip headlines older than the configured window so we
+        # don't burn Ollama time scoring month-old news that has no bearing on
+        # a 5-day directional prediction. Headlines with no parseable date are
+        # kept (assumed-recent) — better than dropping a real signal.
+        cutoff = date.today() - timedelta(days=self.max_headline_age_days)
+        recent = [h for h in headlines if h.date is None or h.date >= cutoff]
+        dropped = len(headlines) - len(recent)
+
+        if not recent:
+            logger.info(
+                f"{ticker}: all {len(headlines)} headlines older than {self.max_headline_age_days}d — skipping"
+            )
+            return {"ticker": ticker, "headlines": len(headlines), "scores_computed": 0, "composite_sentiment": None}
+
+        if dropped:
+            logger.info(
+                f"{ticker}: analyzing {len(recent)} recent headlines "
+                f"({dropped} dropped as older than {self.max_headline_age_days}d)"
+            )
+        else:
+            logger.info(f"{ticker}: analyzing {len(recent)} headlines")
+        headlines = recent
 
         # Analyze each headline with Ollama
         scores: list[SentimentResult] = []
