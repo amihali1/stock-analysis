@@ -1,14 +1,21 @@
-"""Fetch headlines from Finviz and NewsAPI for sentiment analysis."""
+"""Fetch headlines from Finviz and Yahoo Finance RSS for sentiment analysis.
+
+NewsAPI and Reddit fetchers were removed in May 2026 — NewsAPI key was
+invalid and Reddit's PRAW search returned 0 posts on every ticker since
+the project's inception (silent inner-try/except). Yahoo Finance RSS
+replaces them as the second-source signal: per-ticker feed, no auth, no
+rate limits in practice.
+"""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
+from email.utils import parsedate_to_datetime
 
+import feedparser
 from finvizfinance.quote import finvizfinance
-
-from src.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Headline:
     title: str
-    source: str  # finviz, newsapi, reddit
+    source: str  # finviz, yahoo_rss
     date: date | None = None
     url: str = ""
 
@@ -52,122 +59,68 @@ class FinvizFetcher:
             return []
 
 
-class NewsApiFetcher:
-    """Fetch headlines from NewsAPI (requires API key)."""
+class YahooRssFetcher:
+    """Fetch headlines from Yahoo Finance's per-ticker RSS feed.
 
-    def __init__(self):
-        settings = get_settings()
-        self.api_key = settings.newsapi_key
+    Endpoint: https://feeds.finance.yahoo.com/rss/2.0/headline?s={TICKER}&region=US&lang=en-US
+
+    Yahoo's RSS has no API key, no rate limits in practice, and reliably
+    returns ~10-20 recent items per ticker with RFC-822 pubDates. Empty
+    feed = ticker has no recent news (returns []).
+    """
+
+    URL_TEMPLATE = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        "?s={ticker}&region=US&lang=en-US"
+    )
 
     def fetch(self, ticker: str, max_headlines: int = 10) -> list[Headline]:
-        if not self.api_key:
-            logger.debug("NewsAPI key not configured, skipping")
-            return []
-
+        url = self.URL_TEMPLATE.format(ticker=ticker)
         try:
-            from newsapi import NewsApiClient
+            parsed = feedparser.parse(url)
 
-            api = NewsApiClient(api_key=self.api_key)
-            results = api.get_everything(
-                q=ticker,
-                language="en",
-                sort_by="publishedAt",
-                page_size=max_headlines,
-            )
+            if parsed.bozo and not parsed.entries:
+                logger.warning(f"{ticker}: Yahoo RSS parse failed ({parsed.bozo_exception!r})")
+                return []
 
             headlines = []
-            for article in results.get("articles", []):
+            for entry in parsed.entries[:max_headlines]:
                 headlines.append(
                     Headline(
-                        title=article.get("title", ""),
-                        source="newsapi",
-                        date=_parse_date(article.get("publishedAt")),
-                        url=article.get("url", ""),
+                        title=str(entry.get("title", "")),
+                        source="yahoo_rss",
+                        date=_parse_rfc822(entry.get("published")),
+                        url=str(entry.get("link", "")),
                     )
                 )
 
-            logger.info(f"{ticker}: fetched {len(headlines)} NewsAPI headlines")
+            logger.info(f"{ticker}: fetched {len(headlines)} Yahoo RSS headlines")
             return headlines
 
         except Exception:
-            logger.exception(f"{ticker}: failed to fetch NewsAPI headlines")
-            return []
-
-
-class RedditFetcher:
-    """Fetch ticker mentions from Reddit using PRAW."""
-
-    SUBREDDITS = ["wallstreetbets", "stocks", "options"]
-
-    def __init__(self):
-        settings = get_settings()
-        self.client_id = settings.reddit_client_id
-        self.client_secret = settings.reddit_client_secret
-        self.user_agent = settings.reddit_user_agent
-
-    def fetch(self, ticker: str, max_headlines: int = 10) -> list[Headline]:
-        if not self.client_id or not self.client_secret:
-            logger.debug("Reddit credentials not configured, skipping")
-            return []
-
-        try:
-            import praw
-
-            reddit = praw.Reddit(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                user_agent=self.user_agent,
-            )
-
-            headlines = []
-            for sub_name in self.SUBREDDITS:
-                if len(headlines) >= max_headlines:
-                    break
-                try:
-                    subreddit = reddit.subreddit(sub_name)
-                    for post in subreddit.search(
-                        f"${ticker} OR {ticker}", sort="new", time_filter="week", limit=5
-                    ):
-                        text = post.title
-                        # Include top comment if available
-                        post.comment_sort = "best"
-                        post.comments.replace_more(limit=0)
-                        if post.comments:
-                            top_comment = post.comments[0].body[:200]
-                            text = f"{post.title} | Top comment: {top_comment}"
-
-                        headlines.append(
-                            Headline(
-                                title=text,
-                                source="reddit",
-                                date=date.fromtimestamp(post.created_utc),
-                                url=f"https://reddit.com{post.permalink}",
-                            )
-                        )
-                        if len(headlines) >= max_headlines:
-                            break
-                except Exception:
-                    logger.debug(f"Failed to search r/{sub_name} for {ticker}")
-
-            logger.info(f"{ticker}: fetched {len(headlines)} Reddit headlines")
-            return headlines
-
-        except Exception:
-            logger.exception(f"{ticker}: failed to fetch Reddit headlines")
+            logger.exception(f"{ticker}: failed to fetch Yahoo RSS headlines")
             return []
 
 
 def _parse_date(val) -> date | None:
-    """Best-effort date parsing."""
+    """Best-effort date parsing for Finviz rows."""
     if val is None:
         return None
     if isinstance(val, date):
         return val
     try:
-        from datetime import datetime
-
         if hasattr(val, "date"):
             return val.date()
         return datetime.fromisoformat(str(val).replace("Z", "+00:00")).date()
     except Exception:
+        return None
+
+
+def _parse_rfc822(val) -> date | None:
+    """Parse RFC-822 timestamps used in RSS pubDate fields."""
+    if not val:
+        return None
+    try:
+        return parsedate_to_datetime(str(val)).date()
+    except (TypeError, ValueError):
         return None

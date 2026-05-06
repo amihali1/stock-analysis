@@ -748,3 +748,53 @@ P10-001 architecture: model + migration + feature module + backfill + wiring.
    and compare vs v3's 0.5505 AUC. Promote v4 → v1.pkl if AUC moves up.
 4. Trigger `job_generate_recommendations` and verify the P10-004 gate now
    produces non-zero recs.
+
+## 2026-05-06 — Sentiment cleanup: drop NewsAPI + Reddit, add Yahoo RSS, recency-gate Ollama (branch feat/sentiment-rss-recency)
+
+**Why**: Diagnostic of the live sentiment pipeline showed (a) NewsAPI key
+invalid → 0 contribution, (b) Reddit's PRAW search returned 0 posts on
+*every* ticker since project inception (silent failure inside the per-
+subreddit try/except), (c) Ollama was scoring stale headlines — only
+~42% of analyzed Finviz items today were ≤3d old, ~7% were >30d old.
+
+**Changes**:
+- `backend/src/services/headline_fetcher.py`: deleted `NewsApiFetcher` and
+  `RedditFetcher` classes. Added `YahooRssFetcher` using
+  `feeds.finance.yahoo.com/rss/2.0/headline?s={TICKER}&region=US&lang=en-US`
+  via feedparser. RFC-822 pubDate parsing via `email.utils.parsedate_to_datetime`.
+- `backend/src/pipeline/sentiment.py`: `SentimentAnalyzer.fetchers` now
+  `[FinvizFetcher(), YahooRssFetcher()]`. Recency gate filters headlines
+  to `>= today - settings.sentiment_max_headline_age_days` (default 7d)
+  before the Ollama loop. Headlines with `date=None` are kept (assumed
+  recent — better than dropping a real signal).
+  Both early-return paths now consistently return
+  `{"composite_sentiment": None, "scores_computed": 0}` — scheduler
+  already short-circuits on `scores_computed==0` (line 90), so no
+  downstream change needed.
+- `backend/pyproject.toml`: removed `newsapi-python`, `praw`; added
+  `feedparser>=6.0.0`.
+- `backend/src/config.py`: removed `newsapi_key`, `reddit_client_id/secret/user_agent`
+  Settings fields. Added `sentiment_max_headline_age_days: int = 7`.
+- `backend/tests/test_sentiment.py`: dropped NewsAPI/Reddit references,
+  added 3 YahooRssFetcher tests (typical, empty, bozo) and 3 recency-gate
+  tests (stale filtered, all-stale short-circuits Ollama, undated kept).
+  All 13 tests pass in container.
+
+**Live RSS verification**: `YahooRssFetcher().fetch("AAPL")` returned 10
+items, all dated today (2026-05-06).
+
+**Container hygiene**: Verified deploy pipeline replaces /app/src on
+rebuild. Tests run via `python -m pytest backend/tests/test_sentiment.py`
+in the prod container after `cp` overlay (only test_sentiment.py is
+actually shipped — other test files are dev-only).
+
+**Expected impact**:
+- Ollama load drops ~60% (skip stale headlines)
+- ~80 min/run reclaimed (Reddit fetcher loop deleted)
+- Sentiment signal becomes more relevant (week-stale only, not month-stale)
+- Yahoo RSS adds a real second source (~10 items/ticker, all dated)
+
+**Next steps**: Merge to main → trigger deploy → verify next 07:30 EDT
+sentiment run logs show YahooRssFetcher hits + recency-gate dropped counts.
+Then proceed with v5 training (post-watchlist-expansion data has ~1d of
+accumulation as of today).
