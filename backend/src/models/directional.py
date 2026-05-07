@@ -25,6 +25,7 @@ from src.features.options import OPTIONS_FEATURE_COLS, attach_options_features
 from src.features.sector import SECTOR_FEATURE_COLS, attach_sector_features
 from src.features.sentiment import SENTIMENT_FEATURE_COLS, attach_sentiment_features
 from src.features.short_interest import SHORT_INTEREST_FEATURE_COLS, attach_short_interest_features
+from src.features.wikipedia import WIKIPEDIA_FEATURE_COLS, attach_wikipedia_features
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ FEATURE_COLS = [
     *EARNINGS_FEATURE_COLS,       # P9-005
     *ANALYST_FEATURE_COLS,        # P10-001
     *SHORT_INTEREST_FEATURE_COLS, # P10-003
+    *WIKIPEDIA_FEATURE_COLS,      # P10-008
 ]
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
@@ -146,6 +148,7 @@ class DirectionalModel:
         from src.features.sector import DEFAULT_SECTOR_FEATURES
         from src.features.sentiment import DEFAULT_SENTIMENT_FEATURES
         from src.features.short_interest import DEFAULT_SHORT_INTEREST_FEATURES
+        from src.features.wikipedia import DEFAULT_WIKIPEDIA_FEATURES
         out: dict[str, float] = {}
         out.update(OPTIONS_DEFAULTS)
         out.update(DEFAULT_MACRO_FEATURES)
@@ -154,6 +157,7 @@ class DirectionalModel:
         out.update(DEFAULT_EARNINGS_FEATURES)
         out.update(DEFAULT_ANALYST_FEATURES)
         out.update(DEFAULT_SHORT_INTEREST_FEATURES)
+        out.update(DEFAULT_WIKIPEDIA_FEATURES)
         return out
 
     def train(self, tickers: list[str] | None = None, n_folds: int = 3) -> dict:
@@ -401,6 +405,7 @@ def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
         df = attach_earnings_features(db, df)
         df = attach_analyst_features(db, df)
         df = attach_short_interest_features(db, df)
+        df = attach_wikipedia_features(db, df)
     finally:
         db.close()
 

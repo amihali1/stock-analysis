@@ -402,3 +402,27 @@ class ShortInterestSnapshot(Base):
     short_ratio_days_to_cover = Column(Float)
     has_data = Column(Integer, default=1)
     fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WikipediaPageviews(Base):
+    """Per-ticker daily Wikipedia page-view count (P10-008).
+
+    Sourced from Wikimedia REST per-article daily pageviews endpoint. The
+    `wikipedia_title` is the resolved English Wikipedia title used for the
+    lookup (kept for diagnostics — same ticker in different runs should always
+    resolve to the same title via the hand-curated config map). Missing days in
+    the Wikimedia response are stubbed with `page_views=0` to keep the series
+    dense for z-score/baseline math.
+    """
+
+    __tablename__ = "wikipedia_pageviews"
+    __table_args__ = (
+        Index("ix_wikipedia_pageviews_ticker_date", "ticker", "view_date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    view_date = Column(Date, nullable=False)
+    page_views = Column(Integer, default=0)
+    wikipedia_title = Column(String(200))
+    fetched_at = Column(DateTime, default=datetime.utcnow)

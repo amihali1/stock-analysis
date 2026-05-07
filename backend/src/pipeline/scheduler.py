@@ -148,6 +148,32 @@ def job_fetch_options():
         _record_run("fetch_options", "error")
 
 
+def job_fetch_wikipedia_pageviews():
+    """5:30 AM ET (daily, Mon-Sun) — Fetch yesterday's Wikipedia page views.
+
+    Wikimedia data lags ~24h. Runs every day (not just weekdays) so non-trading
+    days still produce attention rows we can forward-fill into Monday's prediction.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    logger.info("Scheduler: starting Wikipedia pageview fetch")
+    try:
+        from src.pipeline.wikipedia_fetcher import WikipediaPageviewFetcher
+        Base.metadata.create_all(engine)
+        target_day = _date.today() - _td(days=1)
+        with WikipediaPageviewFetcher() as fetcher:
+            results = fetcher.fetch_all(start_date=target_day, end_date=target_day)
+        ok = sum(1 for v in results.values() if v == "ok")
+        logger.info(
+            "Scheduler: Wikipedia pageviews complete — %d/%d tickers ok",
+            ok, len(results),
+        )
+        _record_run("fetch_wikipedia_pageviews", f"ok ({ok}/{len(results)} tickers)")
+    except Exception:
+        logger.exception("Scheduler: Wikipedia pageview fetch failed")
+        _record_run("fetch_wikipedia_pageviews", "error")
+
+
 def job_generate_recommendations():
     """7:30 AM ET — Run ML models and generate recommendations."""
     logger.info("Scheduler: starting recommendation generation")
@@ -211,6 +237,7 @@ def job_generate_recommendations():
                 from src.features.sector import get_sector_features
                 from src.features.sentiment import get_sentiment_features
                 from src.features.short_interest import get_short_interest_features
+                from src.features.wikipedia import get_wikipedia_features
                 features = {
                     "rsi_14": ind.rsi_14 or 50,
                     "macd": ind.macd or 0,
@@ -238,6 +265,7 @@ def job_generate_recommendations():
                 features.update(earnings_feats)
                 features.update(get_analyst_features(db, ticker, price.date))
                 features.update(get_short_interest_features(db, ticker, price.date))
+                features.update(get_wikipedia_features(db, ticker, price.date))
 
                 # Optional: skip recommendations within 3 days of earnings (P9-005)
                 if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
@@ -461,6 +489,7 @@ def init_scheduler():
     scheduler.add_job(job_fetch_prices, CronTrigger(hour=6, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_prices", replace_existing=True)
     scheduler.add_job(job_compute_indicators, CronTrigger(hour=6, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="compute_indicators", replace_existing=True)
     scheduler.add_job(job_fetch_options, CronTrigger(hour=6, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_options", replace_existing=True)
+    scheduler.add_job(job_fetch_wikipedia_pageviews, CronTrigger(hour=5, minute=30, timezone="US/Eastern"), id="fetch_wikipedia_pageviews", replace_existing=True)
     scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
