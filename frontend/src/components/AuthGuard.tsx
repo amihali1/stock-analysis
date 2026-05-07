@@ -37,14 +37,16 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 export function LogoutButton() {
-  const router = useRouter();
   const pathname = usePathname();
 
   if (pathname === "/login") return null;
 
   async function handleLogout() {
-    await logout();
-    router.push("/login");
+    try {
+      await logout();
+    } finally {
+      window.location.replace("/login");
+    }
   }
 
   return (
