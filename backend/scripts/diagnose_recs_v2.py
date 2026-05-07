@@ -19,6 +19,7 @@ from src.features.options import get_options_features
 from src.features.sector import get_sector_features
 from src.features.sentiment import get_sentiment_features
 from src.features.short_interest import get_short_interest_features
+from src.features.wikipedia import get_wikipedia_features
 from src.models.directional import DirectionalModel
 from src.models.ensemble import Ensemble, SignalInputs
 
@@ -81,6 +82,7 @@ def main() -> int:
         features.update(get_earnings_features(db, ticker, price.date))
         features.update(get_analyst_features(db, ticker, price.date))
         features.update(get_short_interest_features(db, ticker, price.date))
+        features.update(get_wikipedia_features(db, ticker, price.date))
         try:
             dp, dc = model.predict(features)
         except Exception:

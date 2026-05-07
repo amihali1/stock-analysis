@@ -798,3 +798,78 @@ actually shipped — other test files are dev-only).
 sentiment run logs show YahooRssFetcher hits + recency-gate dropped counts.
 Then proceed with v5 training (post-watchlist-expansion data has ~1d of
 accumulation as of today).
+
+---
+
+## 2026-05-07 — Session: P10-008 Wikipedia page-view features
+
+**Agent**: Claude Opus 4.7
+**Ticket**: P10-008
+**What was done**:
+
+Added Wikipedia daily page-view counts as a retail-attention proxy for the
+directional model — a strict superset of the Google-Trends signal in
+Da/Engelberg/Gao (2011) since Wikimedia exposes 2+ years of free, unauth
+daily history per article.
+
+Files created:
+- `backend/src/config/wikipedia_titles.json` — hand-curated 159-ticker →
+  Wikipedia title map. Disambiguates single-letter tickers (F, T, C, O), share
+  classes (BRK-B, GOOGL), renames (META, SQ, SLB, ZM, GE), and ETFs (sector
+  SPDRs all map to `Select_Sector_SPDRs`).
+- `backend/alembic/versions/k1l3m5n7o9p1_add_wikipedia_pageviews.py` — new
+  table `wikipedia_pageviews(ticker, view_date, page_views, wikipedia_title,
+  fetched_at)` + composite unique index on (ticker, view_date). Chains from
+  `j0k2l4m6n8o0`.
+- `backend/src/db/models.py` — added `WikipediaPageviews` model.
+- `backend/src/pipeline/wikipedia_fetcher.py` — `WikipediaPageviewFetcher`
+  hitting the Wikimedia per-article daily endpoint. Includes the required
+  `User-Agent: stock-analysis andymihalik@gmail.com` header (same convention
+  as SEC), date-chunked at 50d/call, 3-attempt exponential-backoff retry on
+  429/5xx, URL-encodes special chars (e.g. `&` in `AT&T`), stubs missing days
+  with 0 to keep the series dense for rolling stats.
+- `backend/src/features/wikipedia.py` — 5 features:
+  `wiki_views_zscore_30d`, `wiki_views_zscore_180d`, `wiki_views_change_7d`,
+  `wiki_views_spike` (>3× trailing-30d mean), `wiki_views_log` (log1p).
+  Uses `pd.merge_asof(direction='backward')` so weekend Wikipedia data
+  forward-fills into Monday's prediction row.
+- `backend/scripts/backfill_wikipedia_pageviews.py` — idempotent CLI with
+  `--lookback-days` (default 730), `--tickers`, `--end-date`. Re-runs are
+  cheap thanks to the composite unique index.
+- `backend/tests/test_wikipedia_fetcher.py` (10 tests) — date-chunked
+  backfill, gap densification, 404/5xx handling, retry, URL-encoding,
+  unmapped-ticker skip.
+- `backend/tests/test_wikipedia_features.py` (13 tests) — quiet/spike/noisy
+  z-scores, change-7d edges, log scaling, weekend forward-fill via merge_asof,
+  empty/unknown-ticker defaults.
+
+Files extended:
+- `backend/src/models/directional.py` — `FEATURE_COLS` += 5 wiki cols
+  (now 49 total), `_merged_defaults`, and `build_dataset` attach hook.
+- `backend/src/pipeline/scheduler.py` — new `job_fetch_wikipedia_pageviews`
+  cron at 5:30 ET *every day* (Wikipedia data is daily even on weekends,
+  and we want fresh Monday data forward-filled from the weekend). Inference
+  feature dict in `job_generate_recommendations` extended.
+- `backend/scripts/diagnose_recs_v2.py` — feature dict extended.
+
+Side-effect refactor (forced by package-name collision):
+- Converted `backend/src/config.py` (a single module) into
+  `backend/src/config/__init__.py` (a package) so the new
+  `wikipedia_titles.json` could live at the path the ticket specified.
+  Verified `from src.config import get_settings, sector_etf_for, SECTOR_ETF_MAP`
+  still works; full test suite (278/278) passes unchanged.
+
+**Test results**: 278/278 passing locally (incl. 23 new wikipedia tests).
+v5 trainer/promotion is intentionally NOT included in this ticket — that's
+a follow-up after the backfill runs in prod and we have ~115k dense rows
+to retrain on.
+
+**Next steps**:
+1. Push branch + merge to master.
+2. Run alembic upgrade in prod container.
+3. Run `python -m scripts.backfill_wikipedia_pageviews` in prod (~159
+   tickers × 730d / 50d-per-call ≈ 2,300 HTTP calls; ~5 minutes).
+4. Verify scheduler picks up `fetch_wikipedia_pageviews` job at 5:30 ET.
+5. Once dense data is in place, write `train_directional_v5.py` (or v6 if
+   bundling with another P10 group), apply the AUC ≥ v3 + 0.005 promotion
+   gate. Bundling with P10-005 (insider) once that lands is reasonable.
