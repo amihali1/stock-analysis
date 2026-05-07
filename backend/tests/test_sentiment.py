@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.db.models import Base, SentimentScore
 from src.pipeline.sentiment import SentimentAnalyzer, SentimentResult, _weighted_average, _fallback_parse
-from src.services.headline_fetcher import Headline, YahooRssFetcher
+from src.services.headline_fetcher import Headline, YahooRssFetcher, _parse_date
 
 
 @pytest.fixture
@@ -108,6 +108,27 @@ class TestYahooRssFetcher:
 
         monkeypatch.setattr("src.services.headline_fetcher.feedparser.parse", lambda url: _Parsed())
         assert YahooRssFetcher().fetch("AAPL") == []
+
+
+class TestParseDate:
+    def test_pandas_timestamp_normalized_to_date(self):
+        import pandas as pd
+
+        ts = pd.Timestamp("2026-05-07 09:30:00")
+        parsed = _parse_date(ts)
+        assert type(parsed) is date
+        assert parsed == date(2026, 5, 7)
+
+    def test_datetime_normalized_to_date(self):
+        from datetime import datetime as _dt
+
+        parsed = _parse_date(_dt(2026, 5, 7, 9, 30))
+        assert type(parsed) is date
+        assert parsed == date(2026, 5, 7)
+
+    def test_plain_date_passes_through(self):
+        d = date(2026, 5, 7)
+        assert _parse_date(d) is d
 
 
 class TestSentimentAnalyzerIntegration:

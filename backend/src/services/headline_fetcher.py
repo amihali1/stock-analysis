@@ -106,6 +106,8 @@ def _parse_date(val) -> date | None:
     """Best-effort date parsing for Finviz rows."""
     if val is None:
         return None
+    if isinstance(val, datetime):
+        return val.date()
     if isinstance(val, date):
         return val
     try:
