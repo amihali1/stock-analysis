@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -67,8 +68,20 @@ def job_compute_indicators():
         _record_run("compute_indicators", "error")
 
 
-async def job_sentiment():
-    """7:00 AM ET — Fetch headlines, run sentiment analysis, persist daily aggregate."""
+def job_sentiment():
+    """7:00 AM ET — Fetch headlines, run sentiment analysis, persist daily aggregate.
+
+    Sync wrapper around the async implementation. AsyncIOScheduler can run
+    coroutine jobs directly, but doing so silently no-ops if the loop it
+    captured at startup isn't the loop that handles the tick (we hit this on
+    2026-05-08 — the job left no entry in last_job_runs). asyncio.run gives
+    us a fresh loop in the executor thread and a hard error if the body
+    fails to start.
+    """
+    asyncio.run(_job_sentiment_async())
+
+
+async def _job_sentiment_async():
     logger.info("Scheduler: starting sentiment analysis")
     try:
         from datetime import date as _date
@@ -204,11 +217,14 @@ def job_generate_recommendations():
         count = 0
         filtered_count = 0
         below_floor_count = 0
+        no_indicator = 0
+        no_price = 0
         candidates: list[Candidate] = []
 
         try:
             from src.db.watchlist import get_watchlist_tickers
-            for ticker in get_watchlist_tickers(db):
+            watchlist = get_watchlist_tickers(db)
+            for ticker in watchlist:
                 # Get latest indicator row
                 ind = (
                     db.query(TechnicalIndicator)
@@ -217,6 +233,7 @@ def job_generate_recommendations():
                     .first()
                 )
                 if not ind:
+                    no_indicator += 1
                     continue
 
                 # Get latest price
@@ -227,6 +244,7 @@ def job_generate_recommendations():
                     .first()
                 )
                 if not price or not price.close:
+                    no_price += 1
                     continue
 
                 # Build features for directional model
@@ -406,11 +424,17 @@ def job_generate_recommendations():
 
         pipeline_recommendations_generated_total.inc(count)
         logger.info(
-            "Scheduler: recommendations complete — %d new, %d candidates evaluated, "
+            "Scheduler: recommendations complete — %d new, %d watchlist, %d candidates evaluated, "
+            "%d skipped (no indicator), %d skipped (no price), "
             "%d below dir_prob floor (base_rate*%.2f), %d filtered for confidence",
-            count, len(candidates), below_floor_count, settings.min_dir_prob_lift, filtered_count,
+            count, len(watchlist), len(candidates), no_indicator, no_price,
+            below_floor_count, settings.min_dir_prob_lift, filtered_count,
         )
-        _record_run("recommendations", f"ok ({count} recs, {filtered_count} filtered)")
+        _record_run(
+            "recommendations",
+            f"ok ({count} recs, {len(candidates)}/{len(watchlist)} candidates, "
+            f"{no_indicator} no_ind, {no_price} no_price, {filtered_count} filtered)",
+        )
 
     except Exception:
         logger.exception("Scheduler: recommendation generation failed")
