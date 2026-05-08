@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Date, DateTime, ForeignKey, Index, Text, Enum,
+    Boolean, Column, Integer, String, Float, Date, DateTime, ForeignKey, Index, Text, Enum,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 import enum
@@ -425,4 +425,61 @@ class WikipediaPageviews(Base):
     view_date = Column(Date, nullable=False)
     page_views = Column(Integer, default=0)
     wikipedia_title = Column(String(200))
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SecCikMap(Base):
+    """Ticker → SEC CIK resolution cache (P10-005).
+
+    Sourced once daily from https://www.sec.gov/files/company_tickers.json. Kept
+    in DB rather than an in-memory dict so multi-process workers and the
+    backfill script share the same view, and so we have an audit trail of when
+    a ticker's CIK last reconciled with SEC. CIK is stored as zero-padded
+    10-digit string (the form EDGAR URLs require).
+    """
+
+    __tablename__ = "sec_cik_map"
+    __table_args__ = (
+        Index("ix_sec_cik_map_ticker", "ticker", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    cik = Column(String(10), nullable=False)
+    company_name = Column(String(200))
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InsiderTransaction(Base):
+    """SEC Form 4 insider transaction (P10-005).
+
+    One row per insider per filing. Codes follow SEC Section 16 — the meaningful
+    ones for our model are P (open-market purchase) and S (open-market sale).
+    Grants (A), tax events (F, M), and gifts (G) are stored for completeness but
+    filtered out of feature aggregation since they don't carry directional
+    intent. `accession_number` is globally unique across SEC filings and
+    de-dupes re-fetches without coordination.
+    """
+
+    __tablename__ = "insider_transactions"
+    __table_args__ = (
+        Index("ix_insider_tx_accession", "accession_number", unique=True),
+        Index("ix_insider_tx_ticker_date", "ticker", "transaction_date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    accession_number = Column(String(30), nullable=False)
+    filing_date = Column(Date, nullable=False)
+    transaction_date = Column(Date, nullable=False)
+    insider_name = Column(String(200))
+    insider_title = Column(String(200))
+    transaction_code = Column(String(2))  # P/S/A/D/G/F/M/J/...
+    shares = Column(Float)
+    price_per_share = Column(Float)
+    total_value = Column(Float)
+    shares_owned_after = Column(Float)
+    is_director = Column(Boolean, default=False)
+    is_officer = Column(Boolean, default=False)
+    is_10pct_owner = Column(Boolean, default=False)
     fetched_at = Column(DateTime, default=datetime.utcnow)
