@@ -108,12 +108,21 @@ class TestSpreadBuilder:
             assert hasattr(result, 'theta_exposure')
             assert hasattr(result, 'vega_exposure')
 
-    def test_low_score_returns_none(self):
-        """Very low score should not produce a spread."""
+    def test_low_score_still_picks_a_strategy(self):
+        """suggest_spread no longer self-gates on score magnitude.
+
+        Score-based gating moved upstream to Ensemble.meets_confidence (P10-004).
+        With a calibrated dir_prob ceiling around 0.27, the old absolute floors
+        (> 0.6, >= 0.5) were structurally unreachable, so the builder always
+        returned None and no defined-risk recommendations ever shipped.
+        """
         builder = SpreadBuilder()
         score = _make_score(score=0.2, directional=0.2, volatility=0.2, sentiment=0.2)
         result = builder.suggest_spread(score, current_price=150.0)
-        assert result is None
+        # Default branch is bear_call_spread; inner method only returns None on
+        # legitimate sizing failures (non-positive spread width / credit / max loss).
+        assert result is not None
+        assert result.strategy_name == "bear_call_spread"
 
 
 class TestBlackScholesEstimates:

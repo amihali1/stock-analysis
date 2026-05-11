@@ -84,17 +84,17 @@ class SpreadBuilder:
             if 0 < days_to_earnings < expiry_days:
                 earnings_warning = True
 
-        # Choose strategy based on signals
-        if score.directional_signal > 0.6 and score.volatility_signal < 0.5:
-            return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.directional_signal > 0.6 and score.volatility_signal >= 0.5:
-            return self._bear_put_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.volatility_signal > 0.6 and score.directional_signal < 0.4:
+        # Strategy dispatch by vol regime. Directional conviction is already
+        # verified upstream by Ensemble.meets_confidence (directional_lift >= 0.05);
+        # the calibrated dir_prob tops out around 0.27 so the old absolute floors
+        # (> 0.6, >= 0.5) were unreachable. Inner methods still return None on
+        # legitimate sizing failures (non-positive spread width / credit / max loss).
+        if score.volatility_signal > 0.6 and score.directional_signal < 0.4:
             return self._iron_condor(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.score >= 0.5:
+        elif score.volatility_signal >= 0.5:
+            return self._bear_put_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
+        else:
             return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-
-        return None
 
     def _get_premium(
         self, chain_data: list[dict] | None, target_strike: float,
