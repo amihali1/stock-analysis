@@ -9,6 +9,8 @@ endpoint. Tests here assert (a) every expected job id is registered and
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from src.api.routes import health as health_module
@@ -19,6 +21,7 @@ EXPECTED_JOB_IDS = {
     "fetch_prices",
     "compute_indicators",
     "fetch_options",
+    "fetch_insider_transactions",
     "fetch_wikipedia_pageviews",
     "sentiment",
     "recommendations",
@@ -47,12 +50,23 @@ def test_init_scheduler_registers_all_expected_jobs(clean_scheduler, monkeypatch
     assert registered == EXPECTED_JOB_IDS
 
 
+@pytest.mark.skipif(
+    bool(os.getenv("CI")),
+    reason=(
+        "Invokes real production scheduler callables which fan out to yfinance, "
+        "Wikipedia, SEC, and the homelab Ollama at 10.0.0.47. On GitHub-hosted "
+        "runners Ollama is unroutable and per-ticker TCP timeouts across the "
+        "158-ticker default watchlist push the job out past the 6h CI ceiling. "
+        "Run locally (without CI=1) to exercise the real bodies."
+    ),
+)
 @pytest.mark.parametrize(
     "job_callable, job_name",
     [
         (scheduler_module.job_fetch_prices, "fetch_prices"),
         (scheduler_module.job_compute_indicators, "compute_indicators"),
         (scheduler_module.job_fetch_options, "fetch_options"),
+        (scheduler_module.job_fetch_insider_transactions, "fetch_insider_transactions"),
         (scheduler_module.job_fetch_wikipedia_pageviews, "fetch_wikipedia_pageviews"),
         (scheduler_module.job_sentiment, "sentiment"),
         (scheduler_module.job_fetch_earnings, "fetch_earnings"),
