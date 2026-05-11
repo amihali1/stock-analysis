@@ -187,6 +187,25 @@ def job_fetch_wikipedia_pageviews():
         _record_run("fetch_wikipedia_pageviews", "error")
 
 
+def job_fetch_insider_transactions():
+    """6:50 AM ET — Fetch yesterday's SEC Form 4 insider filings for the watchlist."""
+    logger.info("Scheduler: starting insider transaction fetch")
+    try:
+        from src.pipeline.insider_fetcher import InsiderTransactionFetcher
+        Base.metadata.create_all(engine)
+        with InsiderTransactionFetcher() as fetcher:
+            results = fetcher.fetch_all()
+        ok = sum(1 for v in results.values() if v == "ok")
+        logger.info(
+            "Scheduler: insider fetch complete — %d/%d tickers ok",
+            ok, len(results),
+        )
+        _record_run("fetch_insider_transactions", f"ok ({ok}/{len(results)} tickers)")
+    except Exception:
+        logger.exception("Scheduler: insider transaction fetch failed")
+        _record_run("fetch_insider_transactions", "error")
+
+
 def job_generate_recommendations():
     """7:30 AM ET — Run ML models and generate recommendations."""
     logger.info("Scheduler: starting recommendation generation")
@@ -250,6 +269,7 @@ def job_generate_recommendations():
                 # Build features for directional model
                 from src.features.analyst import get_analyst_features
                 from src.features.earnings import get_earnings_features
+                from src.features.insider import get_insider_features
                 from src.features.macro import get_macro_features
                 from src.features.options import get_options_features
                 from src.features.sector import get_sector_features
@@ -284,6 +304,7 @@ def job_generate_recommendations():
                 features.update(get_analyst_features(db, ticker, price.date))
                 features.update(get_short_interest_features(db, ticker, price.date))
                 features.update(get_wikipedia_features(db, ticker, price.date))
+                features.update(get_insider_features(db, ticker, price.date))
 
                 # Optional: skip recommendations within 3 days of earnings (P9-005)
                 if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
@@ -513,6 +534,7 @@ def init_scheduler():
     scheduler.add_job(job_fetch_prices, CronTrigger(hour=6, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_prices", replace_existing=True)
     scheduler.add_job(job_compute_indicators, CronTrigger(hour=6, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="compute_indicators", replace_existing=True)
     scheduler.add_job(job_fetch_options, CronTrigger(hour=6, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_options", replace_existing=True)
+    scheduler.add_job(job_fetch_insider_transactions, CronTrigger(hour=6, minute=50, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_insider_transactions", replace_existing=True)
     scheduler.add_job(job_fetch_wikipedia_pageviews, CronTrigger(hour=5, minute=30, timezone="US/Eastern"), id="fetch_wikipedia_pageviews", replace_existing=True)
     scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)

@@ -20,6 +20,7 @@ from src.db.models import PriceHistory, TechnicalIndicator
 from src.db.session import SessionLocal
 from src.features.analyst import ANALYST_FEATURE_COLS, attach_analyst_features
 from src.features.earnings import EARNINGS_FEATURE_COLS, attach_earnings_features
+from src.features.insider import INSIDER_FEATURE_COLS, attach_insider_features
 from src.features.macro import MACRO_FEATURE_COLS, attach_macro_features
 from src.features.options import OPTIONS_FEATURE_COLS, attach_options_features
 from src.features.sector import SECTOR_FEATURE_COLS, attach_sector_features
@@ -57,6 +58,7 @@ FEATURE_COLS = [
     *ANALYST_FEATURE_COLS,        # P10-001
     *SHORT_INTEREST_FEATURE_COLS, # P10-003
     *WIKIPEDIA_FEATURE_COLS,      # P10-008
+    *INSIDER_FEATURE_COLS,        # P10-005
 ]
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
@@ -143,6 +145,7 @@ class DirectionalModel:
     def _merged_defaults() -> dict[str, float]:
         from src.features.analyst import DEFAULT_ANALYST_FEATURES
         from src.features.earnings import DEFAULT_EARNINGS_FEATURES
+        from src.features.insider import DEFAULT_INSIDER_FEATURES
         from src.features.macro import DEFAULT_MACRO_FEATURES
         from src.features.options import DEFAULT_FEATURES as OPTIONS_DEFAULTS
         from src.features.sector import DEFAULT_SECTOR_FEATURES
@@ -158,6 +161,7 @@ class DirectionalModel:
         out.update(DEFAULT_ANALYST_FEATURES)
         out.update(DEFAULT_SHORT_INTEREST_FEATURES)
         out.update(DEFAULT_WIKIPEDIA_FEATURES)
+        out.update(DEFAULT_INSIDER_FEATURES)
         return out
 
     def train(self, tickers: list[str] | None = None, n_folds: int = 3) -> dict:
@@ -406,6 +410,7 @@ def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
         df = attach_analyst_features(db, df)
         df = attach_short_interest_features(db, df)
         df = attach_wikipedia_features(db, df)
+        df = attach_insider_features(db, df)
     finally:
         db.close()
 
