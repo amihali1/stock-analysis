@@ -237,10 +237,14 @@ class InsiderTransactionFetcher:
 
     def _fetch_form4_xml(self, cik: str, meta: Form4FilingMeta) -> str | None:
         cik_int = str(int(cik))  # strip leading zeros for archive URL
+        # SEC's submissions API often points primaryDocument at the XSL-rendered
+        # viewer path (e.g. "xslF345X05/wk-form4_X.xml") which serves HTML. Strip
+        # any leading xsl*/ prefix so we fetch the raw ownership XML.
+        primary_doc = re.sub(r"^xsl[^/]*/", "", meta.primary_doc)
         url = ARCHIVES_URL.format(
             cik_int=cik_int,
             accession_nodash=_strip_dashes(meta.accession_number),
-            primary_doc=meta.primary_doc,
+            primary_doc=primary_doc,
         )
         try:
             resp = self.http.get(url)
