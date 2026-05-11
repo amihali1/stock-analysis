@@ -16,6 +16,7 @@ from src.pipeline.insider_fetcher import (
     InsiderTransactionFetcher,
     parse_form4_xml,
     _aggregate_lines,
+    _parse_iso_date,
     _strip_dashes,
     _strip_namespaces,
 )
@@ -134,6 +135,24 @@ class TestStripHelpers:
         out = _strip_namespaces(xml)
         assert "xmlns" not in out
         assert "<a>hi</a>" in out
+
+
+class TestParseIsoDate:
+    def test_valid_recent_date(self):
+        assert _parse_iso_date("2025-07-25") == date(2025, 7, 25)
+
+    def test_unparseable_returns_none(self):
+        assert _parse_iso_date("not-a-date") is None
+        assert _parse_iso_date("") is None
+
+    def test_corrupt_year_rejected(self):
+        # Real-world Form 4 transcription error: missing "20" prefix produces
+        # a numerically valid but absurd year. Reject so it doesn't pollute
+        # `days_since_insider_buy/sell` features.
+        assert _parse_iso_date("0025-07-25") is None
+
+    def test_far_future_rejected(self):
+        assert _parse_iso_date("3025-01-01") is None
 
 
 class TestParseForm4Xml:

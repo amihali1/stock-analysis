@@ -88,10 +88,21 @@ def _strip_dashes(accession: str) -> str:
 
 
 def _parse_iso_date(s: str) -> date | None:
+    """Parse a YYYY-MM-DD string into a date, dropping obviously corrupt years.
+
+    Some Form 4 XMLs carry transcription errors like `0025-07-25` (the SEC
+    filer dropped the `20` prefix). `strptime` accepts any year 1-9999, so
+    those rows would otherwise land in `transaction_date` and skew the
+    "days since insider buy/sell" features. We reject anything outside a
+    reasonable trading-data window.
+    """
     try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
+        d = datetime.strptime(s, "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
+    if d.year < 1990 or d.year > date.today().year + 1:
+        return None
+    return d
 
 
 def _bool_xml(text: str | None) -> bool:
