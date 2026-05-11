@@ -238,6 +238,10 @@ def job_generate_recommendations():
         below_floor_count = 0
         no_indicator = 0
         no_price = 0
+        spread_recs = 0
+        options_recs = 0
+        short_recs = 0
+        no_sizer_match = 0
         candidates: list[Candidate] = []
 
         try:
@@ -396,6 +400,7 @@ def job_generate_recommendations():
                     )
                     db.add(rec)
                     count += 1
+                    spread_recs += 1
                     continue
 
                 options_rec = sizer.size_options(score, close_price)
@@ -418,6 +423,7 @@ def job_generate_recommendations():
                     )
                     db.add(rec)
                     count += 1
+                    options_recs += 1
                     continue
 
                 short_rec = sizer.size_short(score, close_price)
@@ -438,6 +444,16 @@ def job_generate_recommendations():
                     )
                     db.add(rec)
                     count += 1
+                    short_recs += 1
+                    continue
+
+                # Passed meets_confidence but no sizer produced a tradable position
+                # (no spread chain, premium too high for $1k cap, no short borrow, etc.)
+                no_sizer_match += 1
+                logger.debug(
+                    "Scheduler: %s passed all gates but no sizer matched "
+                    "(spread/options/short all returned None)", ticker,
+                )
 
             db.commit()
         finally:
@@ -447,14 +463,17 @@ def job_generate_recommendations():
         logger.info(
             "Scheduler: recommendations complete — %d new, %d watchlist, %d candidates evaluated, "
             "%d skipped (no indicator), %d skipped (no price), "
-            "%d below dir_prob floor (base_rate*%.2f), %d filtered for confidence",
+            "%d below dir_prob floor (base_rate*%.2f), %d filtered for confidence, "
+            "sizer breakdown: %d spread / %d options / %d short / %d no_sizer_match",
             count, len(watchlist), len(candidates), no_indicator, no_price,
             below_floor_count, settings.min_dir_prob_lift, filtered_count,
+            spread_recs, options_recs, short_recs, no_sizer_match,
         )
         _record_run(
             "recommendations",
             f"ok ({count} recs, {len(candidates)}/{len(watchlist)} candidates, "
-            f"{no_indicator} no_ind, {no_price} no_price, {filtered_count} filtered)",
+            f"{no_indicator} no_ind, {no_price} no_price, {filtered_count} filtered, "
+            f"sizer: {spread_recs}sp/{options_recs}op/{short_recs}sh/{no_sizer_match}none)",
         )
 
     except Exception:
