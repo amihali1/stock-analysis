@@ -270,6 +270,23 @@ def job_generate_recommendations():
                     no_price += 1
                     continue
 
+                # Lagged returns mirror training (directional.py: close.pct_change(N)).
+                # Inference previously hardcoded these to 0, silently masking a strong
+                # signal class on every prediction.
+                recent_closes = [
+                    r.close
+                    for r in db.query(PriceHistory.close)
+                    .filter(PriceHistory.ticker == ticker, PriceHistory.date <= price.date)
+                    .order_by(PriceHistory.date.desc())
+                    .limit(21)
+                    .all()
+                ]
+
+                def _return_lag(n: int) -> float:
+                    if len(recent_closes) <= n or not recent_closes[n]:
+                        return 0.0
+                    return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
+
                 # Build features for directional model
                 from src.features.analyst import get_analyst_features
                 from src.features.earnings import get_earnings_features
@@ -292,9 +309,9 @@ def job_generate_recommendations():
                     "sma_200": ind.sma_200 or price.close,
                     "sma_crossover": ind.sma_crossover or 0,
                     "volume_zscore": ind.volume_zscore or 0,
-                    "return_5d_lag": 0,
-                    "return_10d_lag": 0,
-                    "return_20d_lag": 0,
+                    "return_5d_lag": _return_lag(5),
+                    "return_10d_lag": _return_lag(10),
+                    "return_20d_lag": _return_lag(20),
                     "close_to_sma50_ratio": price.close / (ind.sma_50 or price.close),
                     "close_to_sma200_ratio": price.close / (ind.sma_200 or price.close),
                     "volatility_20d": 0.2,
