@@ -1029,3 +1029,57 @@ Manual deploy workflow used (and will be needed for any push until resolved): `s
 4. (Deferred) OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block in ai-stack compose.
 5. (Optional, plan b) Bullish-side build: add a long-direction directional model + bull-call/bull-put sizers + ranker extension. Today's bearish-only architecture means we miss every up-trending opportunity. Separate session.
 6. Resolve GH Actions billing.
+
+---
+
+## 2026-05-12 — Session 25: bullish-side build kickoff (Phase 0 + Phase 1)
+
+**Agent**: Claude (Opus 4.7)
+**Branch**: `feature/bullish-direction-column` → merged via PR #32
+
+**Context**: Today's pipeline only surfaces bearish opportunities (shorts, puts, bear spreads). User confirmed long-term goal is to maximize trading options for best profit outcome. Started multi-phase bullish-side build.
+
+**User-driven design decisions** (saved to `bullish_side_build_2026-05-12.md` memory):
+1. $5,000 capital cap stays direction-blind — no long/short sub-split.
+2. Maximize instrument coverage from the start: long stock, long calls, bull spreads (no defined-risk-only V1).
+3. Paper-trading parity is non-optional — Alpaca executor must handle all new strategies in Phase 5.
+4. Sentiment becomes additive (composite-score weighting), not a hard gate — drop `meets_confidence` filter in Phase 3.
+
+**Phase 0 — schema (shipped, PR #32):**
+- Alembic migration `m3n5o7p9q1r3` adds `direction VARCHAR(5) NOT NULL DEFAULT 'short'` to `recommendations` and `paper_trades`, plus index `(date, direction)`.
+- SQLAlchemy models mirror the schema.
+- Round-tripped clean on local SQLite (upgrade → downgrade → upgrade).
+- 356 tests pass.
+- Deployed: merged, rebuilt backend on VM, migration applied to PostgreSQL. Verified `direction` column live.
+
+**Code audit (paper-trading parity check):**
+- `order_mapper.py` — dispatches on `strategy`, hardcoded sides. **Needs Phase 5 work** (`_map_long`, `_map_bull_spread`, `_map_call_options`).
+- `safety_rails.py` — already direction-correct (only multiplies by 1.5 for shorts). ✓
+- `execution_engine.py`, `portfolio_sync.py`, `paper_validation.py` — direction-blind. ✓
+
+**Phase 1 — train rise model (in progress at session pause):**
+- Parameterized `DirectionalModel.__init__` with `direction: str = "drop"` and `calibration_method: str | None = None` (override the auto-pick).
+- `build_dataset` takes `direction="drop"|"rise"`; label flips between forward_return < -0.03 and forward_return > +0.03.
+- Pickled payload now includes `direction` field for future verification (legacy pickles default to "drop").
+- New `backend/scripts/train_rise.py` — instantiates `DirectionalModel(direction="rise", calibration_method="sigmoid")`, trains, saves as `directional_xgb_rise_v1.pkl` with metrics JSON.
+- Forced sigmoid from day one (skip the isotonic detour that produced the plateau-clustered outputs on the drop model).
+- `test_directional_calibration` (5 tests) still green with the refactor.
+
+**Gotcha hit:** The container has THREE copies of `directional.py`:
+- `/app/src/models/directional.py` (development source)
+- `/usr/local/lib/python3.10/site-packages/src/models/directional.py` (pip-installed package)
+- `/app/build/lib/src/models/directional.py` (setuptools build artifact)
+
+Python imports from site-packages, not `/app`. First training run failed with `TypeError: unexpected keyword argument 'direction'` because the site-packages copy was stale. Fix: `docker cp` updates **both** `/app` and `/usr/local/lib/.../src/models/directional.py`. This is the same import-path issue that bit Session 23's `dir_prob_distribution.py` work — should fix the install layout properly eventually.
+
+**Training kicked off:** `docker exec -w /app backend-backend-1 python /tmp/train_rise.py > /tmp/train_rise.log 2>&1 &` — monitoring for completion.
+
+**Files touched (not yet committed beyond PR #32):**
+- `backend/src/models/directional.py` — parameterized direction + calibration_method
+- `backend/scripts/train_rise.py` — new training entry point
+
+**Next steps when training completes:**
+1. Read metrics from `/tmp/train_rise.log` and `directional_xgb_rise_v1.metrics.json`.
+2. `docker cp` the pickle out to host filesystem at `/opt/stock-analysis/backend/trained_models/directional_xgb_rise_v1.pkl` so future rebuilds preserve it.
+3. Commit Phase 1 (directional.py refactor + train_rise.py + metrics JSON), open PR.
+4. Move to Phase 2: long-side sizers.

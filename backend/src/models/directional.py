@@ -64,18 +64,37 @@ FEATURE_COLS = [
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
 DEFAULT_MODEL_PATH = MODEL_DIR / "directional_xgb_v1.pkl"
 
-# Target: stock drops >3% in the next 5 trading days
+# Target labels: 5-trading-day forward move past ±3%.
 DROP_THRESHOLD = -0.03
+RISE_THRESHOLD = 0.03
 FORWARD_DAYS = 5
 
 
 class DirectionalModel:
-    def __init__(self, model_path: Path | None = None):
+    def __init__(
+        self,
+        model_path: Path | None = None,
+        direction: str = "drop",
+        calibration_method: str | None = None,
+    ):
+        """A binary directional classifier.
+
+        direction: "drop" (default) labels forward returns < DROP_THRESHOLD;
+                   "rise" labels forward returns > RISE_THRESHOLD.
+        calibration_method: when None, auto-pick (isotonic for ≥1k samples,
+                   sigmoid otherwise). Override to "sigmoid" to skip isotonic —
+                   we use sigmoid for both directions now after the 2026-05-12
+                   plateau finding (see directional_calibration_plateaus memory).
+        """
+        if direction not in ("drop", "rise"):
+            raise ValueError(f"direction must be 'drop' or 'rise', got {direction!r}")
         self.model: xgb.XGBClassifier | None = None
         self.calibrator: CalibratedClassifierCV | None = None
         self.brier_score: float | None = None
         self.model_path = model_path or DEFAULT_MODEL_PATH
         self.feature_cols = FEATURE_COLS
+        self.direction = direction
+        self.calibration_method = calibration_method
 
     def load(self) -> None:
         """Load a trained model from disk."""
@@ -85,9 +104,13 @@ class DirectionalModel:
         self.feature_cols = data.get("feature_cols", FEATURE_COLS)
         self.calibrator = data.get("calibrator")
         self.brier_score = data.get("brier_score")
+        # Legacy pickles predate the field; default to "drop" (the only direction
+        # we trained before 2026-05-12).
+        self.direction = data.get("direction", "drop")
         logger.info(
-            "Loaded directional model from %s (calibrator=%s)",
-            self.model_path, "present" if self.calibrator is not None else "absent",
+            "Loaded directional model from %s (direction=%s, calibrator=%s)",
+            self.model_path, self.direction,
+            "present" if self.calibrator is not None else "absent",
         )
 
     def save(self) -> None:
@@ -98,6 +121,7 @@ class DirectionalModel:
             "feature_cols": self.feature_cols,
             "calibrator": self.calibrator,
             "brier_score": self.brier_score,
+            "direction": self.direction,
         }
         with open(self.model_path, "wb") as f:
             pickle.dump(payload, f)
@@ -169,8 +193,8 @@ class DirectionalModel:
 
         Returns metrics dict.
         """
-        logger.info("Building dataset...")
-        df = build_dataset(tickers)
+        logger.info("Building dataset (direction=%s)...", self.direction)
+        df = build_dataset(tickers, direction=self.direction)
 
         if len(df) < 500:
             raise ValueError(f"Not enough data to train: {len(df)} rows (need 500+)")
@@ -270,10 +294,14 @@ class DirectionalModel:
         self.model.fit(X_train, y_train, verbose=False)
 
         # Calibrate on the held-out calibration fold (P9-006).
-        # Isotonic for ≥1k samples, fall back to sigmoid for small calibration sets.
+        # Auto-pick: isotonic for ≥1k samples, sigmoid otherwise. Override via
+        # constructor `calibration_method`. Post-2026-05-12 we force sigmoid for
+        # rise too — isotonic emits ~4 discrete plateaus that broke the gate.
         self.calibrator = None
         if len(X_calib) >= 200 and len(set(y_calib)) > 1:
-            method = "isotonic" if len(X_calib) >= 1000 else "sigmoid"
+            method = self.calibration_method or (
+                "isotonic" if len(X_calib) >= 1000 else "sigmoid"
+            )
             try:
                 self.calibrator = CalibratedClassifierCV(
                     estimator=self.model, cv="prefit", method=method,
@@ -328,8 +356,12 @@ class DirectionalModel:
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
 
-def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
+def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> pd.DataFrame:
     """Build training dataset by joining price_history + technical_indicators.
+
+    `direction` selects which forward-return threshold defines the positive class:
+    "drop" (default) → label=1 when forward_return < -3%
+    "rise"           → label=1 when forward_return > +3%
 
     Creates binary label: 1 if stock drops >3% in the next 5 trading days.
     """
@@ -391,9 +423,12 @@ def build_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
         # 20-day realized volatility
         g["volatility_20d"] = g["close"].pct_change().rolling(20).std() * np.sqrt(252)
 
-        # Forward return for label (will drop >3%?)
+        # Forward return for label.
         g["forward_return"] = g["close"].shift(-FORWARD_DAYS) / g["close"] - 1
-        g["label"] = (g["forward_return"] < DROP_THRESHOLD).astype(int)
+        if direction == "rise":
+            g["label"] = (g["forward_return"] > RISE_THRESHOLD).astype(int)
+        else:
+            g["label"] = (g["forward_return"] < DROP_THRESHOLD).astype(int)
 
         all_ticker_dfs.append(g)
 
