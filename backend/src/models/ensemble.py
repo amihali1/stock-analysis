@@ -71,11 +71,14 @@ class Ensemble:
         Volatility signal: higher predicted vol = more opportunity for options (0-1)
         Sentiment signal: negative sentiment = bearish = higher signal (0-1)
 
-        meets_confidence uses a relative directional-lift gate (mirror of
-        rec_ranker.py's dir_prob lift) plus an absolute sentiment-confidence
-        floor. This replaces the prior `abs(prob - 0.5) * 2 >= 0.75` directional
-        check, which was structurally unreachable for the calibrated rare-event
-        directional model (max observed dir_conf was ~0.48 on bearish picks).
+        meets_confidence used to gate on a relative directional-lift floor plus
+        a sentiment-confidence floor. The directional-lift component was dropped
+        on 2026-05-12 after re-fitting v3 with Platt sigmoid calibration: the
+        calibrator's outputs now cluster tightly around the base rate
+        (~0.18 ± 0.002), making any absolute lift floor noise. Ranking moved to
+        a pure top-K-by-composite-score model (see rec_ranker.py); only the
+        sentiment-confidence floor remains as a per-rec quality filter.
+
         Volatility is excluded from the gate — the LSTM has no per-prediction
         confidence — but still contributes to the weighted score.
         """
@@ -96,18 +99,7 @@ class Ensemble:
             + self.w_sent * sent_signal
         )
 
-        # Bearish-lift: how far above the unconditional base rate the model's
-        # bearish prediction sits, normalized to [0, 1]. 0 = at-or-below base rate
-        # (no informative bearish signal); 1 = perfect certainty of drop.
-        if self.base_rate < 1.0 and inputs.directional_prob > self.base_rate:
-            directional_lift = (inputs.directional_prob - self.base_rate) / (1.0 - self.base_rate)
-        else:
-            directional_lift = 0.0
-
-        meets_confidence = (
-            directional_lift >= self.min_directional_lift
-            and inputs.sentiment_confidence >= self.min_sentiment_confidence
-        )
+        meets_confidence = inputs.sentiment_confidence >= self.min_sentiment_confidence
 
         return EnsembleScore(
             ticker=inputs.ticker,
