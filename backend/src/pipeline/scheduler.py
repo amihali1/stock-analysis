@@ -373,17 +373,13 @@ def job_generate_recommendations():
                     extras={"price_close": price.close},
                 ))
 
-            # Rank: dir_prob beats base_rate * lift, sort by composite score, cap at top-K.
-            # The composite score is now a ranker, not a gate — see rec_ranker.py for why.
+            # Pure top-K by composite score. The legacy dir_prob floor was a
+            # knife-edge on v3's isotonic calibration plateaus; under sigmoid
+            # calibration outputs cluster tightly around base rate, making any
+            # absolute lift floor noise. See rec_ranker.py for full history.
             selected = select_candidates(
                 candidates,
-                base_rate=settings.directional_base_rate,
-                min_dir_prob_lift=settings.min_dir_prob_lift,
                 top_k=settings.recommendations_top_k,
-            )
-            below_floor_count = len(candidates) - len(
-                [c for c in candidates
-                 if c.directional_prob >= settings.directional_base_rate * settings.min_dir_prob_lift]
             )
 
             for cand in selected:
@@ -480,10 +476,10 @@ def job_generate_recommendations():
         logger.info(
             "Scheduler: recommendations complete — %d new, %d watchlist, %d candidates evaluated, "
             "%d skipped (no indicator), %d skipped (no price), "
-            "%d below dir_prob floor (base_rate*%.2f), %d filtered for confidence, "
+            "top_k=%d selected, %d filtered for confidence, "
             "sizer breakdown: %d spread / %d options / %d short / %d no_sizer_match",
             count, len(watchlist), len(candidates), no_indicator, no_price,
-            below_floor_count, settings.min_dir_prob_lift, filtered_count,
+            len(selected), filtered_count,
             spread_recs, options_recs, short_recs, no_sizer_match,
         )
         _record_run(
