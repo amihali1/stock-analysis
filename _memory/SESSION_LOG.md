@@ -974,3 +974,58 @@ Manual deploy workflow used (and will be needed for any push until resolved): `s
 4. (De-risk, deferred) Per-ticker upsert in `_job_sentiment_async` to make sentiment runs crash-safe.
 5. (Preemptive, deferred) Apply `devices:` block to whisper in ai-stack compose.
 6. (Long-running) v6 per-ticker event features — now confirmed as the only realistic path to break the calibration plateau ceiling that's gating recs.
+
+---
+
+## 2026-05-12 — Session 24: sigmoid recalibration + pure top-K ranker (PR #31)
+
+**Agent**: Claude (Opus 4.7)
+**Branch**: `experiment/recalibrate-v3-sigmoid` → merged via PR #31 squash
+
+**Context carried forward from Session 23**: dir_prob plateau structure was the real bottleneck; the `0.2275` floor sat 0.0002 below an isotonic plateau. Session 23 left this unresolved. Two angles to try this session: (1) re-fit the v3 calibrator with Platt sigmoid to smooth the plateaus, and (2) reconsider the floor itself.
+
+**What was done**:
+1. **Recalibration experiment** — `backend/scripts/recalibrate_v3_sigmoid.py` loads v3, rebuilds the 70/15/15 time-based dataset split, fits `CalibratedClassifierCV(method="sigmoid", cv="prefit")` on the calibration fold, compares Brier/distributions, saves the new pickle.
+   - Raw v3 AUC=0.5546 (unchanged — calibration doesn't move the underlying signal).
+   - **Sigmoid Brier=0.1601** vs isotonic 0.1643 — sigmoid is strictly better as a calibrator.
+   - But sigmoid distribution compresses to a tight 0.005-wide band around the 0.18 base rate (live watchlist range: 0.1794–0.1841, 35 distinct values vs isotonic's 7). Still **0/158 above the 0.2275 floor**.
+   - Conclusion: recalibration alone doesn't unlock recs. The floor itself is the wrong shape of gate for this model.
+2. **Architectural decision** — drop the absolute `dir_prob` floor entirely. Rationale: when the model's information content is concentrated within a ~0.005-wide band around base rate, absolute thresholds are noise. The composite score (which integrates dir_prob with vol and sentiment, both of which DO vary meaningfully across tickers) is the right ranking signal. This is correct, not a workaround.
+3. **PR #31** — pure top-K bundle:
+   - `rec_ranker.select_candidates` → pure top-K by composite score; `base_rate`/`min_dir_prob_lift` kwargs accepted but ignored (back-compat for config-driven scheduler invocation).
+   - `ensemble.meets_confidence` → drop directional_lift component; gate on sentiment_confidence floor only.
+   - `scheduler.py` → log `top_k=%d selected` instead of `below dir_prob floor`.
+   - Tests rewritten (test_rec_ranker, test_position_sizer TestEnsemble) to match new architecture. All 45 tests green locally (32 ranker+sizer + 13 scheduler).
+4. **Manual deploy** (GH Actions still billing-blocked):
+   - Merged PR #31 (squash), pulled master on VM, `docker compose up -d --build backend`.
+   - The rebuild blew away the in-container sigmoid pickle (the experiment script wrote to `/app/trained_models/` inside the container, not the host — and the Dockerfile `COPY trained_models/ trained_models/` re-bakes the host's isotonic pickle on every build).
+   - Persistence fix: re-ran recalibration in the new container, `docker cp`-ed the sigmoid pickle out to `/opt/stock-analysis/backend/trained_models/directional_xgb_v1.pkl` on the **host filesystem** (backup as `.bak.20260512-isotonic`). Future rebuilds now pick up the sigmoid pickle automatically.
+   - Copied the host pickle back into the running container and restarted backend.
+5. **Verification** — triggered `job_generate_recommendations` in container. **9 new recommendations generated**, 158 candidates evaluated, top_k=10 selected, 0 filtered for confidence, sizer breakdown: 8 options + 1 short + 1 no_sizer_match.
+   - Top recs: CMCSA, SNAP, SHOP, CHTR, NKE, NFLX, INTC, COIN, CRM. All dir_signal ~0.18 (sigmoid band), composite score ~0.31–0.34. Position sizes $325–$676.
+   - 4-day stale-rec streak broken.
+
+**Files touched**:
+- `backend/src/pipeline/rec_ranker.py` — pure top-K rewrite + history docstring
+- `backend/src/models/ensemble.py` — drop directional_lift from meets_confidence
+- `backend/src/pipeline/scheduler.py` — call site + log line
+- `backend/tests/test_rec_ranker.py` — rewritten for new arch
+- `backend/tests/test_position_sizer.py` — TestEnsemble class updated
+- `backend/scripts/recalibrate_v3_sigmoid.py` — experiment script (uncommitted; lives only on dev box)
+- VM host: `trained_models/directional_xgb_v1.pkl` (sigmoid), `.bak.20260512-isotonic` backup
+
+**Key insight**: There were two coupled symptoms of the same root cause. The model's AUC≈0.555 means dir_prob carries little ticker-discrimination info; whatever calibrator you stack on top will compress to a narrow band around the base rate. The fix isn't to find a better calibrator or a smarter threshold — it's to **stop using dir_prob as an absolute gate** and let the composite score (which has higher information content) rank.
+
+**State of system**:
+- 9 live recommendations as of 2026-05-12 21:19 UTC.
+- v3 sigmoid pickle live on VM and persisted on host (survives rebuilds).
+- Composite score is the only directional ranker now; sentiment confidence is the only per-rec quality gate.
+- `paper_trading_readiness.md` gate #1 (5 consecutive days of recs) — day 1 of 5 starts today if today's recs are saved end-of-day.
+
+**Next steps**:
+1. Watch tomorrow's scheduled run produce non-zero recs again (continuity check on the gate-removal).
+2. Commit `scripts/recalibrate_v3_sigmoid.py` separately if we want it reproducible in the repo, or leave as one-off and rely on future v6 retrain.
+3. (Deferred from Session 23) Same return-lag bug in `backtester.py:341-343`.
+4. (Deferred) OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block in ai-stack compose.
+5. (Optional, plan b) Bullish-side build: add a long-direction directional model + bull-call/bull-put sizers + ranker extension. Today's bearish-only architecture means we miss every up-trending opportunity. Separate session.
+6. Resolve GH Actions billing.
