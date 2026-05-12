@@ -3,7 +3,7 @@
 import pytest
 
 from src.models.ensemble import Ensemble, SignalInputs, EnsembleScore
-from src.models.position_sizer import PositionSizer, ShortRecommendation, OptionsRecommendation
+from src.models.position_sizer import PositionSizer, ShortRecommendation, OptionsRecommendation, LongRecommendation
 
 
 @pytest.fixture
@@ -208,3 +208,136 @@ class TestRiskType:
         # Spread is defined-risk, short is not
         assert spread.risk_type == "defined"
         assert short.risk_type == "undefined"
+
+
+class TestPositionSizerLong:
+    def test_basic_long(self, sizer):
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
+        rec = sizer.size_long(score, current_price=50.0)
+        assert rec is not None
+        assert rec.strategy == "long"
+        assert rec.direction == "long"
+        assert rec.position_size <= 1000.0
+        assert rec.shares >= 1
+        assert rec.stop_loss < rec.entry_price  # Stop below entry for long
+        assert rec.target_price > rec.entry_price  # Target above entry for long
+        assert rec.max_loss > 0
+        assert rec.risk_type == "defined"
+
+    def test_long_no_margin_multiplier(self, sizer):
+        """Long shares = max_position / price (no 1.5x like shorts)."""
+        score = EnsembleScore(ticker="X", score=1.0, directional_signal=1.0, volatility_signal=0.5, sentiment_signal=0.7)
+        long_rec = sizer.size_long(score, current_price=100.0)
+        short_rec = sizer.size_short(score, current_price=100.0)
+        # Long gets ~10 shares at $1000/$100, short gets ~6 (1000 / (100*1.5))
+        assert long_rec.shares > short_rec.shares
+
+    def test_long_zero_price(self, sizer):
+        score = EnsembleScore(ticker="X", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
+        assert sizer.size_long(score, current_price=0) is None
+
+    def test_long_expensive_stock(self, sizer):
+        score = EnsembleScore(ticker="BRK", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
+        rec = sizer.size_long(score, current_price=50000.0)
+        assert rec is None
+
+
+class TestPositionSizerCallOptions:
+    def test_call_strike_above_current(self, sizer):
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
+        rec = sizer.size_options(score, current_price=200.0, strike_offset_pct=0.05, option_type="call")
+        assert rec is not None
+        assert rec.strike == 210.0  # 200 * 1.05
+        assert rec.option_type == "call"
+        assert rec.direction == "long"
+
+    def test_put_strike_below_current(self, sizer):
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
+        rec = sizer.size_options(score, current_price=200.0, strike_offset_pct=0.05, option_type="put")
+        assert rec.strike == 190.0
+        assert rec.option_type == "put"
+        assert rec.direction == "short"
+
+    def test_invalid_option_type(self, sizer):
+        score = EnsembleScore(ticker="AAPL", score=0.8, directional_signal=0.8, volatility_signal=0.5, sentiment_signal=0.7)
+        with pytest.raises(ValueError):
+            sizer.size_options(score, current_price=100.0, option_type="straddle")
+
+
+class TestSizeBullSpread:
+    def test_basic_bull_spread(self, sizer):
+        score = EnsembleScore(ticker="AAPL", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+        rec = sizer.size_bull_spread(score, current_price=150.0)
+        assert rec is not None
+        assert rec.direction == "long"
+        assert rec.strategy_name in ("bull_call_debit_spread", "bull_put_credit_spread")
+        assert rec.risk_type == "defined"
+        assert rec.max_loss <= 1000.0
+
+    def test_low_vol_picks_bull_put_credit(self, sizer):
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.2, sentiment_signal=0.6)
+        rec = sizer.size_bull_spread(score, current_price=100.0)
+        assert rec is not None
+        assert rec.strategy_name == "bull_put_credit_spread"
+        # Credit spread: net_credit positive
+        assert rec.net_credit > 0
+
+    def test_high_vol_picks_bull_call_debit(self, sizer):
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.7, sentiment_signal=0.6)
+        rec = sizer.size_bull_spread(score, current_price=100.0)
+        assert rec is not None
+        assert rec.strategy_name == "bull_call_debit_spread"
+        # Debit spread: net_credit negative
+        assert rec.net_credit < 0
+
+    def test_low_score_returns_none(self, sizer):
+        """Weak directional + sub-0.5 score → no bull spread suggested."""
+        score = EnsembleScore(ticker="X", score=0.3, directional_signal=0.4, volatility_signal=0.3, sentiment_signal=0.5)
+        assert sizer.size_bull_spread(score, current_price=100.0) is None
+
+    def test_bull_put_credit_max_loss_within_budget(self, sizer):
+        """Credit spread max_loss (buying-power reduction) must stay within max_position."""
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.2, sentiment_signal=0.6)
+        rec = sizer.size_bull_spread(score, current_price=100.0)
+        assert rec is not None
+        assert rec.strategy_name == "bull_put_credit_spread"
+        assert rec.max_loss <= 1000.0
+
+    def test_earnings_within_expiry_sets_warning(self):
+        """SpreadBuilder.suggest_bull_spread flags earnings that fall before expiry."""
+        from datetime import date, timedelta
+        from src.models.options_strategies import SpreadBuilder
+
+        builder = SpreadBuilder(max_position=1000.0)
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+        earnings = date.today() + timedelta(days=15)
+        rec = builder.suggest_bull_spread(score, current_price=100.0, expiry_days=30, earnings_date=earnings)
+        assert rec is not None
+        assert rec.earnings_warning is True
+
+    def test_earnings_after_expiry_no_warning(self):
+        """Earnings beyond the expiry window does not trigger the warning."""
+        from datetime import date, timedelta
+        from src.models.options_strategies import SpreadBuilder
+
+        builder = SpreadBuilder(max_position=1000.0)
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+        earnings = date.today() + timedelta(days=45)
+        rec = builder.suggest_bull_spread(score, current_price=100.0, expiry_days=30, earnings_date=earnings)
+        assert rec is not None
+        assert rec.earnings_warning is False
+
+
+class TestDirectionFields:
+    """Verify direction tagging on all recommendation types."""
+
+    def test_short_direction(self, sizer):
+        score = EnsembleScore(ticker="X", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
+        rec = sizer.size_short(score, current_price=50.0)
+        assert rec.direction == "short"
+
+    def test_bear_spread_direction(self, sizer):
+        score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.6)
+        rec = sizer.size_spread(score, current_price=150.0)
+        assert rec is not None
+        assert rec.direction == "short"
