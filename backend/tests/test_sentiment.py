@@ -1,6 +1,8 @@
 """Tests for sentiment analysis pipeline."""
 
+import asyncio
 import json
+import time
 import pytest
 from datetime import date, timedelta
 from sqlalchemy import create_engine
@@ -278,3 +280,101 @@ class TestRecencyGate:
 
         result = await analyzer.analyze_ticker("AAPL")
         assert result["scores_computed"] == 1
+
+
+class _NopSession:
+    def close(self):
+        pass
+
+
+class TestAnalyzeAllConcurrency:
+    """analyze_all parallelizes ticker work so headline-fetcher I/O overlaps
+    with Ollama scoring. Regressing to a serial loop would cost ~2x throughput
+    on the live pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_tickers_processed_concurrently(self, db_session, monkeypatch):
+        monkeypatch.setattr(
+            "src.pipeline.sentiment.SessionLocal", lambda: _NopSession()
+        )
+        analyzer = SentimentAnalyzer(db=db_session)
+
+        in_flight = 0
+        max_in_flight = 0
+        per_call_delay = 0.05
+
+        async def fake_analyze_ticker(self, ticker, db=None):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(per_call_delay)
+            in_flight -= 1
+            return {"ticker": ticker, "scores_computed": 1}
+
+        monkeypatch.setattr(SentimentAnalyzer, "analyze_ticker", fake_analyze_ticker)
+
+        tickers = [f"T{i}" for i in range(9)]
+        t0 = time.perf_counter()
+        results = await analyzer.analyze_all(tickers=tickers, concurrency=3)
+        elapsed = time.perf_counter() - t0
+
+        assert len(results) == 9
+        # Concurrency cap respected — semaphore guarantees this
+        assert max_in_flight <= 3
+        # Concurrency actually happens — serial would max at 1
+        assert max_in_flight >= 2
+        # 9 tickers at concurrency=3, 0.05s each ≈ 0.15s; serial would be 0.45s.
+        # Generous bound for slow CI scheduling.
+        assert elapsed < 0.35, f"expected <0.35s with concurrency, got {elapsed:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_error_in_one_ticker_does_not_kill_others(self, db_session, monkeypatch):
+        monkeypatch.setattr(
+            "src.pipeline.sentiment.SessionLocal", lambda: _NopSession()
+        )
+        analyzer = SentimentAnalyzer(db=db_session)
+
+        async def fake_analyze_ticker(self, ticker, db=None):
+            if ticker == "BOOM":
+                raise RuntimeError("simulated failure")
+            return {"ticker": ticker, "scores_computed": 1}
+
+        monkeypatch.setattr(SentimentAnalyzer, "analyze_ticker", fake_analyze_ticker)
+
+        results = await analyzer.analyze_all(
+            tickers=["AAPL", "BOOM", "NVDA"], concurrency=2
+        )
+
+        assert results["AAPL"]["scores_computed"] == 1
+        assert results["NVDA"]["scores_computed"] == 1
+        assert results["BOOM"].get("error") is True
+
+    @pytest.mark.asyncio
+    async def test_each_ticker_gets_own_session(self, db_session, monkeypatch):
+        """Per-ticker sessions prevent SQLAlchemy state from leaking across
+        concurrent coroutines. If analyze_all reverts to sharing self.db,
+        this test will see the same session reused."""
+        created_sessions: list[_NopSession] = []
+
+        def session_factory():
+            s = _NopSession()
+            created_sessions.append(s)
+            return s
+
+        monkeypatch.setattr("src.pipeline.sentiment.SessionLocal", session_factory)
+        analyzer = SentimentAnalyzer(db=db_session)
+
+        seen_dbs: list[object] = []
+
+        async def fake_analyze_ticker(self, ticker, db=None):
+            seen_dbs.append(db)
+            return {"ticker": ticker, "scores_computed": 0}
+
+        monkeypatch.setattr(SentimentAnalyzer, "analyze_ticker", fake_analyze_ticker)
+
+        await analyzer.analyze_all(tickers=["A", "B", "C"], concurrency=2)
+
+        # One fresh session per ticker, none is the analyzer's injected db
+        assert len(created_sessions) == 3
+        assert len(set(map(id, seen_dbs))) == 3
+        assert db_session not in seen_dbs

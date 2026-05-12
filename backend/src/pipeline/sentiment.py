@@ -46,17 +46,21 @@ class SentimentAnalyzer:
         if self._owns_db:
             self.db.close()
 
-    async def analyze_ticker(self, ticker: str) -> dict:
+    async def analyze_ticker(self, ticker: str, db: Session | None = None) -> dict:
         """Fetch headlines and analyze sentiment for a single ticker.
 
         Returns summary dict with composite score and individual scores.
+
+        `db` defaults to the analyzer's session; `analyze_all` overrides it
+        with a per-ticker session so concurrent calls don't share state.
         """
+        db = db or self.db
         # Ensure stock exists
-        stock = self.db.query(Stock).filter_by(ticker=ticker).first()
+        stock = db.query(Stock).filter_by(ticker=ticker).first()
         if stock is None:
             stock = Stock(ticker=ticker)
-            self.db.add(stock)
-            self.db.commit()
+            db.add(stock)
+            db.commit()
 
         # Fetch headlines from all sources
         headlines: list[Headline] = []
@@ -97,7 +101,7 @@ class SentimentAnalyzer:
         scores: list[SentimentResult] = []
         for headline in headlines:
             try:
-                result = await self._analyze_headline(ticker, headline)
+                result = await self._analyze_headline(ticker, headline, db=db)
                 if result:
                     scores.append(result)
             except Exception:
@@ -113,8 +117,11 @@ class SentimentAnalyzer:
             "composite_sentiment": composite,
         }
 
-    async def _analyze_headline(self, ticker: str, headline: Headline) -> SentimentResult | None:
+    async def _analyze_headline(
+        self, ticker: str, headline: Headline, db: Session | None = None
+    ) -> SentimentResult | None:
         """Analyze a single headline with Ollama and store the result."""
+        db = db or self.db
         prompt = SENTIMENT_PROMPT.format(ticker=ticker, headline=headline.title)
 
         raw_response = await self.ollama.generate(prompt)
@@ -146,26 +153,44 @@ class SentimentAnalyzer:
             reasoning=result.reasoning,
             raw_response=raw_response,
         )
-        self.db.add(score)
-        self.db.commit()
+        db.add(score)
+        db.commit()
 
         return result
 
-    async def analyze_all(self, tickers: list[str] | None = None) -> dict[str, dict]:
-        """Analyze sentiment for all tickers."""
+    async def analyze_all(
+        self, tickers: list[str] | None = None, concurrency: int = 3
+    ) -> dict[str, dict]:
+        """Analyze sentiment for all tickers concurrently.
+
+        Tickers are processed with a semaphore-bounded `asyncio.gather` so
+        headline-fetcher I/O for one ticker overlaps with Ollama scoring for
+        another. Each ticker uses its own SQLAlchemy session — sessions are
+        not safe to share across concurrent coroutines.
+
+        With `OLLAMA_NUM_PARALLEL=1` (default), Ollama itself still serializes
+        generation, so concurrency=3 is the practical sweet spot: enough to
+        keep the fetcher off the critical path without piling up at Ollama.
+        """
         if tickers is None:
             from src.db.watchlist import get_watchlist_tickers
             tickers = get_watchlist_tickers(self.db)
 
-        results = {}
-        for ticker in tickers:
-            try:
-                results[ticker] = await self.analyze_ticker(ticker)
-            except Exception:
-                logger.exception(f"Sentiment analysis failed for {ticker}")
-                results[ticker] = {"ticker": ticker, "error": True}
+        sem = asyncio.Semaphore(concurrency)
 
-        return results
+        async def _one(ticker: str) -> tuple[str, dict]:
+            async with sem:
+                local_db = SessionLocal()
+                try:
+                    return ticker, await self.analyze_ticker(ticker, db=local_db)
+                except Exception:
+                    logger.exception(f"Sentiment analysis failed for {ticker}")
+                    return ticker, {"ticker": ticker, "error": True}
+                finally:
+                    local_db.close()
+
+        pairs = await asyncio.gather(*(_one(t) for t in tickers))
+        return dict(pairs)
 
 
 def _weighted_average(scores: list[SentimentResult]) -> float:
