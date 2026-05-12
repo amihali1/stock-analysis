@@ -117,12 +117,14 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
     __table_args__ = (
         Index("ix_rec_date_strategy", "date", "strategy"),
+        Index("ix_rec_date_direction", "date", "direction"),
     )
 
     id = Column(Integer, primary_key=True)
     ticker = Column(String(10), ForeignKey("stocks.ticker"), nullable=False)
     date = Column(Date, nullable=False)
-    strategy = Column(String(10), nullable=False)  # short, options
+    direction = Column(String(5), nullable=False, default="short")  # long, short
+    strategy = Column(String(10), nullable=False)  # short, options, spread, long, call_options, bull_spread
     score = Column(Float, nullable=False)  # Ensemble score
     directional_signal = Column(Float)
     volatility_signal = Column(Float)
@@ -148,7 +150,8 @@ class PaperTrade(Base):
 
     id = Column(Integer, primary_key=True)
     ticker = Column(String(10), ForeignKey("stocks.ticker"), nullable=False)
-    strategy = Column(String(10), nullable=False)  # short, options
+    direction = Column(String(5), nullable=False, default="short")  # long, short
+    strategy = Column(String(10), nullable=False)  # short, options, spread, long, call_options, bull_spread
     status = Column(String(10), nullable=False, default="open")  # open, closed
     entry_price = Column(Float, nullable=False)
     stop_loss = Column(Float)
