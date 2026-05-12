@@ -873,3 +873,104 @@ to retrain on.
 5. Once dense data is in place, write `train_directional_v5.py` (or v6 if
    bundling with another P10 group), apply the AUC ≥ v3 + 0.005 promotion
    gate. Bundling with P10-005 (insider) once that lands is reasonable.
+
+---
+
+## 2026-05-12 — Session 22: Sentiment pipeline rescue (Ollama GPU + parallel analyze_all)
+
+**Agent**: Claude Opus 4.7
+**What was done**:
+
+**Diagnosed**: `sentiment_history` had been stale since 2026-05-09. `/api/health` was missing the `sentiment` entry — earlier 2026-05-08 fix had been blamed (async silent failure), but this was a different root cause.
+
+Investigation showed: morning sentiment job started at 11:00 UTC but `_record_run` was never called. Ollama was making calls but each took ~35s on CPU. `docker exec ollama nvidia-smi` returned `Failed to initialize NVML: Unknown Error` — classic `nvidia-container-toolkit` + systemd cgroup loss bug. Container had been Up 5 days; cgroup device permissions were stripped on some intervening systemd/docker daemon-reload event.
+
+**Fixed Ollama (durable)**:
+- `docker restart ollama` immediately restored GPU access — warm gen latency 35s → 2.6s, 32/33 layers on CUDA0, 6.4 GiB VRAM.
+- Edited `/home/proxmox/ai-stack/docker-compose.yml` to add explicit `devices:` block (`/dev/nvidia0`, `/dev/nvidiactl`, `/dev/nvidia-uvm`, `/dev/nvidia-uvm-tools`) for the ollama service. Docker's own cgroup allowlist for `devices:` is structural and survives systemd reloads. Backup at `docker-compose.yml.bak.20260512-101357`. Whisper not updated (same compose, same vulnerability — left for follow-up).
+- Did NOT set `no-cgroups=true` in `/etc/nvidia-container-runtime/config.toml` (needed sudo; explicit devices alone are sufficient).
+
+**Fixed sentiment parallelization (PR #29, not yet merged)**:
+- `analyze_all` was fully serial — headline-fetcher I/O sat on the critical path between Ollama calls.
+- Switched to `asyncio.gather` with `Semaphore(3)`; each ticker gets its own `SessionLocal()` to avoid SQLAlchemy session contention.
+- `analyze_ticker` / `_analyze_headline` now take optional `db` parameter; existing tests preserved.
+- Added 3 tests: concurrency bound respected, error isolation, per-ticker session creation. All 32 tests (sentiment + scheduler) pass, full backend suite green.
+- Branch `fix/sentiment-parallel-analyze-all` (commit `188c82f`), PR #29 open, NOT merged (would trigger deploy mid-run).
+
+**Rescued today's sentiment data**:
+- Original 11:00 UTC job survived the Ollama restart (per-ticker exception handling) and completed at 16:22:05 UTC: `Scheduler: sentiment complete — 159 tickers scored`. Total runtime ~5h22min (CPU phase + GPU phase). `sentiment_history` rows for 2026-05-12 = 159.
+
+**Memory updates**:
+- New: `projects/stock-analysis/ollama_gpu_cgroup_fix_2026-05-12.md` (full diagnosis + fix).
+- Updated: `projects/homelab-monitoring/ollama_gpu_loss.md` (prevention section now describes the applied fix).
+- Updated: `projects/stock-analysis/vm_runtime_layout.md` (scheduler module moved to `/app/src/pipeline/scheduler.py`).
+
+**Current state**:
+- Sentiment pipeline running on GPU, latency ~2.6s/call (was 35s).
+- `sentiment_history` current through 2026-05-12.
+- Today's 11:30 recs run was 0 recs — blocked by `dir_prob >= base_rate * 1.30` floor (158/159 below floor). NOT a sentiment problem today.
+- 3-day stale-rec streak broke `paper_trading_readiness.md` gate #1 (5 consecutive days).
+- PR #29 ready to merge.
+
+**Next steps**:
+1. Merge PR #29 so tomorrow's 07:00 ET run completes in ~25min instead of hours.
+2. Investigate `dir_prob >= base_rate * 1.30` floor — why 158/159 below it today. Model drift, threshold mis-set, or genuinely no setup?
+3. (Cheap win) Add `OLLAMA_FLASH_ATTENTION=1` env var to free ~500 MiB so all 33/33 layers fit on GPU.
+4. (De-risk) Fix all-or-nothing sentiment persistence in `_job_sentiment_async` — upsert per-ticker as you go so a mid-run crash doesn't lose everything.
+5. (Preemptive) Apply same `devices:` block to whisper in ai-stack compose.
+6. (Long-running) Per-ticker event features for v6 directional model — per `directional_model_information_ceiling.md`, the only known path to break the AUC ceiling.
+
+---
+
+## 2026-05-12 — Session 23: dir_prob investigation + scheduler return-lag fix (PR #30)
+
+**Agent**: Claude Opus 4.7
+
+**Picking up from Session 22**: merged PR #29 (sentiment parallelization), then investigated why today's rec job produced 0 recs.
+
+**Investigation: dir_prob floor**
+Wrote `scripts/dir_prob_distribution.py` (later removed from PR — diagnostic only) to score the watchlist with v3 directional and print the full distribution. Required passing explicit `Path("/app/trained_models/directional_xgb_v3.pkl")` since `DEFAULT_MODEL_PATH` still points to v1 and the installed-package `__file__.parent.parent.parent` doesn't resolve to `/app` when run via `docker exec`.
+
+Today's distribution: max **0.1453** (ASML, KLAC), mean 0.1064, median 0.1176, stdev 0.0222. **Zero tickers above 0.18** — the 0.2275 floor is unreachable from today's prediction surface.
+
+**Key finding: calibration plateaus**
+All 8 recs across 2026-05-05/06/11 stored `directional_signal = exactly 0.2277` (different tickers, different days, same value). Combined with today's plateau pattern (every ticker lands on one of 4 discrete values: 0.0741, 0.1230, 0.1413, 0.1453), v3's calibrator clearly emits a small set of plateau values. The 0.2275 floor sits **0.0002 below** the second plateau at 0.2277 — a knife-edge. When the population doesn't land in that bin on a given day, you get zero recs with no soft degradation.
+
+**Scheduler bug found and fixed (PR #30)**
+While investigating, found that `_job_generate_recommendations` hardcodes `return_5d_lag = return_10d_lag = return_20d_lag = 0` (`scheduler.py:295-297`) — but training uses real `close.pct_change(N)` (`directional.py:383-385`). Inference was silently feeding zeros for a feature group the model was trained to depend on.
+
+Fix: fetch last 21 closes per ticker, compute lags inline, fall back to 0 only when history < lag window. Same logic as training.
+
+Re-ran the distribution with real lags wired in: max **stayed at 0.1453**, mean shifted 0.1064 → 0.1083, top-of-pack reshuffled (KLAC, ASML, KHC vs. ASML, KLAC, AAPL) — but plateau structure is intact and no tickers crossed the floor. Today's bullish 20-day regime (mean 5d return +1.4%, 20d +3.7%) is correctly producing low bearish-drop probs.
+
+Verdict: the lag fix is a correctness bug worth shipping (training/inference mismatch), but does NOT unlock recs today. The deeper limitation is v3's calibration plateau structure — v6 (per-ticker event features) is the path forward, not threshold tuning.
+
+**Same bug exists in `backtester.py:341-343`** — out of scope for this PR, flagged in PR description for follow-up.
+
+**PR shipped**:
+- PR #30 (`fix/scheduler-return-lags`, commit `420bcbd`) — merged as `98afb7e`.
+- 21 scheduler + rec_ranker tests pass.
+- Deployed manually via SSH (GitHub Actions blocked, see below). Verified live in container: `return_5d_lag: _return_lag(5)` present at installed package path.
+
+**GitHub Actions billing block**
+Both today's pushes (PR #29 merge at 16:37, PR #30 merge at 20:26) failed with "recent account payments have failed or your spending limit needs to be increased". Yesterday's runs (2026-05-11) succeeded — block kicked in overnight. The private-repo free-tier minutes are exhausted; no payment method is on file as fallback. Self-hosted `deploy` job never runs because `test-backend`/`test-frontend` (GitHub-hosted) are upstream gates and refuse to start.
+
+Manual deploy workflow used (and will be needed for any push until resolved): `ssh proxmox@10.0.0.47 'cd /opt/stock-analysis && git pull origin master'` → `cd /opt/stock-analysis/backend && docker compose up -d --build backend`.
+
+**Memory updates**:
+- New: `projects/stock-analysis/directional_calibration_plateaus_2026-05-12.md` — the 4-plateau finding and why threshold tuning won't help.
+- New: `projects/stock-analysis/gh_actions_billing_block_2026-05-12.md` — billing state, workaround, until-when.
+
+**Current state**:
+- PR #29 + PR #30 both merged and deployed live on VM.
+- 4-day stale-rec streak (2026-05-07 thru 2026-05-12); `paper_trading_readiness.md` gate #1 (5 consecutive days of recs) is now further from being met.
+- v3 calibration plateaus confirmed as the real bottleneck — v6 features are the unblock.
+- GitHub Actions blocked until billing cycle resets or repo is made public / payment method added.
+
+**Next steps**:
+1. Resolve GH Actions billing (make repo public, add payment method, or just wait for the cycle reset).
+2. Fix the matching `return_*_lag` bug in `backtester.py:341-343` so historical backtests aren't biased by the same zero-feature blind spot.
+3. (Cheap win, deferred from Session 22) `OLLAMA_FLASH_ATTENTION=1` to fit all 33/33 layers on GPU.
+4. (De-risk, deferred) Per-ticker upsert in `_job_sentiment_async` to make sentiment runs crash-safe.
+5. (Preemptive, deferred) Apply `devices:` block to whisper in ai-stack compose.
+6. (Long-running) v6 per-ticker event features — now confirmed as the only realistic path to break the calibration plateau ceiling that's gating recs.
