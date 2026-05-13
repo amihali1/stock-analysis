@@ -324,6 +324,19 @@ class Backtester:
                 continue
             ind = ind_row.iloc[0]
 
+            # Lagged returns at N trading days back. Training uses
+            # close.pct_change(N); inference must match or every prediction
+            # gets a zero on three feature columns that carry real importance.
+            ticker_history = price_data[
+                (price_data["ticker"] == ticker) & (price_data["date"] <= current_date)
+            ].sort_values("date", ascending=False)
+            recent_closes = ticker_history["close"].tolist()
+
+            def _return_lag(n: int) -> float:
+                if len(recent_closes) <= n or not recent_closes[n]:
+                    return 0.0
+                return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
+
             # Build directional prediction
             if dir_model is not None:
                 features = {
@@ -338,9 +351,9 @@ class Backtester:
                     "sma_200": ind.get("sma_200", current_price) or current_price,
                     "sma_crossover": ind.get("sma_crossover", 0) or 0,
                     "volume_zscore": ind.get("volume_zscore", 0) or 0,
-                    "return_5d_lag": 0,
-                    "return_10d_lag": 0,
-                    "return_20d_lag": 0,
+                    "return_5d_lag": _return_lag(5),
+                    "return_10d_lag": _return_lag(10),
+                    "return_20d_lag": _return_lag(20),
                     "close_to_sma50_ratio": current_price / (ind.get("sma_50", current_price) or current_price),
                     "close_to_sma200_ratio": current_price / (ind.get("sma_200", current_price) or current_price),
                     "volatility_20d": 0.2,
