@@ -13,6 +13,7 @@ COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
 COPY trained_models/ trained_models/
+COPY scripts/ scripts/
 
 # Install package (includes src as a package)
 RUN pip install --no-cache-dir .
