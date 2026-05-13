@@ -1168,3 +1168,50 @@ The rise model dominates the bear side under current macro. Drop probs are dead-
 3. Phase 5 — `order_mapper.py` updates for `_map_long`, `_map_bull_spread`, `_map_call_options` (paper-trade parity for bull side).
 4. Resolve GH Actions billing — manual SSH deploy is fine for solo dev but bypasses the pytest gate.
 5. (Still open from Session 25/26) backtester.py:341-343 return-lag bug, OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout.
+
+---
+
+## 2026-05-13 — Session 28: backtester return-lag fix + OLLAMA_FLASH_ATTENTION + Phase 5 order mapping
+
+**Agent**: Claude (Opus 4.7)
+**Branches/PRs**: `fix/backtester-return-lag` → commit `6372965` (direct to master, no PR — solo trivial fix); `ticket/phase-5-bull-order-mapping` → PR #36 → squash-merged `7fdae6c`.
+
+**Shipped (commit `6372965`, backtester return-lag):**
+- `models/backtester.py` — replaced the hardcoded `return_5d_lag=0 / return_10d_lag=0 / return_20d_lag=0` block (carried over from PR #30's silent-masking of a strong signal class) with a real lookback: query `price_data` for `ticker, date <= current_date`, sort desc, take `close.tolist()`, compute `(recent[0] - recent[n]) / recent[n]` for n in (5,10,20). Mirrors the live-scheduler logic from PR #30 — backtests now exercise the same features inference uses. Was Session 25/26/27 "next steps" carryover.
+- Validation: full 405-test suite still passes (this dir is well-tested but no new tests added; the fix is parity-with-scheduler, not novel behavior).
+
+**Shipped (VM-only, no commit — homelab compose):**
+- `/home/proxmox/ai-stack/docker-compose.yml` — added `environment: - OLLAMA_FLASH_ATTENTION=1` to the ollama service. Backup at `.bak.20260513-191056`. `docker compose up -d ollama` + verified `OLLAMA_FLASH_ATTENTION:true` in `docker logs ollama`. RTX 2070 SUPER is Turing (compute 7.5) so it runs FA1/SDPA, not FA2 — realistic gain 10–30%, not the 2× Ampere number. Memory `ollama_flash_attention_enabled_2026-05-13.md` saved with the caveat.
+
+**Shipped (PR #36, commit `7fdae6c`, Phase 5):**
+- `services/order_mapper.py` — three new branches:
+  - `_map_long` — full bracket buy on equity. `shares = int(min(position_size, max_position) / entry_price)`. No margin multiplier (only short uses 1.5×). `is_bracket=True` if stop or target set.
+  - `_map_call_options` — wraps `_map_options` with `option_type="call"` and `strategy_label="call_options"`. Premium-buy stub (same OCC-construction TODO as the existing put mapper).
+  - `_map_bull_spread` — delegates to a new `_map_spread` helper with `strategy_label="bull_spread"`. Single-leg placeholder sized to the rec's defined-risk cost; real multi-leg/OCC build is execution-engine territory.
+  - Also routed the previously-unhandled bear `strategy="spread"` through the same `_map_spread` (was silently hitting "Unknown strategy" before Phase 5 — pre-existing bug).
+- `validate_order` — long stock checks `qty * limit_price <= max_position` (no margin multiplier).
+- `tests/test_order_mapper.py` — 14 new tests across `TestLongMapping` / `TestCallOptionsMapping` / `TestBullSpreadMapping` / `TestBearSpreadMapping` + a `test_valid_long` validation case. **405 tests pass** (was 391).
+- No `execution_engine.py` changes needed — it dispatches purely on `rec.strategy`, and the scheduler already writes `long` / `call_options` / `bull_spread` for bull recs since PR #35.
+
+**VM deploy (manual, GH Actions still billing-blocked):**
+- Fast-forwarded `2b0d906..7fdae6c` (Session 27 backtester + Phase 5).
+- `cd /opt/stock-analysis/backend && docker compose build backend` — clean ~10s incremental rebuild (cached layers).
+- `docker compose up -d backend` — clean recreate at 19:54:59 UTC, all 12 scheduler jobs registered, portfolio sync ran on schedule, no startup errors.
+- In-container smoke check: `OrderMapper.recommendation_to_order(strategy="long", ticker="AAPL", entry_price=150, stop_loss=142.5, target_price=165, position_size=1000)` returned a clean bracket buy (6 shares @ $150, bracket 142.5/165, `strategy='long'`).
+
+**State of system:**
+- Bullish-side build phases 0/1/2/3/5 complete and deployed. Phase 4 (joint top-K validation backtest) is the only Phase 4-5 work outstanding.
+- Backtester now parity-features with live scheduler; future Phase 4 / paper-trade gating evidence won't be biased by the hardcoded-zero return lags.
+- `OLLAMA_FLASH_ATTENTION=1` live but expected to be a 10–30% sentiment-job speedup, not transformative on Turing. Right test is `job_sentiment` wall-clock delta over 2–3 trading days.
+- Auto-exec still off; both drop-side stability streak (day 2/5) and rise-side gate (starts when bull recs first land in prod) active.
+
+**Memories written this session:**
+- `container_triple_copy_install_layout.md` (Session 27 carryover — `pip install .` ships src/ to three places, hot-patches must hit site-packages).
+- `ollama_flash_attention_enabled_2026-05-13.md` (FA enabled + Turing FA1/SDPA fallback caveat).
+- `MEMORY.md` index updated.
+
+**Next steps:**
+1. **Watch tomorrow's 07:30 EDT scheduler run** — bear/bull split AND first execution-log lines that actually map a bull rec through `_map_long`/`_map_call_options`/`_map_bull_spread` instead of skipping. Also `job_sentiment` wall-clock for the flash-attention delta.
+2. Phase 4 — joint top-K backtest validation with the corrected return lags.
+3. Resolve GH Actions billing — pytest gate is still bypassed on every manual deploy.
+4. (Still open) sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout, real multi-leg/OCC spread construction in execution engine.
