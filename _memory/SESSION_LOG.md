@@ -1128,3 +1128,43 @@ Python imports from site-packages, not `/app`. First training run failed with `T
 3. Track rise recs separately for ≥5 trading days before any auto-exec consideration (per `rise_model_v1_metrics_2026-05-13.md` gating note).
 4. Resolve GH Actions billing.
 5. (Deferred from Session 25, still open) backtester.py:341-343 return-lag bug, OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout.
+
+---
+
+## 2026-05-13 — Session 27: Phase 3 — dual-direction ensemble + ranker integration
+
+**Agent**: Claude (Opus 4.7)
+**Branch**: `feature/bullish-ranker-integration` → merged via PR #35; follow-up Dockerfile fix on master.
+
+**Shipped (PR #35, commit `4b2c1cd`):**
+- `models/directional.py` — `DirectionalModel(direction="rise")` defaults to `directional_xgb_rise_v1.pkl` (no more passing `model_path` at every call site).
+- `models/ensemble.py` — `SignalInputs` rewritten: `drop_prob` + `rise_prob` replace `directional_prob`, `directional_confidence` dropped (dead since PR #31). `Ensemble.score()` now returns `list[EnsembleScore]` — one bear + one bull — with direction-appropriate sentiment polarity: `(1 - s) / 2 * conf` for drop, `(1 + s) / 2 * conf` for rise. `EnsembleScore.direction` field added (defaults to `"drop"` for back-compat in tests).
+- `pipeline/rec_ranker.py` — `Candidate.direction` added. `select_candidates` dedups by ticker keeping the higher-scoring direction, then top-K. Enforces the user's direction-blind capital cap (per `bullish_side_build_2026-05-12.md`).
+- `pipeline/scheduler.py` — loads both drop + rise models with rise-missing fallback (warning, bear-only). Each ticker emits two candidates. **Dropped the `meets_confidence` gate entirely** — `bullish_side_build` memo: "sentiment additive, not gate". Routes bull → `bull_spread` / `call_options` / `long`; bear → `spread` / `options` / `short`. Persists `Recommendation.direction`. New bear/bull counters in run summary.
+- `models/backtester.py` + `scripts/diagnose_recs_v2.py` — updated to new SignalInputs schema (`rise_prob=0.0`, take `direction == "drop"` from the returned list — both call sites are bearish-only).
+- `scripts/validate_dual_directional.py` — new smoke check: loads both models, predicts on N tickers, prints `drop_p/rise_p/bear/bull` table + top-K after dedup.
+- Tests: `test_position_sizer.py` extended with bull/bear sentiment polarity assertions (`test_returns_both_directions`, `test_bullish_branch_rewards_positive_sentiment`, `test_bearish_branch_rewards_negative_sentiment`); `test_rec_ranker.py` covers dedup-by-direction. **391 tests pass locally.**
+
+**Shipped (commit `2b0d906`, master direct):**
+- `backend/Dockerfile` — `COPY scripts/ scripts/`. Before this, the `scripts/` dir wasn't in the image, so the validation script had to be `docker cp`-ed in every run. Now `docker exec backend-backend-1 python -m scripts.validate_dual_directional` works directly.
+
+**VM deploy (manual, GH Actions still billing-blocked):**
+- Fast-forwarded `cc8f2d0..2b0d906` (PRs #34 + #35 + Dockerfile commit).
+- `docker compose build backend` — clean ~2min rebuild, all deps reinstalled (torch 2.12 + cuda 13 + xgboost 3.2).
+- `docker compose up -d backend` — clean recreate, all 12 scheduler jobs registered, no startup errors.
+- Smoke check (AAPL/MSFT/NVDA/SPY/AMD): both pickles loaded with sigmoid calibrators, vol LSTM on cuda. **Bull beats bear on all 5 tickers** — drop probs all clamped at 0.182 (sigmoid base-rate band), rise probs varied 0.193–0.247. Top-5 dedup: AMD/MSFT/NVDA/AAPL/SPY all bullish.
+
+**Observation worth tracking:**
+The rise model dominates the bear side under current macro. Drop probs are dead-flat across tickers (calibration consequence) while rise probs at least vary, so the composite score's directional component favors bull whenever rise_prob > 0.182. This is exactly the regime-detector behavior flagged in `rise_model_v1_metrics_2026-05-13.md`. **First production run tomorrow (05-14 07:30 EDT) is the real test.** If 100% bull comes through, that's the macro-dominance signal, not a bug — but it's also why the rise-side paper-trading gate (separate 5-day streak) is non-negotiable.
+
+**State of system:**
+- Bullish-side build phases 0/1/2/3 complete and deployed.
+- Auto-exec still off (`ALPACA_TRADING_ENABLED=false`); both drop-side (day 2/5 of stability streak) and rise-side (day 0 — starts tomorrow if recs land) gates active.
+- Container has scripts/ baked in now — no more `docker cp` for ad-hoc tooling.
+
+**Next steps:**
+1. **Watch tomorrow's run.** Specifically the bear/bull split log line — `bear_recs/bull_recs` should both be non-zero. If 0 bear, confirm via composite-score distribution that it's macro-driven, not a routing bug.
+2. Phase 4 — joint top-K validation (probably already correct; the dedup logic in this PR was the hard part).
+3. Phase 5 — `order_mapper.py` updates for `_map_long`, `_map_bull_spread`, `_map_call_options` (paper-trade parity for bull side).
+4. Resolve GH Actions billing — manual SSH deploy is fine for solo dev but bypasses the pytest gate.
+5. (Still open from Session 25/26) backtester.py:341-343 return-lag bug, OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout.
