@@ -223,7 +223,17 @@ def job_generate_recommendations():
 
         settings = get_settings()
         db = SessionLocal()
-        dir_model = DirectionalModel()
+        drop_model = DirectionalModel(direction="drop")
+        rise_model: DirectionalModel | None = DirectionalModel(direction="rise")
+        try:
+            rise_model.load()
+        except Exception:
+            # Rise pickle may be absent on first deploy or in dev — log once and
+            # fall back to bearish-only. Bullish candidates simply won't be generated.
+            logger.warning(
+                "Scheduler: rise model unavailable, falling back to bearish-only recommendations"
+            )
+            rise_model = None
         vol_model = VolatilityModel()
         try:
             vol_model.load()
@@ -234,14 +244,17 @@ def job_generate_recommendations():
         sizer = PositionSizer()
         today = date.today()
         count = 0
-        filtered_count = 0
-        below_floor_count = 0
         no_indicator = 0
         no_price = 0
         spread_recs = 0
         options_recs = 0
         short_recs = 0
+        bull_spread_recs = 0
+        call_options_recs = 0
+        long_recs = 0
         no_sizer_match = 0
+        bear_recs = 0
+        bull_recs = 0
         candidates: list[Candidate] = []
 
         try:
@@ -333,9 +346,17 @@ def job_generate_recommendations():
                     continue
 
                 try:
-                    dir_prob, dir_conf = dir_model.predict(features)
+                    drop_prob, _ = drop_model.predict(features)
                 except Exception:
-                    dir_prob, dir_conf = 0.5, 0.0
+                    drop_prob = 0.5
+
+                if rise_model is not None:
+                    try:
+                        rise_prob, _ = rise_model.predict(features)
+                    except Exception:
+                        rise_prob = 0.0
+                else:
+                    rise_prob = 0.0
 
                 # Get latest sentiment
                 sent = (
@@ -357,21 +378,27 @@ def job_generate_recommendations():
 
                 inputs = SignalInputs(
                     ticker=ticker,
-                    directional_prob=dir_prob,
-                    directional_confidence=dir_conf,
+                    drop_prob=drop_prob,
+                    rise_prob=rise_prob,
                     predicted_vol=predicted_vol,
                     sentiment_score=sent_score,
                     sentiment_confidence=sent_conf,
                     current_price=price.close,
                 )
 
-                score = ensemble.score(inputs)
-                candidates.append(Candidate(
-                    ticker=ticker,
-                    score=score,
-                    directional_prob=dir_prob,
-                    extras={"price_close": price.close},
-                ))
+                # Two scores per ticker: one bearish, one bullish.
+                for s in ensemble.score(inputs):
+                    # Skip the bullish branch entirely if the rise model is unavailable —
+                    # rise_prob=0 collapses the directional component to 0 but vol+sent
+                    # could still surface noise. Better to suppress than to emit.
+                    if s.direction == "rise" and rise_model is None:
+                        continue
+                    candidates.append(Candidate(
+                        ticker=ticker,
+                        score=s,
+                        direction=s.direction,
+                        extras={"price_close": price.close},
+                    ))
 
             # Pure top-K by composite score. The legacy dir_prob floor was a
             # knife-edge on v3's isotonic calibration plateaus; under sigmoid
@@ -386,18 +413,96 @@ def job_generate_recommendations():
                 ticker = cand.ticker
                 score = cand.score
                 close_price = cand.extras["price_close"]
+                direction = cand.direction
 
-                if not score.meets_confidence:
-                    filtered_count += 1
-                    logger.debug(f"Scheduler: {ticker} filtered — below confidence threshold "
-                                 f"(dir={score.directional_signal}, vol={score.volatility_signal}, sent={score.sentiment_signal})")
+                if direction == "rise":
+                    # Bullish routing: defined-risk first, then long-call options,
+                    # then long stock. Long-stock is direction-equivalent to a
+                    # short borrow on the bearish side (highest-risk fallback).
+                    bull_spread_rec = sizer.size_bull_spread(score, close_price)
+                    if bull_spread_rec:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="long",
+                            strategy="bull_spread",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=bull_spread_rec.current_price,
+                            stop_loss=None,
+                            target_price=None,
+                            position_size=abs(bull_spread_rec.net_credit),
+                            max_loss=bull_spread_rec.max_loss,
+                            contracts=bull_spread_rec.contracts,
+                            risk_type="defined",
+                            notes=bull_spread_rec.strategy_name,
+                        )
+                        db.add(rec)
+                        count += 1
+                        bull_spread_recs += 1
+                        bull_recs += 1
+                        continue
+
+                    call_rec = sizer.size_options(score, close_price, option_type="call")
+                    if call_rec:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="long",
+                            strategy="call_options",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=call_rec.entry_price,
+                            stop_loss=call_rec.entry_price * 0.95,
+                            target_price=call_rec.strike,
+                            position_size=call_rec.position_size,
+                            max_loss=call_rec.max_loss,
+                            contracts=call_rec.contracts,
+                            strike=call_rec.strike,
+                            option_type=call_rec.option_type,
+                            risk_type="defined",
+                        )
+                        db.add(rec)
+                        count += 1
+                        call_options_recs += 1
+                        bull_recs += 1
+                        continue
+
+                    long_rec = sizer.size_long(score, close_price)
+                    if long_rec:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="long",
+                            strategy="long",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=long_rec.entry_price,
+                            stop_loss=long_rec.stop_loss,
+                            target_price=long_rec.target_price,
+                            position_size=long_rec.position_size,
+                            max_loss=long_rec.max_loss,
+                            risk_type=long_rec.risk_type,
+                        )
+                        db.add(rec)
+                        count += 1
+                        long_recs += 1
+                        bull_recs += 1
+                        continue
+
+                    no_sizer_match += 1
+                    logger.debug(
+                        "Scheduler: %s (bull) ranked but no sizer matched "
+                        "(bull_spread/call/long all returned None)", ticker,
+                    )
                     continue
 
-                # Prefer defined-risk strategies: try spread first
+                # Bearish routing (direction == "drop"): spread → put options → short.
                 spread_rec = sizer.size_spread(score, close_price)
                 if spread_rec:
                     rec = Recommendation(
-                        ticker=ticker, date=today, strategy="spread",
+                        ticker=ticker, date=today, direction="short",
+                        strategy="spread",
                         score=score.score,
                         directional_signal=score.directional_signal,
                         volatility_signal=score.volatility_signal,
@@ -414,12 +519,14 @@ def job_generate_recommendations():
                     db.add(rec)
                     count += 1
                     spread_recs += 1
+                    bear_recs += 1
                     continue
 
                 options_rec = sizer.size_options(score, close_price)
                 if options_rec:
                     rec = Recommendation(
-                        ticker=ticker, date=today, strategy="options",
+                        ticker=ticker, date=today, direction="short",
+                        strategy="options",
                         score=score.score,
                         directional_signal=score.directional_signal,
                         volatility_signal=score.volatility_signal,
@@ -437,12 +544,14 @@ def job_generate_recommendations():
                     db.add(rec)
                     count += 1
                     options_recs += 1
+                    bear_recs += 1
                     continue
 
                 short_rec = sizer.size_short(score, close_price)
                 if short_rec:
                     rec = Recommendation(
-                        ticker=ticker, date=today, strategy="short",
+                        ticker=ticker, date=today, direction="short",
+                        strategy="short",
                         score=score.score,
                         directional_signal=score.directional_signal,
                         volatility_signal=score.volatility_signal,
@@ -458,13 +567,12 @@ def job_generate_recommendations():
                     db.add(rec)
                     count += 1
                     short_recs += 1
+                    bear_recs += 1
                     continue
 
-                # Passed meets_confidence but no sizer produced a tradable position
-                # (no spread chain, premium too high for $1k cap, no short borrow, etc.)
                 no_sizer_match += 1
                 logger.debug(
-                    "Scheduler: %s passed all gates but no sizer matched "
+                    "Scheduler: %s (bear) ranked but no sizer matched "
                     "(spread/options/short all returned None)", ticker,
                 )
 
@@ -474,19 +582,27 @@ def job_generate_recommendations():
 
         pipeline_recommendations_generated_total.inc(count)
         logger.info(
-            "Scheduler: recommendations complete — %d new, %d watchlist, %d candidates evaluated, "
+            "Scheduler: recommendations complete — %d new (%d bear / %d bull), "
+            "%d watchlist, %d candidates evaluated (dual-direction), "
             "%d skipped (no indicator), %d skipped (no price), "
-            "top_k=%d selected, %d filtered for confidence, "
-            "sizer breakdown: %d spread / %d options / %d short / %d no_sizer_match",
-            count, len(watchlist), len(candidates), no_indicator, no_price,
-            len(selected), filtered_count,
-            spread_recs, options_recs, short_recs, no_sizer_match,
+            "top_k=%d selected, "
+            "bear sizers: %d spread / %d options / %d short, "
+            "bull sizers: %d bull_spread / %d call / %d long, "
+            "%d no_sizer_match",
+            count, bear_recs, bull_recs, len(watchlist), len(candidates),
+            no_indicator, no_price, len(selected),
+            spread_recs, options_recs, short_recs,
+            bull_spread_recs, call_options_recs, long_recs,
+            no_sizer_match,
         )
         _record_run(
             "recommendations",
-            f"ok ({count} recs, {len(candidates)}/{len(watchlist)} candidates, "
-            f"{no_indicator} no_ind, {no_price} no_price, {filtered_count} filtered, "
-            f"sizer: {spread_recs}sp/{options_recs}op/{short_recs}sh/{no_sizer_match}none)",
+            f"ok ({count} recs [{bear_recs}b/{bull_recs}B], "
+            f"{len(candidates)}/{len(watchlist)*2} candidates, "
+            f"{no_indicator} no_ind, {no_price} no_price, "
+            f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
+            f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
+            f"{no_sizer_match} none)",
         )
 
     except Exception:

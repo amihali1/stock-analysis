@@ -63,6 +63,7 @@ FEATURE_COLS = [
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
 DEFAULT_MODEL_PATH = MODEL_DIR / "directional_xgb_v1.pkl"
+DEFAULT_RISE_MODEL_PATH = MODEL_DIR / "directional_xgb_rise_v1.pkl"
 
 # Target labels: 5-trading-day forward move past ±3%.
 DROP_THRESHOLD = -0.03
@@ -91,7 +92,12 @@ class DirectionalModel:
         self.model: xgb.XGBClassifier | None = None
         self.calibrator: CalibratedClassifierCV | None = None
         self.brier_score: float | None = None
-        self.model_path = model_path or DEFAULT_MODEL_PATH
+        if model_path is not None:
+            self.model_path = model_path
+        elif direction == "rise":
+            self.model_path = DEFAULT_RISE_MODEL_PATH
+        else:
+            self.model_path = DEFAULT_MODEL_PATH
         self.feature_cols = FEATURE_COLS
         self.direction = direction
         self.calibration_method = calibration_method
