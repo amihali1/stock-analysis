@@ -1083,3 +1083,48 @@ Python imports from site-packages, not `/app`. First training run failed with `T
 2. `docker cp` the pickle out to host filesystem at `/opt/stock-analysis/backend/trained_models/directional_xgb_rise_v1.pkl` so future rebuilds preserve it.
 3. Commit Phase 1 (directional.py refactor + train_rise.py + metrics JSON), open PR.
 4. Move to Phase 2: long-side sizers.
+
+---
+
+## 2026-05-13 — Session 26: morning-run check + rise model metrics review + VM host sync
+
+**Agent**: Claude (Opus 4.7)
+**Branch**: `feature/bullish-sizers` (no commits this session; SESSION_LOG edit only)
+
+**Context check (this morning's scheduler run):**
+- `job_generate_recommendations` ran 07:30 EDT — 9 new recs, 158 candidates evaluated, top_k=10 selected, 0 confidence-filtered, sizer breakdown: 9 options / 0 short / 1 no_sizer_match.
+- All 9 recs `risk_type='defined'` — paper_trading gate #2 now fully clean (0 undefined_risk vs 1 yesterday, 3 on 2026-05-11).
+- Top recs: SNAP (0.358), INTC (0.346), CMCSA (0.345), QCOM, CHTR, NKE, CRM, SHOP, COIN. Composite scores 0.32–0.36, all dir_signal ~0.18 (sigmoid band).
+- **Paper trading gate #1 streak: day 2/5** (3 → 9 → 9 across 05-11/12/13).
+- Minor: `$SQ` flagged as delisted in `job_fetch_prices`; job still succeeded.
+
+**Rise model metrics review (`directional_xgb_rise_v1`, trained 2026-05-12 22:38 unattended after Session 25 pause):**
+- Test AUC=0.5283, Brier=0.1704, base rate 22.9%, sigmoid-calibrated ✓.
+- Walk-forward folds: 0.5644 → 0.5750 → 0.5387 → 0.5283 test (peaks fold 2, then degrades — recall climbs while precision flat, i.e. model just predicts "rise" more often, not better).
+- **Weaker than drop side** (v3 sigmoid 0.555, v4 0.574-but-dead-features) but in same information-ceiling regime.
+- Feature importance dominated by SPY/VIX macro (top 6 ≈ 30% of total): volatility_20d, spy_above_sma_50, spy_return_20d, spy_drawdown_pct, vix_level, spy_above_sma_200. Per-ticker indicators all <0.02. **It's a regime detector, not a ticker picker.**
+- Zero-importance: all 6 SI features (expected, dead per earlier memory), `earnings_within_3d` (surprising), `wiki_views_spike`, `insider_cluster_buy_30d`.
+- Decision: **deploy as-is** for Phase 2-5 work. Composite-rank architecture (PR #31) absorbs the narrow signal. v2 retrain priorities = per-ticker event features (same prescription as `directional_model_information_ceiling.md`), SPY/VIX macro is saturated.
+
+**Memory written:**
+- `projects/stock-analysis/rise_model_v1_metrics_2026-05-13.md` — full metric breakdown + deploy-but-gate-paper-trade-separately recommendation.
+
+**PR #33 deployment verification (revealed a half-deployed state):**
+- VM `/opt/stock-analysis` HEAD was at `cb69cd1` (PR #32), missing only PR #33 (`cc8f2d0`).
+- Container `/app/src/models/directional.py` AND `/usr/local/lib/.../site-packages/.../directional.py` both had PR #33's `direction` parameter — Session 25 had `docker cp`-ed both copies but never ran `git pull` on the VM.
+- Host `backend/scripts/train_rise.py` did not exist (lived only in `/tmp/` inside container during training).
+- Rise pickle on host loaded cleanly in container as `direction="rise"` with `CalibratedClassifierCV` (sigmoid).
+- **Risk:** any backend rebuild would have pulled stale `directional.py` from `/opt/stock-analysis/backend/` and silently regressed the container to PR #32, breaking rise-pickle load.
+- **Fix applied:** `ssh proxmox@10.0.0.47 'cd /opt/stock-analysis && git pull origin master'` — fast-forward `cb69cd1..cc8f2d0`. Host filesystem now matches container; future rebuilds preserve rise model code.
+
+**State of system:**
+- Rise model artifact + code fully on disk in both container and host. **NOT wired into ranker yet** (Phase 3 work).
+- Drop-side recommendation pipeline running cleanly; 2/5 of the stability streak.
+- Phase 2 (bullish sizers) commit `10c900b` sitting on local `feature/bullish-sizers` branch, unpushed/un-PR'd.
+
+**Next steps:**
+1. Phase 2 sizers — review `10c900b` commit, finish if incomplete, PR.
+2. Phase 3 — ranker integration: load both drop+rise models, score candidates against both, write rows with `direction='long'` for rise-side recs.
+3. Track rise recs separately for ≥5 trading days before any auto-exec consideration (per `rise_model_v1_metrics_2026-05-13.md` gating note).
+4. Resolve GH Actions billing.
+5. (Deferred from Session 25, still open) backtester.py:341-343 return-lag bug, OLLAMA_FLASH_ATTENTION=1, sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout.
