@@ -19,8 +19,8 @@ def sizer():
 def make_inputs(**overrides) -> SignalInputs:
     defaults = {
         "ticker": "AAPL",
-        "directional_prob": 0.7,
-        "directional_confidence": 0.8,
+        "drop_prob": 0.7,
+        "rise_prob": 0.0,
         "predicted_vol": 0.35,
         "sentiment_score": -0.5,
         "sentiment_confidence": 0.8,
@@ -30,78 +30,103 @@ def make_inputs(**overrides) -> SignalInputs:
     return SignalInputs(**defaults)
 
 
+def _bear(scores):
+    """Return the bearish EnsembleScore from a list returned by Ensemble.score()."""
+    return next(s for s in scores if s.direction == "drop")
+
+
 class TestEnsemble:
     def test_bearish_signals_produce_high_score(self, ensemble):
-        inputs = make_inputs(directional_prob=0.9, sentiment_score=-0.8, predicted_vol=0.5)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.9, sentiment_score=-0.8, predicted_vol=0.5)
+        result = _bear(ensemble.score(inputs))
         assert result.score > 0.6
 
     def test_bullish_signals_produce_low_score(self, ensemble):
-        inputs = make_inputs(directional_prob=0.1, sentiment_score=0.8, predicted_vol=0.1)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.1, sentiment_score=0.8, predicted_vol=0.1)
+        result = _bear(ensemble.score(inputs))
         assert result.score < 0.3
 
     def test_neutral_signals(self, ensemble):
-        inputs = make_inputs(directional_prob=0.5, sentiment_score=0.0, predicted_vol=0.3)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.5, sentiment_score=0.0, predicted_vol=0.3)
+        result = _bear(ensemble.score(inputs))
         assert 0.2 < result.score < 0.6
 
     def test_custom_weights(self):
         ensemble = Ensemble(weight_directional=1.0, weight_volatility=0.0, weight_sentiment=0.0)
-        inputs = make_inputs(directional_prob=0.8)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.8)
+        result = _bear(ensemble.score(inputs))
         assert abs(result.score - 0.8) < 0.01
 
     def test_output_has_all_signals(self, ensemble):
-        result = ensemble.score(make_inputs())
+        result = _bear(ensemble.score(make_inputs()))
         assert result.ticker == "AAPL"
         assert 0 <= result.directional_signal <= 1
         assert 0 <= result.volatility_signal <= 1
         assert 0 <= result.sentiment_signal <= 1
 
+    def test_returns_both_directions(self, ensemble):
+        scores = ensemble.score(make_inputs(drop_prob=0.7, rise_prob=0.2))
+        assert len(scores) == 2
+        directions = {s.direction for s in scores}
+        assert directions == {"drop", "rise"}
+
+    def test_bullish_branch_rewards_positive_sentiment(self, ensemble):
+        # Same rise_prob, positive vs negative sentiment — bull score should rise with +sent.
+        pos = next(s for s in ensemble.score(make_inputs(rise_prob=0.7, sentiment_score=0.8))
+                   if s.direction == "rise")
+        neg = next(s for s in ensemble.score(make_inputs(rise_prob=0.7, sentiment_score=-0.8))
+                   if s.direction == "rise")
+        assert pos.score > neg.score
+
+    def test_bearish_branch_rewards_negative_sentiment(self, ensemble):
+        # Same drop_prob, mirror polarity for the bear branch.
+        neg = _bear(ensemble.score(make_inputs(drop_prob=0.7, sentiment_score=-0.8)))
+        pos = _bear(ensemble.score(make_inputs(drop_prob=0.7, sentiment_score=0.8)))
+        assert neg.score > pos.score
+
     def test_meets_confidence_when_sentiment_clears(self):
         # Post-2026-05-12: directional_lift component dropped. Only sentiment floor applies.
         ensemble = Ensemble(min_sentiment_confidence=0.40)
-        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.85)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.30, sentiment_confidence=0.85)
+        result = _bear(ensemble.score(inputs))
         assert result.meets_confidence is True
 
     def test_low_dir_prob_no_longer_fails_meets_confidence(self):
         # Under sigmoid calibration, dir_prob clusters tightly around base rate.
         # Absolute thresholds on dir_prob are noise — gate is sentiment-only.
         ensemble = Ensemble(min_sentiment_confidence=0.40)
-        inputs = make_inputs(directional_prob=0.10, sentiment_confidence=0.85)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.10, sentiment_confidence=0.85)
+        result = _bear(ensemble.score(inputs))
         assert result.meets_confidence is True
 
     def test_fails_confidence_when_sentiment_confidence_low(self):
         ensemble = Ensemble(min_sentiment_confidence=0.40)
-        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.20)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.30, sentiment_confidence=0.20)
+        result = _bear(ensemble.score(inputs))
         assert result.meets_confidence is False
 
     def test_sentiment_at_exact_threshold(self):
         ensemble = Ensemble(min_sentiment_confidence=0.40)
-        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.40)
-        result = ensemble.score(inputs)
+        inputs = make_inputs(drop_prob=0.30, sentiment_confidence=0.40)
+        result = _bear(ensemble.score(inputs))
         assert result.meets_confidence is True
 
     def test_vol_does_not_affect_meets_confidence(self):
         ensemble = Ensemble(min_sentiment_confidence=0.40)
-        low_vol = make_inputs(directional_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.05)
-        high_vol = make_inputs(directional_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.9)
-        assert ensemble.score(low_vol).meets_confidence is True
-        assert ensemble.score(high_vol).meets_confidence is True
+        low_vol = make_inputs(drop_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.05)
+        high_vol = make_inputs(drop_prob=0.30, sentiment_confidence=0.85, predicted_vol=0.9)
+        assert _bear(ensemble.score(low_vol)).meets_confidence is True
+        assert _bear(ensemble.score(high_vol)).meets_confidence is True
 
     def test_legacy_min_confidence_kwarg_maps_to_sentiment_floor(self):
         # Back-compat: passing min_confidence sets the sentiment floor only.
         ensemble = Ensemble(min_confidence=0.90)
         # sentiment_confidence below the legacy 0.90 floor → fails
-        inputs = make_inputs(directional_prob=0.30, sentiment_confidence=0.85)
-        assert ensemble.score(inputs).meets_confidence is False
+        inputs = make_inputs(drop_prob=0.30, sentiment_confidence=0.85)
+        assert _bear(ensemble.score(inputs)).meets_confidence is False
         # sentiment_confidence above 0.90 → passes
-        inputs2 = make_inputs(directional_prob=0.30, sentiment_confidence=0.95)
-        assert ensemble.score(inputs2).meets_confidence is True
+        inputs2 = make_inputs(drop_prob=0.30, sentiment_confidence=0.95)
+        assert _bear(ensemble.score(inputs2)).meets_confidence is True
 
 
 class TestPositionSizerShort:

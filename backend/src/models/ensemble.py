@@ -1,9 +1,14 @@
-"""Ensemble scorer: combines directional, volatility, and sentiment signals."""
+"""Ensemble scorer: combines directional, volatility, and sentiment signals.
+
+Phase 3 (bullish-side build, 2026-05-13): scoring is now dual-direction.
+`Ensemble.score()` returns a list with one bearish and one bullish EnsembleScore,
+each carrying its own `direction` and direction-appropriate sentiment polarity.
+The downstream ranker dedups by ticker and keeps the higher-scoring direction.
+"""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
@@ -13,8 +18,8 @@ logger = logging.getLogger(__name__)
 class SignalInputs(BaseModel):
     """Raw signals from individual models."""
     ticker: str
-    directional_prob: float = Field(ge=0, le=1, description="Probability of >3% drop")
-    directional_confidence: float = Field(ge=0, le=1)
+    drop_prob: float = Field(ge=0, le=1, description="Probability of >3% drop in 5 trading days")
+    rise_prob: float = Field(ge=0, le=1, description="Probability of >3% rise in 5 trading days")
     predicted_vol: float = Field(ge=0, description="Predicted annualized volatility")
     sentiment_score: float = Field(ge=-1, le=1, description="Composite sentiment (-1 to 1)")
     sentiment_confidence: float = Field(ge=0, le=1)
@@ -22,17 +27,18 @@ class SignalInputs(BaseModel):
 
 
 class EnsembleScore(BaseModel):
-    """Combined score output from the ensemble."""
+    """Combined score output from the ensemble for one direction."""
     ticker: str
-    score: float = Field(description="Overall bearish score (0-1, higher = more bearish)")
+    direction: str = Field(default="drop", description="'drop' (bearish) or 'rise' (bullish)")
+    score: float = Field(description="Composite score (0-1, higher = stronger signal in this direction)")
     directional_signal: float
     volatility_signal: float
     sentiment_signal: float
-    meets_confidence: bool = Field(default=True, description="Whether all individual signals meet the minimum confidence threshold")
+    meets_confidence: bool = Field(default=True, description="Whether sentiment confidence clears the floor")
 
 
 class Ensemble:
-    """Combine directional, volatility, and sentiment into a single score."""
+    """Combine directional, volatility, and sentiment into per-direction scores."""
 
     def __init__(
         self,
@@ -43,9 +49,7 @@ class Ensemble:
         min_directional_lift: float | None = None,
         min_sentiment_confidence: float | None = None,
         # Deprecated — single absolute floor was unreachable for the calibrated
-        # rare-event directional model (see meets_confidence_unreachable memory).
-        # When supplied, it sets min_sentiment_confidence; the directional half
-        # is now handled by the relative directional_lift gate below.
+        # rare-event directional model. When supplied, sets min_sentiment_confidence.
         min_confidence: float | None = None,
     ):
         total = weight_directional + weight_volatility + weight_sentiment
@@ -64,48 +68,52 @@ class Ensemble:
         else:
             self.min_sentiment_confidence = settings.min_sentiment_confidence
 
-    def score(self, inputs: SignalInputs) -> EnsembleScore:
-        """Compute ensemble score from individual signals.
+    def score(self, inputs: SignalInputs) -> list[EnsembleScore]:
+        """Return one EnsembleScore per direction (drop, rise).
 
-        Directional signal: probability of drop (0-1, higher = more bearish)
-        Volatility signal: higher predicted vol = more opportunity for options (0-1)
-        Sentiment signal: negative sentiment = bearish = higher signal (0-1)
+        Bearish branch: directional = drop_prob, sentiment polarity (1 - sent)/2
+        (negative sentiment helps), confidence-weighted.
 
-        meets_confidence used to gate on a relative directional-lift floor plus
-        a sentiment-confidence floor. The directional-lift component was dropped
-        on 2026-05-12 after re-fitting v3 with Platt sigmoid calibration: the
-        calibrator's outputs now cluster tightly around the base rate
-        (~0.18 ± 0.002), making any absolute lift floor noise. Ranking moved to
-        a pure top-K-by-composite-score model (see rec_ranker.py); only the
-        sentiment-confidence floor remains as a per-rec quality filter.
+        Bullish branch: directional = rise_prob, sentiment polarity (1 + sent)/2
+        (positive sentiment helps), confidence-weighted.
 
-        Volatility is excluded from the gate — the LSTM has no per-prediction
-        confidence — but still contributes to the weighted score.
+        Volatility contributes to both branches identically (vol is direction-blind
+        — high vol is an options opportunity regardless of direction).
         """
-        dir_signal = inputs.directional_prob
-
-        # Normalize vol to 0-1 range (cap at 100% annualized vol)
         vol_signal = min(inputs.predicted_vol, 1.0)
-
-        # Convert sentiment from [-1, 1] to [0, 1] where negative = high signal
-        sent_signal = (1 - inputs.sentiment_score) / 2  # -1 -> 1.0, 0 -> 0.5, 1 -> 0.0
-
-        # Weight by confidence
-        sent_signal *= inputs.sentiment_confidence
-
-        combined = (
-            self.w_dir * dir_signal
-            + self.w_vol * vol_signal
-            + self.w_sent * sent_signal
-        )
 
         meets_confidence = inputs.sentiment_confidence >= self.min_sentiment_confidence
 
-        return EnsembleScore(
+        bear_sent = (1 - inputs.sentiment_score) / 2 * inputs.sentiment_confidence
+        bear_combined = (
+            self.w_dir * inputs.drop_prob
+            + self.w_vol * vol_signal
+            + self.w_sent * bear_sent
+        )
+        bear = EnsembleScore(
             ticker=inputs.ticker,
-            score=round(combined, 4),
-            directional_signal=round(dir_signal, 4),
+            direction="drop",
+            score=round(bear_combined, 4),
+            directional_signal=round(inputs.drop_prob, 4),
             volatility_signal=round(vol_signal, 4),
-            sentiment_signal=round(sent_signal, 4),
+            sentiment_signal=round(bear_sent, 4),
             meets_confidence=meets_confidence,
         )
+
+        bull_sent = (1 + inputs.sentiment_score) / 2 * inputs.sentiment_confidence
+        bull_combined = (
+            self.w_dir * inputs.rise_prob
+            + self.w_vol * vol_signal
+            + self.w_sent * bull_sent
+        )
+        bull = EnsembleScore(
+            ticker=inputs.ticker,
+            direction="rise",
+            score=round(bull_combined, 4),
+            directional_signal=round(inputs.rise_prob, 4),
+            volatility_signal=round(vol_signal, 4),
+            sentiment_signal=round(bull_sent, 4),
+            meets_confidence=meets_confidence,
+        )
+
+        return [bear, bull]

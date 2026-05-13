@@ -1,29 +1,18 @@
 """Recommendation candidate selection.
 
-History of the gate (chronological):
+Phase 3 (bullish-side build, 2026-05-13): candidates are now direction-tagged.
+Each ticker can contribute up to two candidates (one drop, one rise). The ranker
+dedups by ticker, keeping the higher-scoring direction, then applies top-K.
 
-1. **Original (pre-P10-002):** Hardcoded `score >= 0.5` produced zero recs because
-   the composite score weights (0.4*dir_prob + 0.3*vol + 0.3*sent) and a calibrated
-   rare-event dir_prob (clustered near the ~17.5% base rate) made 0.5 effectively
-   require dir_prob > 0.7 — a quarterly-frequency event.
+Prior history of the bearish-only gate (still relevant for the composite-score
+rationale): the original `score >= 0.5` floor produced zero recs because
+calibrated dir_prob clusters near the base rate. P10-002 swapped in a relative
+`dir_prob >= base_rate * lift` gate, which became a knife-edge on v3's isotonic
+calibration plateaus. 2026-05-12 sigmoid recalibration eliminated the plateaus
+but also collapsed dir_prob's discriminative power across tickers — the composite
+score (which integrates vol + sentiment) is the only meaningful ranking signal.
 
-2. **P10-002 (May 2026):** `dir_prob >= base_rate * lift` (default lift=1.3 → 0.2275)
-   as a hard floor, with composite score as ranker. Worked when the v3 isotonic
-   calibrator's plateau structure happened to land tickers in the 0.2277 bin.
-   Broke catastrophically when it didn't — zero recs with no soft degradation.
-
-3. **2026-05-12:** Investigation showed v3's isotonic calibrator emits ~4 discrete
-   plateau values; the 0.2275 floor sat 0.0002 below one of them, making it a
-   knife-edge gate. Re-fitted v3 with Platt sigmoid calibration — distribution
-   smoothed to a tight 0.005-wide band around the 0.18 base rate.
-
-**Current architecture (this file):** Pure top-K by composite score. No absolute
-dir_prob floor. Rationale: under sigmoid calibration the model's outputs cluster
-tightly around the base rate; absolute thresholds are noise. The composite score
-(which integrates dir_prob with vol and sentiment, both of which DO vary
-meaningfully across tickers) is the right ranking signal. Quality filtering
-remains at the per-rec `meets_confidence` gate (sentiment-confidence floor only —
-the directional-lift component was dropped for the same reason).
+Quality filtering moved to the scheduler — this module is purely a ranker.
 """
 
 from __future__ import annotations
@@ -38,7 +27,7 @@ from src.models.ensemble import EnsembleScore
 class Candidate:
     ticker: str
     score: EnsembleScore
-    directional_prob: float
+    direction: str  # "drop" (bearish) or "rise" (bullish) — mirrors score.direction
     # Free-form extras the scheduler needs after selection (price, indicator row, etc.)
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -51,14 +40,20 @@ def select_candidates(
 ) -> list[Candidate]:
     """Rank candidates by composite score (descending), cap at top_k.
 
-    No absolute `dir_prob` floor — see module docstring for why. `meets_confidence`
-    is intentionally not applied here so the scheduler can log per-rec filter rates
-    after ranking.
+    When a ticker appears in both directions, keep only the higher-scoring side.
+    This enforces the user's direction-blind capital cap (bullish_side_build memo):
+    bullish and bearish candidates compete for the same top-K slots, and only one
+    direction-of-conviction wins per ticker.
 
-    The `base_rate` / `min_dir_prob_lift` kwargs are kept for back-compat with
-    earlier callers (config-driven scheduler invocation). They are ignored.
+    No absolute `dir_prob` floor — see module docstring. `meets_confidence` is
+    intentionally not applied here so the scheduler can log per-rec filter rates.
     """
     if top_k <= 0 or not candidates:
         return []
-    ranked = sorted(candidates, key=lambda c: c.score.score, reverse=True)
+    best_by_ticker: dict[str, Candidate] = {}
+    for c in candidates:
+        prev = best_by_ticker.get(c.ticker)
+        if prev is None or c.score.score > prev.score.score:
+            best_by_ticker[c.ticker] = c
+    ranked = sorted(best_by_ticker.values(), key=lambda c: c.score.score, reverse=True)
     return ranked[:top_k]

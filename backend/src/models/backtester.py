@@ -365,14 +365,15 @@ class Backtester:
 
             inputs = SignalInputs(
                 ticker=ticker,
-                directional_prob=dir_prob,
-                directional_confidence=dir_conf,
+                drop_prob=dir_prob,
+                rise_prob=0.0,  # backtester is bearish-only; rise branch is unused
                 predicted_vol=0.25,
                 sentiment_score=sent_score,
                 sentiment_confidence=sent_conf,
                 current_price=current_price,
             )
-            score = self.ensemble.score(inputs)
+            scores = self.ensemble.score(inputs)
+            score = next(s for s in scores if s.direction == "drop")
 
             if score.score >= self.score_threshold:
                 candidates.append((score, current_price, exit_date))

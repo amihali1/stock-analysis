@@ -100,12 +100,12 @@ def main() -> int:
         sc = float(sent[1]) if sent and sent[1] is not None else 0.0
         inp = SignalInputs(
             ticker=ticker,
-            directional_prob=dp, directional_confidence=dc,
+            drop_prob=dp, rise_prob=0.0,
             predicted_vol=0.25,
             sentiment_score=ss, sentiment_confidence=sc,
             current_price=price.close,
         )
-        sc_obj = ensemble.score(inp)
+        sc_obj = next(s for s in ensemble.score(inp) if s.direction == "drop")
         scores.append(sc_obj.score)
         if sc_obj.score >= 0.5:
             n_above_score += 1
