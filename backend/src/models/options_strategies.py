@@ -26,7 +26,8 @@ class SpreadLeg(BaseModel):
 class SpreadRecommendation(BaseModel):
     """A defined-risk options spread recommendation."""
     ticker: str
-    strategy_name: str  # "bear_call_spread", "bull_put_spread", "iron_condor"
+    strategy_name: str  # "bear_call_spread", "bear_put_debit_spread", "bull_call_debit_spread", "bull_put_credit_spread", "iron_condor"
+    direction: str = "short"  # "short" for bearish, "long" for bullish, "neutral" for iron condor
     score: float
     directional_signal: float
     volatility_signal: float
@@ -184,6 +185,7 @@ class SpreadBuilder:
         return SpreadRecommendation(
             ticker=score.ticker,
             strategy_name="bear_call_spread",
+            direction="short",
             score=score.score,
             directional_signal=score.directional_signal,
             volatility_signal=score.volatility_signal,
@@ -252,6 +254,7 @@ class SpreadBuilder:
         return SpreadRecommendation(
             ticker=score.ticker,
             strategy_name="bull_put_spread",
+            direction="short",
             score=score.score,
             directional_signal=score.directional_signal,
             volatility_signal=score.volatility_signal,
@@ -316,6 +319,7 @@ class SpreadBuilder:
         return SpreadRecommendation(
             ticker=score.ticker,
             strategy_name="iron_condor",
+            direction="neutral",
             score=score.score,
             directional_signal=score.directional_signal,
             volatility_signal=score.volatility_signal,
@@ -340,6 +344,176 @@ class SpreadBuilder:
             delta_exposure=0.0,
             theta_exposure=round(0.02 * contracts, 4),
             vega_exposure=round(-0.08 * contracts, 4),
+            earnings_warning=earnings_warning,
+            uses_real_data=uses_real,
+        )
+
+    def suggest_bull_spread(
+        self,
+        score: EnsembleScore,
+        current_price: float,
+        implied_vol: float = 0.30,
+        expiry_days: int = 30,
+        earnings_date: date | None = None,
+        chain_data: list[dict] | None = None,
+    ) -> SpreadRecommendation | None:
+        """Suggest the best bullish spread strategy based on signals.
+
+        - High directional + low vol -> bull put credit spread
+        - High directional + high vol -> bull call debit spread
+        - Default for moderate confidence -> bull call debit spread
+        """
+        if current_price <= 0:
+            return None
+
+        earnings_warning = False
+        if earnings_date:
+            days_to_earnings = (earnings_date - date.today()).days
+            if 0 < days_to_earnings < expiry_days:
+                earnings_warning = True
+
+        if score.directional_signal > 0.6 and score.volatility_signal < 0.5:
+            return self._bull_put_credit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
+        elif score.directional_signal > 0.6 and score.volatility_signal >= 0.5:
+            return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
+        elif score.score >= 0.5:
+            return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
+
+        return None
+
+    def _bull_call_debit_spread(
+        self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
+        earnings_warning: bool, chain_data: list[dict] | None,
+    ) -> SpreadRecommendation | None:
+        """Bull call debit spread: buy lower-strike call (near ATM), sell higher-strike call OTM."""
+        t = expiry_days / 365.0
+
+        target_buy_strike = round(price * 1.02, 2)
+        target_sell_strike = round(price * 1.07, 2)
+
+        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
+        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
+        uses_real = buy_real and sell_real
+
+        spread_width = sell_strike - buy_strike
+        if spread_width <= 0:
+            return None
+
+        net_debit_per_share = buy_premium - sell_premium
+        if net_debit_per_share <= 0:
+            return None
+
+        cost_per_contract = net_debit_per_share * 100
+        max_profit_per_contract = (spread_width - net_debit_per_share) * 100
+
+        if cost_per_contract <= 0 or max_profit_per_contract <= 0:
+            return None
+
+        confidence_scale = min(score.score * 2, 1.0)
+        effective_max = self.max_position * confidence_scale
+        contracts = max(1, int(effective_max / cost_per_contract))
+
+        net_debit = cost_per_contract * contracts
+        max_profit = max_profit_per_contract * contracts
+        max_loss = net_debit
+
+        buy_iv = self._get_iv_from_chain(chain_data, buy_strike, "call", iv)
+        sell_iv = self._get_iv_from_chain(chain_data, sell_strike, "call", iv)
+        delta = self._estimate_delta(price, buy_strike, buy_iv, t, "call") - self._estimate_delta(price, sell_strike, sell_iv, t, "call")
+        theta = -0.01 * contracts
+        vega = 0.03 * contracts
+
+        return SpreadRecommendation(
+            ticker=score.ticker,
+            strategy_name="bull_call_debit_spread",
+            direction="long",
+            score=score.score,
+            directional_signal=score.directional_signal,
+            volatility_signal=score.volatility_signal,
+            sentiment_signal=score.sentiment_signal,
+            current_price=price,
+            legs=[
+                SpreadLeg(option_type="call", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="call", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
+            ],
+            max_profit=round(max_profit, 2),
+            max_loss=round(max_loss, 2),
+            breakeven=round(buy_strike + net_debit_per_share, 2),
+            risk_reward_ratio=round(max_profit / max_loss, 4) if max_loss > 0 else 0,
+            contracts=contracts,
+            net_credit=round(-net_debit, 2),
+            expiry_days=expiry_days,
+            delta_exposure=round(delta * contracts, 4),
+            theta_exposure=round(theta, 4),
+            vega_exposure=round(vega, 4),
+            earnings_warning=earnings_warning,
+            uses_real_data=uses_real,
+        )
+
+    def _bull_put_credit_spread(
+        self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
+        earnings_warning: bool, chain_data: list[dict] | None,
+    ) -> SpreadRecommendation | None:
+        """Bull put credit spread: sell higher-strike put (near ATM), buy lower-strike put OTM."""
+        t = expiry_days / 365.0
+
+        target_sell_strike = round(price * 0.98, 2)
+        target_buy_strike = round(price * 0.93, 2)
+
+        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
+        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
+        uses_real = sell_real and buy_real
+
+        spread_width = sell_strike - buy_strike
+        if spread_width <= 0:
+            return None
+
+        net_credit_per_share = sell_premium - buy_premium
+        if net_credit_per_share <= 0:
+            return None
+
+        max_loss_per_contract = (spread_width - net_credit_per_share) * 100
+        if max_loss_per_contract <= 0:
+            return None
+
+        confidence_scale = min(score.score * 2, 1.0)
+        effective_max = self.max_position * confidence_scale
+        contracts = max(1, int(effective_max / max_loss_per_contract))
+
+        net_credit = net_credit_per_share * 100 * contracts
+        max_loss = max_loss_per_contract * contracts
+        max_profit = net_credit
+
+        sell_iv = self._get_iv_from_chain(chain_data, sell_strike, "put", iv)
+        buy_iv = self._get_iv_from_chain(chain_data, buy_strike, "put", iv)
+        # Bull put: net delta is positive (selling put has positive delta, buying lower put has less negative delta)
+        delta = -self._estimate_delta(price, sell_strike, sell_iv, t, "put") + self._estimate_delta(price, buy_strike, buy_iv, t, "put")
+        theta = 0.01 * contracts
+        vega = -0.05 * contracts
+
+        return SpreadRecommendation(
+            ticker=score.ticker,
+            strategy_name="bull_put_credit_spread",
+            direction="long",
+            score=score.score,
+            directional_signal=score.directional_signal,
+            volatility_signal=score.volatility_signal,
+            sentiment_signal=score.sentiment_signal,
+            current_price=price,
+            legs=[
+                SpreadLeg(option_type="put", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="put", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
+            ],
+            max_profit=round(max_profit, 2),
+            max_loss=round(max_loss, 2),
+            breakeven=round(sell_strike - net_credit_per_share, 2),
+            risk_reward_ratio=round(max_profit / max_loss, 4) if max_loss > 0 else 0,
+            contracts=contracts,
+            net_credit=round(net_credit, 2),
+            expiry_days=expiry_days,
+            delta_exposure=round(delta * contracts, 4),
+            theta_exposure=round(theta, 4),
+            vega_exposure=round(vega, 4),
             earnings_warning=earnings_warning,
             uses_real_data=uses_real,
         )
