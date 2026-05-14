@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-05-14",
+  "folds": 4,
+  "top_k": 10,
+  "rise_label_mode": "excess",
+  "results": [
+    {
+      "floor": "none",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.2711790816992681,
+      "mean_rise_hit_rate": 0.2999758290807054,
+      "mean_avg_pnl": -0.7913461538461539,
+      "total_selected": 2600,
+      "direction_split": {
+        "rise": 1549,
+        "drop": 1051
+      }
+    },
+    {
+      "floor": "0.50",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.27261837103191133,
+      "mean_rise_hit_rate": 0.3014669644400205,
+      "mean_avg_pnl": -0.7889292338625129,
+      "total_selected": 2565,
+      "direction_split": {
+        "rise": 1521,
+        "drop": 1044
+      }
+    },
+    {
+      "floor": "0.55",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.27294300544763084,
+      "mean_rise_hit_rate": 0.303577737842016,
+      "mean_avg_pnl": -0.7880258499362273,
+      "total_selected": 2486,
+      "direction_split": {
+        "rise": 1463,
+        "drop": 1023
+      }
+    },
+    {
+      "floor": "0.60",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.27178340483379265,
+      "mean_rise_hit_rate": 0.30173068269737185,
+      "mean_avg_pnl": -0.7966120205470513,
+      "total_selected": 2351,
+      "direction_split": {
+        "rise": 1363,
+        "drop": 988
+      }
+    },
+    {
+      "floor": "0.65",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.26913449362119846,
+      "mean_rise_hit_rate": 0.300716985737117,
+      "mean_avg_pnl": -0.8048330597101713,
+      "total_selected": 2073,
+      "direction_split": {
+        "rise": 1162,
+        "drop": 911
+      }
+    },
+    {
+      "floor": "0.70",
+      "mean_drop_auc": 0.5347893143702083,
+      "mean_rise_auc": 0.5734367955903772,
+      "mean_drop_hit_rate": 0.29198882036552054,
+      "mean_rise_hit_rate": 0.29920265231852927,
+      "mean_avg_pnl": -0.8223044203699329,
+      "total_selected": 1390,
+      "direction_split": {
+        "rise": 685,
+        "drop": 705
+      }
+    }
+  ]
+}
