@@ -34,3 +34,9 @@ pipeline_last_run_timestamp = Gauge(
     "Unix timestamp of last completion per pipeline job",
     ["job", "status"],
 )
+
+pipeline_job_errors_total = Counter(
+    "pipeline_job_errors_total",
+    "Total scheduler job invocations that ended in error",
+    ["job"],
+)
