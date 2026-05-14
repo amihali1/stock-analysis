@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
     min_dir_prob_lift: float = 1.3
     recommendations_top_k: int = 10  # max recs emitted per scheduler run, ranked by score
+    # Absolute composite-score floor applied by rec_ranker.select_candidates before
+    # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
+    # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots
+    # got filled with low-conviction picks on flat days. Default 0.0 = no filter
+    # (preserves pre-fix behavior). Sweep backtest at 0.55 / 0.60 / 0.65 to pick.
+    recommendations_min_score: float = 0.0
 
     # P10-004 — replaces the structurally-unreachable absolute `min_confidence=0.75`
     # gate (which used abs(prob-0.5)*2 — bounded ~0.48 for our calibrated rare-event

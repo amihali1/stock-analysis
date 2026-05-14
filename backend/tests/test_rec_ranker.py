@@ -135,3 +135,54 @@ def test_legacy_kwargs_accepted_but_ignored():
     cands = [_cand("WEAK", 0.05, 0.6)]
     out = select_candidates(cands, top_k=10, base_rate=0.175, min_dir_prob_lift=2.0)
     assert [c.ticker for c in out] == ["WEAK"]
+
+
+def test_min_score_floor_drops_below_threshold():
+    """`min_score` enforces an absolute composite-score floor before top-K.
+
+    Motivation: the 2026-05-14 joint backtest at top_k=10 had hit rates of
+    25-30% (vs 60% break-even) because the ranker had to fill slots with
+    low-confidence picks on flat days. The floor is the project's
+    "skip marginal setups" rule applied at the ranker level.
+    """
+    cands = [
+        _cand("STRONG_BULL", 0.30, 0.80, direction="rise"),
+        _cand("STRONG_BEAR", 0.30, 0.75, direction="drop"),
+        _cand("MID",         0.20, 0.55),
+        _cand("WEAK",        0.10, 0.30),
+    ]
+    out = select_candidates(cands, top_k=10, min_score=0.60)
+    assert [c.ticker for c in out] == ["STRONG_BULL", "STRONG_BEAR"]
+
+
+def test_min_score_floor_empty_when_nothing_qualifies():
+    """When no candidate meets the floor, ranker returns []. Top-K must NOT
+    be filled with garbage just to hit the requested count — that's the
+    exact failure mode the floor exists to prevent.
+    """
+    cands = [_cand("A", 0.20, 0.40), _cand("B", 0.18, 0.35)]
+    assert select_candidates(cands, top_k=5, min_score=0.50) == []
+
+
+def test_min_score_none_preserves_legacy_behavior():
+    """`min_score=None` (the default) must behave identically to the
+    pre-floor ranker so callers that don't opt in see no regression.
+    """
+    cands = [_cand("A", 0.20, 0.40), _cand("B", 0.18, 0.35)]
+    out = select_candidates(cands, top_k=5)  # min_score implicit None
+    assert sorted(c.ticker for c in out) == ["A", "B"]
+
+
+def test_min_score_applied_before_dedup():
+    """Per-ticker dedup keeps the higher direction, BUT only among candidates
+    that already cleared the floor. If a ticker's better side is below the
+    floor and the weaker side is above, the weaker side should win — not be
+    masked by the dedup picking the (filtered-out) better side first.
+    """
+    cands = [
+        _cand("AAPL", 0.30, 0.50, direction="drop"),  # below 0.60 floor
+        _cand("AAPL", 0.20, 0.65, direction="rise"),  # above floor
+    ]
+    out = select_candidates(cands, top_k=10, min_score=0.60)
+    assert len(out) == 1
+    assert out[0].direction == "rise"
