@@ -1394,3 +1394,35 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 4. **Postgres-backed integration test** for enum-like string columns (carried forward).
 5. **Phase 4 joint top-K backtest validation** with the corrected return lags (carried forward).
 6. **Pre-existing carryovers** (carried forward): sentiment per-ticker upsert, whisper devices block, triple-copy `directional.py` install layout, multi-leg/OCC spread construction.
+
+---
+
+## 2026-05-14 — Session 29 (continued, part 4): Postgres-string tests, Phase 4 joint backtest, triple-copy + sentiment fixes
+
+**Agent**: caveman (full mode), Opus 4.7
+**Branches / PRs landed or opened**:
+- PR #40 (merged earlier this session): Postgres-backed integration test for enum-string columns. `testcontainers[postgres]` spins up an ephemeral Postgres 16, builds the schema via `Base.metadata.create_all`, and asserts every known-valid value in `recommendations.{strategy, direction, risk_type, option_type}` and `paper_trades.{strategy, status}` fits its column. Catches the Session 29 VARCHAR(10) class-of-bug at PR time.
+- PR #41 (open): `feat/joint-topk-backtest` — `backend/scripts/run_joint_topk_backtest.py`. Walk-forward harness: per fold trains drop + rise XGBs on the training slice, predicts both probabilities on the test slice, builds joint `[(ticker, drop), (ticker, rise)]` Candidates per test date, runs `select_candidates(top_k)`, scores each pick against the direction-matched 5d forward label, writes a markdown report. Local run on a 2y yfinance backfill (49 tickers, folds=4, top_k=10) exercised all four folds end-to-end. Numbers are weak (mean drop AUC 0.565 / rise AUC 0.540, mean P&L −0.90) because the local snapshot lacks the Phase 9 feature stack — goal was harness validation, not calibration.
+- PR #42 (open): `fix/dockerfile-triple-copy` — `Dockerfile` now runs `rm -rf src build` in the same `RUN` layer as `pip install --no-cache-dir .`, eliminating the long-standing `/app/src` + `/app/build/lib/src` duplication. The built image now contains a single copy of the source tree at `/usr/local/lib/python3.10/site-packages/src/...`. Verified by `docker run` introspection: both `/app/src` and `/app/build` return ENOENT, and `src.__file__` resolves to site-packages. Means future `docker cp` hot-patches against `/app/src` will fail loudly instead of silently no-op.
+- PR #43 (open): `fix/sentiment-upsert-per-ticker` — `_job_sentiment_async` previously had a single try block around the entire `for ticker, info in results.items()` loop, so one ticker's `upsert_daily_sentiment` failure silently dropped every remaining ticker in the batch. Now each upsert is isolated: on failure the session rolls back, `pipeline_job_errors_total{job="sentiment_upsert"}` increments, and the loop continues. New regression test mocks the analyzer + upsert and asserts AAPL + NVDA persist when BAD raises.
+
+### Local validation infrastructure
+- Discovered the local SQLite DB had only 8 days of price history and zero technical_indicators rows. Ran `DataFetcher.fetch_daily(period="2y")` → 24,206 new rows, then `FeatureEngineer.compute_all()` → 23,961 indicator rows. Backtest harness then ran cleanly. Useful precondition for any future local backtest work.
+- One Windows gotcha along the way: `Path.write_text("...→...")` defaults to cp1252 on Windows and dies on the `→` arrow. Fixed inline with `encoding="utf-8"`.
+
+### State of system
+- Disk: still ~23 GB free, weekly prune cron in place from part 3.
+- All four "what's next" items the user asked for in this session (#3 Postgres tests, #4 Phase 4 backtest, #5 triple-copy fix, #6 sentiment per-ticker upsert) shipped or have an open PR.
+- Open PRs awaiting review/merge: #41 (joint backtest), #42 (Dockerfile), #43 (sentiment upsert).
+
+### Memories updated this part-session
+- `projects/stock-analysis/container_triple_copy_install_layout.md` — marked resolved by PR #42; added note that post-merge `docker cp /app/src` will fail loudly.
+
+### Next steps
+1. **Review and merge PRs #41, #42, #43** — straightforward, each has self-contained tests or verification notes in the PR body.
+2. **After #42 merges, redeploy backend on homelab VM** (`git pull && docker compose build backend && docker compose up -d backend`) and confirm scheduler + `/api/v1/health` come up clean.
+3. **Run the joint top-K backtest on the homelab Postgres** once #41 merges, to get production-grade numbers (the local-2y run was harness validation only).
+4. **Watch 2026-05-15 07:30 EDT scheduler run** (carried forward) — first natural cron tick that populates `pipeline_recommendations_generated_total{direction}`.
+5. **Wire a real Alertmanager receiver** (carried forward).
+6. **Resolve GH Actions billing** (carried forward).
+7. **Remaining pre-existing carryovers**: whisper devices block, multi-leg/OCC spread construction.
