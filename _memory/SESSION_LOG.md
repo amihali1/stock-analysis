@@ -1275,3 +1275,56 @@ The inline comment on both columns already listed `call_options, bull_spread` �
 3. Phase 4 — joint top-K backtest validation with the corrected return lags (Session 28).
 4. Resolve GH Actions billing — every manual deploy still bypasses the pytest gate, and the SQLite-vs-Postgres gap means even a working pytest gate wouldn't have caught Session 29's incident. Worth a Postgres-backed integration test for any column with enum-like string values.
 5. (Still open from prior sessions) sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout, real multi-leg/OCC spread construction in execution engine.
+
+---
+
+## 2026-05-14 — Session 29 (continued): scheduler error counter, alert rule, and Alertmanager wiring
+
+**Agent**: Claude (Opus 4.7)
+**Branches/PRs**:
+- stock-analysis: `feat/scheduler-error-counter` → PR #38 → squash-merged `70c7ebc`.
+- homelab-monitoring: `feat/stock-analysis-job-error-alert` → PR #3 → squash-merged `02f0e54`.
+
+**Motivation (post-hotfix monitoring gap):**
+After the VARCHAR(32) migration shipped earlier in Session 29, the root question remained: *why did the 2026-05-14 07:30 EDT failure stay invisible for five hours?* The recommendations handler caught `psycopg2.errors.StringDataRightTruncation`, logged at ERROR level, and APScheduler still marked the job 'executed successfully'. Existing alerts (`StockAnalysisPipelineStale`, `StockAnalysisDailyJobMissedTick`) filter on `status="ok"` and never tripped because they cannot distinguish "no run" from "run errored". The fix is a Prometheus counter that increments only on the error path, exposed to Alertmanager.
+
+**Shipped (PR #38, commit `70c7ebc`):**
+- `backend/src/metrics.py` — new `pipeline_job_errors_total{job}` Counter.
+- `backend/src/pipeline/scheduler.py` — `_record_run` now bumps that counter whenever the classified `outcome == "error"`. Single point — covers all 11 outer handlers (`fetch_prices`, `compute_indicators`, `sentiment`, `fetch_earnings`, `fetch_options`, `fetch_wikipedia_pageviews`, `fetch_insider_transactions`, `recommendations`, `execute_recommendations`, `portfolio_sync`, `retrain_models`) without per-handler edits.
+- `backend/tests/test_scheduler.py` — `test_record_run_increments_error_counter_only_on_error` asserts the counter advances on `error`, stays put on `ok`/`skipped`. Full local suite: 394 pass, 11 CI-skipped, 1 pre-existing matplotlib failure (`test_save_reliability_plot_writes_file`) unrelated to this change.
+
+**Shipped (homelab-monitoring PR #3, commit `02f0e54`):**
+- `prometheus/rules/homelab.yml` — `StockAnalysisPipelineJobError` rule: `expr: increase(pipeline_job_errors_total[15m]) > 0`, `for: 1m`, `severity: warning`. Templated on `exported_job` (Prometheus renames the application's `job` label after scrape — same convention as the existing pipeline alerts). `promtool check rules` reports `SUCCESS: 8 rules found`.
+
+**VM deploy (manual, GH Actions billing-blocked for BOTH repos now):**
+- stock-analysis: `git pull` → `docker compose build backend` (~10s incremental) → `docker compose up -d backend` → migration was idempotent (already at head), startup clean.
+- homelab-monitoring: `git fetch && git reset --hard origin/master` → `curl POST :9090/-/reload`. Reload returned 200 but Prometheus only picked up 7 of the 8 rules.
+
+**Discovered: Prometheus `/-/reload` stale-dentry under directory bind mount.**
+The bind `/home/proxmox/homelab-monitoring/prometheus/rules:/etc/prometheus/rules:ro` worked correctly for in-place edits historically, but a `git fetch && git reset --hard` replaces tracked files via atomic rename (write tempfile, rename over target → new inode). Inside the container, the kernel's dentry cache held the pre-rename inode. `/-/reload` re-read the path, the path resolved to the cached dentry, the reload completed cleanly while reading stale bytes. `docker exec prometheus grep -c "alert:" /etc/prometheus/rules/homelab.yml` returned 7, host file had 8. Fix: `docker compose restart prometheus`. ~10s startup, then all 8 rules `health=ok`. Memory saved at `prometheus_reload_stale_dentry.md` so future deploys don't trust reload alone. **The deploy workflow's "Verify Prometheus rules health post-deploy" step would have caught this immediately**, but GH Actions is billing-blocked.
+
+**End-to-end alert verification:**
+- Inspected `/api/v1/rules` for the new rule: `health: ok`, `state: inactive`, `lastEvaluation` advancing every 30s, `evaluationTime: 8.6e-5s`. Rule is being evaluated against the live counter.
+- Injected synthetic alert via `POST :9093/api/v2/alerts` with the rule's exact label set (`alertname=StockAnalysisPipelineJobError`, `severity=warning`, `exported_job=recommendations`). Alertmanager accepted (HTTP 200), the alert appeared `state: active` in `/api/v2/alerts`, routed to `receivers: ['null']`.
+- **Gap discovered**: `alertmanager/alertmanager.yml` declares exactly one receiver named `null`. Every alert is correctly grouped/routed but nothing ever leaves Alertmanager. The new rule is half-wired — visible in the UI, but no slack/email/webhook fires. As of 2026-05-14 there are also 23 chronically-firing `HaEntityUnavailable` and 1 firing `DiskAlmostFull` that have never been paged. Saved at `alertmanager_null_receiver.md`.
+
+**GH Actions billing blocks BOTH repos:**
+Memory `gh_actions_billing_block_2026-05-12.md` previously noted this for stock-analysis. Confirmed today that `homelab-monitoring`'s `deploy.yml` workflow is also blocked: triggering via `gh workflow run` started the `validate` job, which immediately failed with "The job was not started because recent account payments have failed or your spending limit needs to be increased." The self-hosted `deploy` job didn't get to start because it `needs: validate`. Manual SSH deploy is now the only path for both repos until billing is resolved.
+
+**Behavioural change (operator preference, 2026-05-14):**
+User updated `C:\Users\andym\.claude\CLAUDE.md` (via my edit per their request) with a "Save autonomously — do NOT ask permission" subsection under Agent Memory Store rules. Future sessions: save any non-obvious finding to `C:\AgentMemory\` immediately, inform the user after the fact, never ask first. The existing duplicate/derivability rules still apply.
+
+**Memories written this half-session:**
+- `sqlite_varchar_length_not_enforced.md` — class-of-bug: SQLite ignores `VARCHAR(N)`, prod Postgres raises `StringDataRightTruncation`.
+- `prometheus_reload_stale_dentry.md` — `/-/reload` returns 200 while reading the old inode after a git-rename file replacement.
+- `alertmanager_null_receiver.md` — all alerts route to `null`; new rule is half-wired until a notification channel is added.
+- `paper_trading_readiness.md` + `rise_model_v1_metrics_2026-05-13.md` updated with the per-direction streak semantics decided earlier in the session (run-days-with-≥1-rec, regime shutout pauses the other direction's streak without breaking it).
+- `MEMORY.md` index entries updated for all of the above.
+
+**Next steps:**
+1. **Watch 2026-05-15 07:30 EDT scheduler run** — confirms (a) truncation fix holds for the natural cron path, (b) `pipeline_job_errors_total{job="recommendations"}` stays at the current value (no new errors), (c) the all-bull split persists or starts mixing as macro shifts.
+2. **Wire a real Alertmanager receiver.** The `null` receiver makes today's alert work invisible to a human until they actively open the dashboard. Even a single low-noise channel (slack webhook, gotify, discord, email) closes the loop. Silence/inhibit the chronic `HaEntityUnavailable` entities before flipping notifications on, or the first hour of notifications will be entity noise.
+3. **Investigate the firing `DiskAlmostFull` alert** discovered during the synthetic-alert verification — nobody's been paged about it.
+4. **Resolve GH Actions billing** (now blocks both stock-analysis and homelab-monitoring). Carried forward from earlier in the session.
+5. **Postgres-backed integration test** for any column with enum-like string values — class-of-bug prevention for the SQLite-vs-Postgres gap that started Session 29.
+6. (Carried forward from earlier in the session) drop-side dead-zone follow-up; Phase 4 joint top-K backtest validation; pre-existing carryovers (sentiment per-ticker upsert, whisper devices block, triple-copy `directional.py` install layout, multi-leg/OCC spread construction).
