@@ -590,7 +590,13 @@ def job_generate_recommendations():
         finally:
             db.close()
 
-        pipeline_recommendations_generated_total.inc(count)
+        # Per-direction bumps (drop-side dead-zone visibility, 2026-05-14).
+        # Both .inc() calls run unconditionally so each direction emits a
+        # series even when bear_recs or bull_recs is zero — a regime shutout
+        # (e.g. 0 bear / 10 bull on 2026-05-14) must be distinguishable from
+        # "no scrape happened" in Grafana.
+        pipeline_recommendations_generated_total.labels(direction="bear").inc(bear_recs)
+        pipeline_recommendations_generated_total.labels(direction="bull").inc(bull_recs)
         logger.info(
             "Scheduler: recommendations complete — %d new (%d bear / %d bull), "
             "%d watchlist, %d candidates evaluated (dual-direction), "

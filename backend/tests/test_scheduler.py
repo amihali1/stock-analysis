@@ -120,3 +120,28 @@ def test_record_run_increments_error_counter_only_on_error(clean_scheduler):
 
     scheduler_module._record_run("recommendations", "error")
     assert pipeline_job_errors_total.labels(job="recommendations")._value.get() == before + 1
+
+
+def test_recommendations_counter_emits_both_directions(clean_scheduler):
+    """`pipeline_recommendations_generated_total` must expose a series for each
+    direction so a regime shutout (e.g. 0 bear / 10 bull on 2026-05-14) is
+    visible in Grafana — not indistinguishable from "metric missing".
+
+    The scheduler bumps the counter unconditionally for both directions at the
+    end of each `job_generate_recommendations` run, including `.inc(0)` for
+    the shutout side. This test asserts the counter is labeled by direction
+    and that incrementing one label leaves the other untouched.
+    """
+    from src.metrics import pipeline_recommendations_generated_total
+
+    bear_before = pipeline_recommendations_generated_total.labels(direction="bear")._value.get()
+    bull_before = pipeline_recommendations_generated_total.labels(direction="bull")._value.get()
+
+    pipeline_recommendations_generated_total.labels(direction="bear").inc(0)
+    pipeline_recommendations_generated_total.labels(direction="bull").inc(10)
+    assert pipeline_recommendations_generated_total.labels(direction="bear")._value.get() == bear_before
+    assert pipeline_recommendations_generated_total.labels(direction="bull")._value.get() == bull_before + 10
+
+    pipeline_recommendations_generated_total.labels(direction="bear").inc(3)
+    assert pipeline_recommendations_generated_total.labels(direction="bear")._value.get() == bear_before + 3
+    assert pipeline_recommendations_generated_total.labels(direction="bull")._value.get() == bull_before + 10
