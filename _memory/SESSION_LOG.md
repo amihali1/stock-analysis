@@ -1215,3 +1215,63 @@ The rise model dominates the bear side under current macro. Drop probs are dead-
 2. Phase 4 — joint top-K backtest validation with the corrected return lags.
 3. Resolve GH Actions billing — pytest gate is still bypassed on every manual deploy.
 4. (Still open) sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout, real multi-leg/OCC spread construction in execution engine.
+
+---
+
+## 2026-05-14 — Session 29: VARCHAR(10) truncation hotfix + first bull production recs
+
+**Agent**: Claude (Opus 4.7)
+**Branch/PR**: `fix/widen-strategy-column` → PR #37 → squash-merged `de7676a`.
+
+**Incident:**
+The 2026-05-14 07:30 EDT scheduler run (the one Session 27/28 flagged as "the real test") failed in production. Verbatim error from container logs:
+
+```
+psycopg2.errors.StringDataRightTruncation: value too long for type character varying(10)
+```
+
+Raised at `pipeline/scheduler.py:579` on `db.commit()`. The entire batch insert rolled back — **zero recommendations persisted for 2026-05-14**. APScheduler logged the job as "executed successfully" because the exception was caught and logged at `ERROR` level rather than re-raised; the wall-clock duration (~19s) hid that nothing was written.
+
+**Root cause:**
+Phase 5 (PR #36, Session 28) added `call_options` (12 chars) and `bull_spread` (11 chars) as valid `Recommendation.strategy` values but left both columns at `String(10)`:
+- `backend/src/db/models.py:127` — `Recommendation.strategy`
+- `backend/src/db/models.py:154` — `PaperTrade.strategy`
+- Original migrations: `5c9e96e5522b_initial_schema_*.py:61`, `8612ba71ff2b_add_paper_trades_table.py:24`
+
+The inline comment on both columns already listed `call_options, bull_spread` — devs updated the docstring, missed the type. The 405-test suite passed pre-merge because SQLite (used for unit tests) silently ignores `VARCHAR(N)` length constraints; Postgres enforces them.
+
+**Shipped (PR #37, commit `de7676a`):**
+- `backend/alembic/versions/n4o6p8q0r2s4_widen_strategy_column.py` — new migration. Widens `recommendations.strategy` and `paper_trades.strategy` from `String(10)` to `String(32)`. Uses `op.batch_alter_table` for SQLite-dev compatibility (Postgres widens in-place without table rewrite).
+- `backend/src/db/models.py:127` + `:154` — `String(10) → String(32)`.
+- Migration applied automatically on container startup (alembic upgrade head runs in entrypoint). Verified via SQLAlchemy inspector: `recommendations.strategy: VARCHAR(32)`, `paper_trades.strategy: VARCHAR(32)`.
+
+**VM deploy (manual, GH Actions still billing-blocked):**
+- Fast-forwarded `7fdae6c..de7676a`.
+- `docker compose build backend` — ~113s, full pip reinstall (cache invalidated on COPY of changed files).
+- `docker compose up -d backend` — clean recreate. Startup logs show `Running upgrade m3n5o7p9q1r3 -> n4o6p8q0r2s4`. All 12 scheduler jobs registered, no errors.
+- Ad-hoc trigger of `job_generate_recommendations()` via `docker exec ... python -c "..."` — completed cleanly, no truncation.
+
+**First bull production recs:**
+2026-05-14 split (10 recs total):
+| direction | strategy     | count |
+|-----------|--------------|-------|
+| long      | call_options | 9     |
+| long      | long         | 1     |
+| short     | *            | 0     |
+
+100% bullish, exactly the macro-dominance regime flagged in `rise_model_v1_metrics_2026-05-13.md` and Session 27. Drop probs sigmoid-clamped flat (base-rate band), rise probs vary, dedup-by-direction picks bull every ticker. The new `_map_call_options` and `_map_long` order mappers (Phase 5) now have real rec rows to route — though `job_execute_recommendations` is still gated by `ALPACA_TRADING_ENABLED=false`.
+
+**Streak status:**
+- Drop-side stability streak: still **day 2/5** — no bear recs today means no evidence to extend or break it.
+- Rise-side gate: **day 1** of the separate 5-day paper-trade-readiness streak (per `rise_model_v1_metrics_2026-05-13.md` gating note).
+
+**Memories written this session:**
+- `sqlite_varchar_length_not_enforced.md` — class of bug: SQLite ignores VARCHAR length, Postgres enforces; any new enum-like string value needs a length audit before merge. Reason this incident wasn't caught by the test suite.
+- `MEMORY.md` index updated.
+
+**Next steps:**
+1. **Watch 2026-05-15 07:30 EDT scheduler run** — confirm the truncation fix holds for a natural cron firing, and watch whether the all-bull split persists (regime signal) or starts mixing as macro conditions shift.
+2. Decide a follow-up for the dead drop-side: with zero bear recs landing under current macro, the drop-side stability streak is effectively paused. Either lower the dedup threshold to keep both directions in the output, or accept the regime-detector behavior and gate drop-side auto-exec separately on actual run-days rather than calendar-days.
+3. Phase 4 — joint top-K backtest validation with the corrected return lags (Session 28).
+4. Resolve GH Actions billing — every manual deploy still bypasses the pytest gate, and the SQLite-vs-Postgres gap means even a working pytest gate wouldn't have caught Session 29's incident. Worth a Postgres-backed integration test for any column with enum-like string values.
+5. (Still open from prior sessions) sentiment per-ticker upsert, whisper devices block, fix triple-copy `directional.py` install layout, real multi-leg/OCC spread construction in execution engine.
