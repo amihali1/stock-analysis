@@ -13,6 +13,7 @@ from src.db.models import Base
 from src.db.session import engine
 from src.metrics import (
     pipeline_indicators_computed_total,
+    pipeline_job_errors_total,
     pipeline_last_run_timestamp,
     pipeline_prices_fetched_total,
     pipeline_recommendations_generated_total,
@@ -25,12 +26,21 @@ scheduler = AsyncIOScheduler()
 
 
 def _record_run(job_name: str, status: str):
-    """Record job completion time in health endpoint state and Prometheus gauge."""
+    """Record job completion time in health endpoint state and Prometheus gauge.
+
+    Also increments `pipeline_job_errors_total` when the job ended in error.
+    APScheduler swallows handler exceptions (every job here is wrapped in a
+    try/except that logs and continues) so a silent failure looks identical
+    to a success in the job-store view. The error counter is the only signal
+    Prometheus/Alertmanager can pick up — wire alerts on its rate.
+    """
     from src.api.routes.health import last_job_runs
     now = datetime.now()
     last_job_runs[job_name] = f"{status} at {now.isoformat()}"
     outcome = "ok" if status.startswith("ok") else ("skipped" if status.startswith("skipped") else "error")
     pipeline_last_run_timestamp.labels(job=job_name, status=outcome).set(now.timestamp())
+    if outcome == "error":
+        pipeline_job_errors_total.labels(job=job_name).inc()
 
 
 def job_fetch_prices():

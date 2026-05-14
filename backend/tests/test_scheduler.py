@@ -97,3 +97,26 @@ def test_job_sentiment_is_synchronous(clean_scheduler):
     """
     import inspect
     assert not inspect.iscoroutinefunction(scheduler_module.job_sentiment)
+
+
+def test_record_run_increments_error_counter_only_on_error(clean_scheduler):
+    """`_record_run` must bump pipeline_job_errors_total when status is error.
+
+    This counter is the only Prometheus signal that survives the scheduler's
+    handler-level try/except swallowing — without it, a hard job failure looks
+    identical to a successful run in the metrics view. Regression case:
+    2026-05-14 07:30 EDT scheduler run failed with a VARCHAR truncation,
+    `_record_run("recommendations", "error")` fired, and zero alerts triggered
+    because nothing was incrementing on the error path.
+    """
+    from src.metrics import pipeline_job_errors_total
+
+    before = pipeline_job_errors_total.labels(job="recommendations")._value.get()
+    scheduler_module._record_run("recommendations", "ok (10 recs)")
+    assert pipeline_job_errors_total.labels(job="recommendations")._value.get() == before
+
+    scheduler_module._record_run("recommendations", "skipped (no credentials)")
+    assert pipeline_job_errors_total.labels(job="recommendations")._value.get() == before
+
+    scheduler_module._record_run("recommendations", "error")
+    assert pipeline_job_errors_total.labels(job="recommendations")._value.get() == before + 1
