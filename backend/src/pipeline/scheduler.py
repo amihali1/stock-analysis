@@ -106,20 +106,40 @@ async def _job_sentiment_async():
         scored = sum(1 for v in results.values() if v.get("scores_computed", 0) > 0)
 
         # Persist daily aggregated sentiment (P9-004) so we can compute z-scores later.
+        # Each ticker upsert is isolated: a single SQLAlchemy failure (constraint
+        # violation, transient DB hiccup) must not silently drop the remaining
+        # tickers in the batch. Roll back the session after a failure so the next
+        # iteration starts clean.
         today = _date.today()
         db = SessionLocal()
+        upserted = 0
+        upsert_failed = 0
         try:
             for ticker, info in results.items():
                 if info.get("scores_computed", 0) == 0:
                     continue
-                upsert_daily_sentiment(
-                    db, ticker, today,
-                    sentiment_score=info.get("composite_sentiment"),
-                    confidence=None,
-                    article_count=int(info.get("scores_computed", 0)),
-                )
+                try:
+                    upsert_daily_sentiment(
+                        db, ticker, today,
+                        sentiment_score=info.get("composite_sentiment"),
+                        confidence=None,
+                        article_count=int(info.get("scores_computed", 0)),
+                    )
+                    upserted += 1
+                except Exception:
+                    upsert_failed += 1
+                    db.rollback()
+                    pipeline_job_errors_total.labels(job="sentiment_upsert").inc()
+                    logger.exception(
+                        "Scheduler: sentiment upsert failed for %s — continuing", ticker
+                    )
         finally:
             db.close()
+        if upsert_failed:
+            logger.warning(
+                "Scheduler: sentiment upsert summary — %d ok, %d failed",
+                upserted, upsert_failed,
+            )
 
         pipeline_sentiment_runs_total.labels(status="ok").inc()
         logger.info(f"Scheduler: sentiment complete — {scored} tickers scored")

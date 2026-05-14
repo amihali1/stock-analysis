@@ -145,3 +145,50 @@ def test_recommendations_counter_emits_both_directions(clean_scheduler):
     pipeline_recommendations_generated_total.labels(direction="bear").inc(3)
     assert pipeline_recommendations_generated_total.labels(direction="bear")._value.get() == bear_before + 3
     assert pipeline_recommendations_generated_total.labels(direction="bull")._value.get() == bull_before + 10
+
+
+def test_sentiment_upsert_failure_does_not_drop_batch(clean_scheduler, monkeypatch):
+    """A single ticker's sentiment upsert blowing up must not silently drop the
+    remaining tickers in the batch. Regression target: prior to this fix the
+    `for ticker in results.items()` loop in `_job_sentiment_async` had no
+    per-iteration try/except, so a constraint violation or transient DB error
+    on one ticker would bubble up to the outer except and skip every ticker
+    after it. The fix isolates each upsert and rolls back the session so
+    subsequent iterations start clean.
+    """
+    import asyncio
+
+    from src.metrics import pipeline_job_errors_total
+
+    fake_results = {
+        "AAPL": {"ticker": "AAPL", "scores_computed": 3, "composite_sentiment": 0.2},
+        "BAD":  {"ticker": "BAD",  "scores_computed": 5, "composite_sentiment": -0.1},
+        "NVDA": {"ticker": "NVDA", "scores_computed": 2, "composite_sentiment": 0.5},
+    }
+
+    class _FakeAnalyzer:
+        def __init__(self, *a, **kw): pass
+        async def analyze_all(self, *a, **kw): return fake_results
+        def close(self): pass
+
+    upserted: list[str] = []
+
+    def _fake_upsert(db, ticker, on_date, **kwargs):
+        if ticker == "BAD":
+            raise RuntimeError("simulated DB failure for BAD")
+        upserted.append(ticker)
+
+    monkeypatch.setattr(scheduler_module, "_record_run", lambda *a, **kw: None)
+    monkeypatch.setattr("src.pipeline.sentiment.SentimentAnalyzer", _FakeAnalyzer)
+    monkeypatch.setattr("src.features.sentiment.upsert_daily_sentiment", _fake_upsert)
+
+    err_before = pipeline_job_errors_total.labels(job="sentiment_upsert")._value.get()
+
+    asyncio.run(scheduler_module._job_sentiment_async())
+
+    assert "AAPL" in upserted, "tickers before the failure must persist"
+    assert "NVDA" in upserted, "tickers after the failure must NOT be dropped"
+    assert "BAD" not in upserted
+
+    err_after = pipeline_job_errors_total.labels(job="sentiment_upsert")._value.get()
+    assert err_after == err_before + 1, "per-ticker failure must bump pipeline_job_errors_total"
