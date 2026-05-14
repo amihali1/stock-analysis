@@ -21,6 +21,7 @@ pipeline_indicators_computed_total = Counter(
 pipeline_recommendations_generated_total = Counter(
     "pipeline_recommendations_generated_total",
     "Total recommendations persisted across all generate_recommendations runs",
+    ["direction"],
 )
 
 pipeline_sentiment_runs_total = Counter(
