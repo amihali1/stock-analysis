@@ -437,6 +437,7 @@ def job_generate_recommendations():
             selected = select_candidates(
                 candidates,
                 top_k=settings.recommendations_top_k,
+                min_score=settings.recommendations_min_score or None,
             )
 
             for cand in selected:

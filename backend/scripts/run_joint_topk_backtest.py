@@ -134,7 +134,7 @@ def _build_candidates_for_date(test_slice: pd.DataFrame) -> list[Candidate]:
 
 def run_joint_backtest(
     df: pd.DataFrame, feature_cols: list[str], n_folds: int, top_k: int,
-    train_min_rows: int = 1000,
+    train_min_rows: int = 1000, min_score: float | None = None,
 ) -> JointBacktestResult:
     dates = sorted(df["date"].unique())
     if len(dates) < n_folds + 1:
@@ -185,7 +185,7 @@ def run_joint_backtest(
 
         for d, day_slice in test_view.groupby("date"):
             candidates = _build_candidates_for_date(day_slice)
-            selected = select_candidates(candidates, top_k=top_k)
+            selected = select_candidates(candidates, top_k=top_k, min_score=min_score)
             for cand in selected:
                 row_index = cand.extras["row_index"]
                 row = day_slice.loc[row_index]
@@ -254,15 +254,20 @@ def _git_sha() -> str:
         return "local"
 
 
-def write_report(result: JointBacktestResult, out_dir: Path, top_k: int, git_sha: str) -> Path:
+def write_report(
+    result: JointBacktestResult, out_dir: Path, top_k: int, git_sha: str,
+    min_score: float | None = None,
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     today = date.today().isoformat()
-    out_path = out_dir / f"{today}-joint-topk-{git_sha}.md"
+    floor_tag = f"-floor{min_score:.2f}" if min_score is not None else ""
+    out_path = out_dir / f"{today}-joint-topk{floor_tag}-{git_sha}.md"
 
+    floor_line = f"Min-score floor: **{min_score:.2f}**.  " if min_score is not None else ""
     lines = [
         f"# Phase 4 joint top-K backtest — {today} ({git_sha})",
         "",
-        f"Top-K per date: **{top_k}**.  Folds: **{result.aggregate.get('n_folds', 0)}**.",
+        f"{floor_line}Top-K per date: **{top_k}**.  Folds: **{result.aggregate.get('n_folds', 0)}**.",
         "",
         "## Aggregate",
         "",
@@ -303,6 +308,8 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=10,
                         help="Per-date top-K cap (mirrors live scheduler default)")
     parser.add_argument("--train-min-rows", type=int, default=1000)
+    parser.add_argument("--min-score", type=float, default=None,
+                        help="Optional composite-score floor (0-1) applied before top-K")
     parser.add_argument("--git-sha", default=_git_sha())
     args = parser.parse_args()
 
@@ -312,8 +319,12 @@ def main() -> int:
         df=df, feature_cols=feature_cols,
         n_folds=args.folds, top_k=args.top_k,
         train_min_rows=args.train_min_rows,
+        min_score=args.min_score,
     )
-    out = write_report(result, REPORT_DIR, top_k=args.top_k, git_sha=args.git_sha)
+    out = write_report(
+        result, REPORT_DIR, top_k=args.top_k, git_sha=args.git_sha,
+        min_score=args.min_score,
+    )
     logger.info("Report written: %s", out)
 
     agg = result.aggregate

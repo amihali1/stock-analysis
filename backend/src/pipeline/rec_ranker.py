@@ -37,6 +37,7 @@ def select_candidates(
     top_k: int,
     base_rate: float | None = None,        # accepted for back-compat; ignored
     min_dir_prob_lift: float | None = None,  # accepted for back-compat; ignored
+    min_score: float | None = None,
 ) -> list[Candidate]:
     """Rank candidates by composite score (descending), cap at top_k.
 
@@ -45,6 +46,14 @@ def select_candidates(
     bullish and bearish candidates compete for the same top-K slots, and only one
     direction-of-conviction wins per ticker.
 
+    `min_score` (optional, in [0, 1]) is an absolute composite-score floor applied
+    *before* top-K so the ranker never returns picks below a minimum conviction.
+    Motivation: the 2026-05-14 joint top-K backtest on prod data showed hit rates
+    of 25-30% (vs. 60% break-even at the -1.5/+1.0 payoff) because top-K=10 forces
+    the ranker to fill slots with low-confidence candidates on flat days. Setting
+    this floor enforces the project's "risk-first filtering, skip marginal setups"
+    rule even when fewer than top_k qualified picks exist.
+
     No absolute `dir_prob` floor — see module docstring. `meets_confidence` is
     intentionally not applied here so the scheduler can log per-rec filter rates.
     """
@@ -52,6 +61,8 @@ def select_candidates(
         return []
     best_by_ticker: dict[str, Candidate] = {}
     for c in candidates:
+        if min_score is not None and c.score.score < min_score:
+            continue
         prev = best_by_ticker.get(c.ticker)
         if prev is None or c.score.score > prev.score.score:
             best_by_ticker[c.ticker] = c
