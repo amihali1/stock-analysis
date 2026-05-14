@@ -8,12 +8,12 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from src.models.directional import DirectionalModel, DEFAULT_MODEL_PATH as DIR_MODEL_PATH
+from src.models.directional import DirectionalModel, DEFAULT_MODEL_PATH as DIR_MODEL_PATH, _resolve_model_dir
 from src.models.volatility import VolatilityModel, DEFAULT_MODEL_PATH as VOL_MODEL_PATH
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
+MODEL_DIR = _resolve_model_dir()
 REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "_memory" / "MODEL_REGISTRY.md"
 
 

@@ -61,14 +61,47 @@ FEATURE_COLS = [
     *INSIDER_FEATURE_COLS,        # P10-005
 ]
 
-MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
+def _resolve_model_dir() -> Path:
+    """Find the trained_models directory.
+
+    In dev, the package is editable-installed and `__file__` points back into the
+    repo so `parent.parent.parent / "trained_models"` resolves correctly. In the
+    Docker prod image (post PR #42, 2026-05-14) `__file__` lives in site-packages
+    and `/app/src` was deleted, so the relative path resolves to a nonexistent
+    site-packages/trained_models. Walk the candidate list and return the first
+    one that exists; fall back to the legacy relative path so dev behavior is
+    unchanged when neither exists yet (first-time install).
+    """
+    candidates = [
+        Path("/app/trained_models"),
+        Path(__file__).parent.parent.parent / "trained_models",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[-1]
+
+
+MODEL_DIR = _resolve_model_dir()
 DEFAULT_MODEL_PATH = MODEL_DIR / "directional_xgb_v1.pkl"
-DEFAULT_RISE_MODEL_PATH = MODEL_DIR / "directional_xgb_rise_v1.pkl"
+DEFAULT_RISE_MODEL_PATH = MODEL_DIR / "directional_xgb_rise_v2.pkl"
 
 # Target labels: 5-trading-day forward move past ±3%.
 DROP_THRESHOLD = -0.03
 RISE_THRESHOLD = 0.03
 FORWARD_DAYS = 5
+
+# Label modes:
+#   "absolute" — label fires on ticker's own forward return crossing ±3% threshold.
+#   "excess"   — label fires on (ticker_fwd_return - SPY_fwd_return) crossing ±3%.
+# The excess-vs-SPY label removes the macro confound that dominated absolute labels
+# (2026-05-14 root cause: volatile regimes show 40% rise base rate driven by
+# bounce-back; model learned "high VIX → rise" instead of per-ticker discrimination).
+# Rise v2 ships with label_mode="excess"; drop side stays "absolute" pending a
+# catalyst-feature backfill (sentiment historicals).
+LABEL_MODE_ABSOLUTE = "absolute"
+LABEL_MODE_EXCESS = "excess"
+SPY_TICKER = "SPY"
 
 
 class DirectionalModel:
@@ -77,6 +110,7 @@ class DirectionalModel:
         model_path: Path | None = None,
         direction: str = "drop",
         calibration_method: str | None = None,
+        label_mode: str | None = None,
     ):
         """A binary directional classifier.
 
@@ -86,9 +120,16 @@ class DirectionalModel:
                    sigmoid otherwise). Override to "sigmoid" to skip isotonic —
                    we use sigmoid for both directions now after the 2026-05-12
                    plateau finding (see directional_calibration_plateaus memory).
+        label_mode: "absolute" or "excess". When None, defaults to "excess" for
+                   rise (rise v2 ships with regime-relative label, 2026-05-14)
+                   and "absolute" for drop.
         """
         if direction not in ("drop", "rise"):
             raise ValueError(f"direction must be 'drop' or 'rise', got {direction!r}")
+        if label_mode is None:
+            label_mode = LABEL_MODE_EXCESS if direction == "rise" else LABEL_MODE_ABSOLUTE
+        if label_mode not in (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS):
+            raise ValueError(f"label_mode must be 'absolute' or 'excess', got {label_mode!r}")
         self.model: xgb.XGBClassifier | None = None
         self.calibrator: CalibratedClassifierCV | None = None
         self.brier_score: float | None = None
@@ -101,6 +142,7 @@ class DirectionalModel:
         self.feature_cols = FEATURE_COLS
         self.direction = direction
         self.calibration_method = calibration_method
+        self.label_mode = label_mode
 
     def load(self) -> None:
         """Load a trained model from disk."""
@@ -113,9 +155,10 @@ class DirectionalModel:
         # Legacy pickles predate the field; default to "drop" (the only direction
         # we trained before 2026-05-12).
         self.direction = data.get("direction", "drop")
+        self.label_mode = data.get("label_mode", LABEL_MODE_ABSOLUTE)
         logger.info(
-            "Loaded directional model from %s (direction=%s, calibrator=%s)",
-            self.model_path, self.direction,
+            "Loaded directional model from %s (direction=%s, label_mode=%s, calibrator=%s)",
+            self.model_path, self.direction, self.label_mode,
             "present" if self.calibrator is not None else "absent",
         )
 
@@ -128,6 +171,7 @@ class DirectionalModel:
             "calibrator": self.calibrator,
             "brier_score": self.brier_score,
             "direction": self.direction,
+            "label_mode": self.label_mode,
         }
         with open(self.model_path, "wb") as f:
             pickle.dump(payload, f)
@@ -199,8 +243,8 @@ class DirectionalModel:
 
         Returns metrics dict.
         """
-        logger.info("Building dataset (direction=%s)...", self.direction)
-        df = build_dataset(tickers, direction=self.direction)
+        logger.info("Building dataset (direction=%s, label_mode=%s)...", self.direction, self.label_mode)
+        df = build_dataset(tickers, direction=self.direction, label_mode=self.label_mode)
 
         if len(df) < 500:
             raise ValueError(f"Not enough data to train: {len(df)} rows (need 500+)")
@@ -362,15 +406,24 @@ class DirectionalModel:
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
 
-def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> pd.DataFrame:
+def build_dataset(
+    tickers: list[str] | None = None,
+    direction: str = "drop",
+    label_mode: str = LABEL_MODE_ABSOLUTE,
+) -> pd.DataFrame:
     """Build training dataset by joining price_history + technical_indicators.
 
     `direction` selects which forward-return threshold defines the positive class:
     "drop" (default) → label=1 when forward_return < -3%
     "rise"           → label=1 when forward_return > +3%
 
-    Creates binary label: 1 if stock drops >3% in the next 5 trading days.
+    `label_mode` controls the return used for the threshold comparison:
+    "absolute" → ticker's own forward return
+    "excess"   → ticker forward return minus SPY's forward return (same window).
+                 Removes macro confound — see module-level comment.
     """
+    if label_mode not in (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS):
+        raise ValueError(f"label_mode must be 'absolute' or 'excess', got {label_mode!r}")
     db = SessionLocal()
     try:
         query = db.query(
@@ -406,6 +459,18 @@ def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> 
             "bb_percent_b", "bb_upper", "bb_lower", "sma_50", "sma_200",
             "sma_crossover", "volume_zscore", "close",
         ])
+
+        # For excess-mode, pull SPY closes so we can compute SPY forward return
+        # per date and align onto the per-ticker rows.
+        spy_fwd_by_date: dict | None = None
+        if label_mode == LABEL_MODE_EXCESS:
+            spy_rows = db.query(PriceHistory.date, PriceHistory.close).filter(
+                PriceHistory.ticker == SPY_TICKER
+            ).order_by(PriceHistory.date).all()
+            spy_df = pd.DataFrame(spy_rows, columns=["date", "spy_close"])
+            spy_df = spy_df.sort_values("date").reset_index(drop=True)
+            spy_df["spy_fwd"] = spy_df["spy_close"].shift(-FORWARD_DAYS) / spy_df["spy_close"] - 1
+            spy_fwd_by_date = dict(zip(spy_df["date"], spy_df["spy_fwd"]))
     finally:
         db.close()
 
@@ -415,6 +480,9 @@ def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> 
     # Add derived features per ticker
     all_ticker_dfs = []
     for ticker, group in df.groupby("ticker"):
+        # SPY is needed for excess-label alignment but never gets a label itself.
+        if label_mode == LABEL_MODE_EXCESS and ticker in (SPY_TICKER, "^VIX"):
+            continue
         g = group.copy()
 
         # Lagged returns
@@ -431,10 +499,19 @@ def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> 
 
         # Forward return for label.
         g["forward_return"] = g["close"].shift(-FORWARD_DAYS) / g["close"] - 1
-        if direction == "rise":
-            g["label"] = (g["forward_return"] > RISE_THRESHOLD).astype(int)
+
+        if label_mode == LABEL_MODE_EXCESS:
+            g["spy_fwd"] = g["date"].map(spy_fwd_by_date)
+            label_return = g["forward_return"] - g["spy_fwd"]
         else:
-            g["label"] = (g["forward_return"] < DROP_THRESHOLD).astype(int)
+            label_return = g["forward_return"]
+
+        # Build label only where label_return is defined. NaN rows get NaN
+        # labels and are dropped at the end alongside NaN-feature rows.
+        if direction == "rise":
+            g["label"] = np.where(label_return.notna(), (label_return > RISE_THRESHOLD).astype(int), np.nan)
+        else:
+            g["label"] = np.where(label_return.notna(), (label_return < DROP_THRESHOLD).astype(int), np.nan)
 
         all_ticker_dfs.append(g)
 
@@ -458,6 +535,9 @@ def build_dataset(tickers: list[str] | None = None, direction: str = "drop") -> 
     # Drop rows with NaN features or missing labels (options cols are filled by defaults)
     feature_cols_with_label = FEATURE_COLS + ["label"]
     df = df.dropna(subset=feature_cols_with_label)
+    # np.where with NaN branch coerces label dtype to float; cast back now that
+    # NaN rows are gone so downstream XGB sees integer labels.
+    df["label"] = df["label"].astype(int)
 
     # Drop the helper columns but keep date and ticker for splitting
     keep_cols = ["ticker", "date"] + FEATURE_COLS + ["label"]
