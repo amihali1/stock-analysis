@@ -88,10 +88,14 @@ def _fit_xgb(X: pd.DataFrame, y: pd.Series) -> xgb.XGBClassifier:
     return model
 
 
-def _build_merged_dataset() -> pd.DataFrame:
-    """Build a single frame with both `label_drop` and `label_rise`."""
+def _build_merged_dataset(rise_label_mode: str = "excess") -> pd.DataFrame:
+    """Build a single frame with both `label_drop` and `label_rise`.
+
+    Rise side defaults to excess-vs-SPY label (rise v2 production semantics,
+    PR #46). Drop side stays on absolute label.
+    """
     df_drop = build_dataset(direction="drop")
-    df_rise = build_dataset(direction="rise")
+    df_rise = build_dataset(direction="rise", label_mode=rise_label_mode)
     if df_drop.empty or df_rise.empty:
         raise ValueError("Empty drop or rise dataset")
     df = df_drop.rename(columns={"label": "label_drop"}).merge(
@@ -310,10 +314,14 @@ def main() -> int:
     parser.add_argument("--train-min-rows", type=int, default=1000)
     parser.add_argument("--min-score", type=float, default=None,
                         help="Optional composite-score floor (0-1) applied before top-K")
+    parser.add_argument("--rise-label-mode", default="excess",
+                        choices=["absolute", "excess"],
+                        help="Rise-side label semantics (default: excess-vs-SPY, matches prod v2)")
     parser.add_argument("--git-sha", default=_git_sha())
     args = parser.parse_args()
 
-    df = _build_merged_dataset()
+    logger.info("Rise label mode: %s", args.rise_label_mode)
+    df = _build_merged_dataset(rise_label_mode=args.rise_label_mode)
     feature_cols = DirectionalModel().feature_cols
     result = run_joint_backtest(
         df=df, feature_cols=feature_cols,
