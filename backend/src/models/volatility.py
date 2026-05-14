@@ -16,7 +16,10 @@ from src.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = Path(__file__).parent.parent.parent / "trained_models"
+from src.models.directional import _resolve_model_dir as _resolve_directional_model_dir
+
+# Re-use the same resolver so dev + Docker prod behavior matches directional.py.
+MODEL_DIR = _resolve_directional_model_dir()
 DEFAULT_MODEL_PATH = MODEL_DIR / "volatility_lstm_v1.pt"
 
 LOOKBACK = 60  # Days of history as input
