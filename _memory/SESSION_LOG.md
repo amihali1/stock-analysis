@@ -1328,3 +1328,69 @@ User updated `C:\Users\andym\.claude\CLAUDE.md` (via my edit per their request) 
 4. **Resolve GH Actions billing** (now blocks both stock-analysis and homelab-monitoring). Carried forward from earlier in the session.
 5. **Postgres-backed integration test** for any column with enum-like string values — class-of-bug prevention for the SQLite-vs-Postgres gap that started Session 29.
 6. (Carried forward from earlier in the session) drop-side dead-zone follow-up; Phase 4 joint top-K backtest validation; pre-existing carryovers (sentiment per-ticker upsert, whisper devices block, triple-copy `directional.py` install layout, multi-leg/OCC spread construction).
+
+---
+
+## 2026-05-14 — Session 29 (continued, part 3): operational hygiene + drop-side dead-zone instrumentation
+
+**Agent**: Claude (Opus 4.7)
+
+### Disk-space alert investigation
+The firing `DiskAlmostFull` alert that surfaced during Session 29's synthetic-alert verification was rooted in Docker image churn, not data growth. Findings on `gpu-ai` VM (10.0.0.47):
+
+- Root `/` was at 4.35% free (12 GB remaining of 214 GB).
+- `docker system df`: 56 images / 176.5 GB; 34 dangling, mostly `backend-backend:latest` rebuilds at ~6 GB each accreting over weeks. Build cache 151.6 GB (sharing layers with images — double-counted).
+- Postgres `stock_analysis` only 83 MB total (biggest tables: technical_indicators 15 MB, wikipedia_pageviews 14 MB, analyst_ratings 14 MB).
+- `docker builder prune -f` → 2.6 GB reclaimed (legacy-builder cache only; rest pinned by current images).
+- `docker image prune -a -f --filter "until=24h"` → 10.8 GB reclaimed.
+- Net: 12 GB → 23 GB free (5% → 10.7%). `DiskAlmostFull` (`<0.10`) clears next eval cycle.
+
+### Weekly Docker prune cron installed on VM
+`proxmox` user crontab, no sudo needed (user is in `docker` group):
+
+```
+0 4 * * 0 /usr/bin/docker image prune -a --filter "until=168h" -f >> /home/proxmox/docker-prune.log 2>&1
+```
+
+Sunday 04:00 UTC. 168h filter protects current images plus generous buffer. Without this cron, root fills again in ~6 weeks at current deploy cadence (5-10 backend rebuilds/week × 6 GB).
+
+### `HaEntityUnavailable` quieted before wiring a real Alertmanager receiver
+**Shipped (homelab-monitoring, commit `9ad452e` on master, direct push since GH Actions billing is blocked):**
+- `prometheus/rules/homelab.yml` — bumped `for: 1h` → `for: 24h` and added domain filter `{domain!~"button|device_tracker|person"}`. Buttons (8) are stateless action triggers that auto-report unavailable on integration glitches; device_trackers (2) and persons (1) are intermittent by design (phones / people coming and going from wifi).
+- Verified: 23 firing → 0 firing, 11 pending (real signal preserved — sensors, switches, voice-assist entities, weather template). Pending alerts will mature to firing in 24h if entities stay down.
+- Deploy followed the dentry-rename lesson from earlier in Session 29: `git pull` + `docker compose restart prometheus`, NOT `/-/reload`.
+
+### Drop-side dead-zone code follow-up — per-direction recommendation counter
+**Shipped (PR #39, commit `6de619b`, stock-analysis):**
+- `backend/src/metrics.py` — `pipeline_recommendations_generated_total` gained a `direction` label (`"bear"` | `"bull"`).
+- `backend/src/pipeline/scheduler.py:593` — replaced the single `.inc(count)` with two unconditional `.inc()` calls: `.labels(direction="bear").inc(bear_recs)` and `.labels(direction="bull").inc(bull_recs)`. `.inc(0)` is called on the shutout side so each direction emits a series even when the regime suppresses it — a 0-rec direction is now distinguishable from "no scrape happened" in Prometheus.
+- `backend/tests/test_scheduler.py` — `test_recommendations_counter_emits_both_directions` asserts label independence and `.inc(0)` no-op behavior on the other side.
+- Local: full suite 396 pass, 11 CI-skipped, 0 fail.
+
+**Why this is the right move for the dead drop-side:**
+The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional — dedup by ticker, keep higher-scoring direction, then top-K. Memory `paper_trading_readiness.md` codifies the user decision to accept the regime-detector behavior and gate drop-side paper-trade-readiness on *run-days-with-≥1-rec* per direction, not calendar days. That decision was data-less until now — DB queries were the only way to evaluate it. With the labeled counter, the streak query becomes `increase(pipeline_recommendations_generated_total{direction="bear"}[1d]) > 0` and feeds Grafana / future alerts directly.
+
+**VM deploy (manual, GH Actions still billing-blocked):**
+- Fast-forwarded `70c7ebc..6de619b`.
+- `docker compose build backend` — ~114s, full pip reinstall (pyproject changed somewhere upstream — not this PR).
+- `docker compose up -d backend` — clean recreate at 16:04:15 UTC. Scheduler started with all 12 jobs registered.
+- `/metrics` initially showed only `HELP` + `TYPE` lines for the labeled counter — series doesn't exist until `.labels(...)` is called in the uvicorn process. **Ad-hoc invocation via `docker exec ... python -c "..."` does NOT populate the uvicorn metric registry** — each `python -c` is a separate process with its own prometheus_client Counter singleton. Series will appear when the natural 07:30 EDT cron tick fires `job_generate_recommendations` inside the running uvicorn process.
+- In-container ad-hoc invocation did successfully run the job logic: `recommendations complete — 10 new (0 bear / 10 bull), 159 watchlist, 316 candidates evaluated`. Confirms the dual-direction handling and bull-dominant regime carries over from this morning's run.
+
+### State of system
+- Disk: 23 GB free / 214 GB. Above 10% alert threshold. Weekly prune cron live.
+- `HaEntityUnavailable`: 0 firing, 11 pending (mature in 24h). Real receiver can now be wired without an inbox flood.
+- `pipeline_recommendations_generated_total{direction}` registered, awaiting first cron-driven run to populate series.
+- Bull-dominant regime confirmed mid-day: 0 bear / 10 bull in the in-container ad-hoc run. Drop-side stability streak still paused (day 2/5, no advance), per the per-direction semantic.
+
+### Memories written this part-session
+- `homelab-monitoring/disk_growth_and_prune_cron.md` — disk growth model, weekly prune cron, future-capacity moves (LVM extend, second virtual disk).
+- `MEMORY.md` index updated.
+
+### Next steps
+1. **Watch 2026-05-15 07:30 EDT scheduler run** — first natural cron tick that populates `pipeline_recommendations_generated_total{direction="bear|bull"}`. Confirm both series emit (especially `direction="bear"` at 0 if the bull regime persists).
+2. **Wire a real Alertmanager receiver** (carried forward — the chronic-entity noise problem is now gone, so this can land cleanly).
+3. **Resolve GH Actions billing** (carried forward).
+4. **Postgres-backed integration test** for enum-like string columns (carried forward).
+5. **Phase 4 joint top-K backtest validation** with the corrected return lags (carried forward).
+6. **Pre-existing carryovers** (carried forward): sentiment per-ticker upsert, whisper devices block, triple-copy `directional.py` install layout, multi-leg/OCC spread construction.
