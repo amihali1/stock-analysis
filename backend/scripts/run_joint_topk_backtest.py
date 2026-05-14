@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from sklearn.calibration import CalibratedClassifierCV
 
 from src.models.directional import DirectionalModel, build_dataset
 from src.models.ensemble import EnsembleScore
@@ -76,16 +77,59 @@ class JointBacktestResult:
     direction_split: dict[str, int] = field(default_factory=dict)
 
 
-def _fit_xgb(X: pd.DataFrame, y: pd.Series) -> xgb.XGBClassifier:
-    pos_weight = len(y[y == 0]) / max(len(y[y == 1]), 1)
-    model = xgb.XGBClassifier(
+def _fit_xgb(
+    X: pd.DataFrame,
+    y: pd.Series,
+    dates: pd.Series | None = None,
+    calibrate: bool = False,
+    calib_frac: float = 0.15,
+):
+    """Fit XGB on (X, y). When `calibrate=True`, hold out the most recent
+    `calib_frac` of rows (by `dates`) and fit a prefit `CalibratedClassifierCV`
+    on that slice — mirrors the production `DirectionalModel.train` path.
+
+    Returns an object with `predict_proba`; either the raw XGBClassifier or a
+    CalibratedClassifierCV wrapping it.
+    """
+    if not calibrate or dates is None:
+        pos_weight = len(y[y == 0]) / max(len(y[y == 1]), 1)
+        model = xgb.XGBClassifier(
+            n_estimators=200, max_depth=5, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            scale_pos_weight=pos_weight, eval_metric="logloss",
+            random_state=42, n_jobs=-1,
+        )
+        model.fit(X, y, verbose=False)
+        return model
+
+    order = dates.argsort(kind="stable")
+    X_ord = X.iloc[order].reset_index(drop=True)
+    y_ord = y.iloc[order].reset_index(drop=True)
+    n = len(X_ord)
+    n_calib = max(int(n * calib_frac), 50)
+    if n_calib >= n - 100:
+        n_calib = max(n // 5, 50)
+    X_train = X_ord.iloc[:-n_calib]
+    y_train = y_ord.iloc[:-n_calib]
+    X_calib = X_ord.iloc[-n_calib:]
+    y_calib = y_ord.iloc[-n_calib:]
+
+    pos_weight = len(y_train[y_train == 0]) / max(len(y_train[y_train == 1]), 1)
+    base = xgb.XGBClassifier(
         n_estimators=200, max_depth=5, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
         scale_pos_weight=pos_weight, eval_metric="logloss",
         random_state=42, n_jobs=-1,
     )
-    model.fit(X, y, verbose=False)
-    return model
+    base.fit(X_train, y_train, verbose=False)
+
+    if y_calib.nunique() < 2:
+        logger.warning("Calibration slice has only one class; returning raw XGB")
+        return base
+
+    calib = CalibratedClassifierCV(base, cv="prefit", method="sigmoid")
+    calib.fit(X_calib, y_calib)
+    return calib
 
 
 def _build_merged_dataset(rise_label_mode: str = "excess") -> pd.DataFrame:
@@ -139,6 +183,7 @@ def _build_candidates_for_date(test_slice: pd.DataFrame) -> list[Candidate]:
 def run_joint_backtest(
     df: pd.DataFrame, feature_cols: list[str], n_folds: int, top_k: int,
     train_min_rows: int = 1000, min_score: float | None = None,
+    calibrate: bool = False,
 ) -> JointBacktestResult:
     dates = sorted(df["date"].unique())
     if len(dates) < n_folds + 1:
@@ -165,9 +210,12 @@ def run_joint_backtest(
         X_train = train_df[feature_cols]
         y_drop = train_df["label_drop"]
         y_rise = train_df["label_rise"]
+        train_dates_series = train_df["date"]
 
-        drop_model = _fit_xgb(X_train, y_drop)
-        rise_model = _fit_xgb(X_train, y_rise)
+        drop_model = _fit_xgb(X_train, y_drop,
+                              dates=train_dates_series, calibrate=calibrate)
+        rise_model = _fit_xgb(X_train, y_rise,
+                              dates=train_dates_series, calibrate=calibrate)
 
         X_test = test_df[feature_cols]
         drop_prob = drop_model.predict_proba(X_test)[:, 1]
@@ -317,10 +365,15 @@ def main() -> int:
     parser.add_argument("--rise-label-mode", default="excess",
                         choices=["absolute", "excess"],
                         help="Rise-side label semantics (default: excess-vs-SPY, matches prod v2)")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Wrap per-fold XGB in CalibratedClassifierCV(sigmoid) "
+                             "using the most recent 15%% of the train slice as the "
+                             "calibration holdout (mirrors prod DirectionalModel.train)")
     parser.add_argument("--git-sha", default=_git_sha())
     args = parser.parse_args()
 
-    logger.info("Rise label mode: %s", args.rise_label_mode)
+    logger.info("Rise label mode: %s | calibrate=%s",
+                args.rise_label_mode, args.calibrate)
     df = _build_merged_dataset(rise_label_mode=args.rise_label_mode)
     feature_cols = DirectionalModel().feature_cols
     result = run_joint_backtest(
@@ -328,6 +381,7 @@ def main() -> int:
         n_folds=args.folds, top_k=args.top_k,
         train_min_rows=args.train_min_rows,
         min_score=args.min_score,
+        calibrate=args.calibrate,
     )
     out = write_report(
         result, REPORT_DIR, top_k=args.top_k, git_sha=args.git_sha,

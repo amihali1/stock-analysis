@@ -41,6 +41,8 @@ def main() -> int:
     parser.add_argument("--floors", nargs="*", type=str, default=None,
                         help="Space-separated floors; use 'none' for no floor. "
                              f"Default: {DEFAULT_FLOORS}")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Enable per-fold sigmoid calibration on a held-out slice")
     parser.add_argument("--out", type=str,
                         default="/app/trained_models/score_floor_sweep_rise_v2.json")
     args = parser.parse_args()
@@ -65,6 +67,7 @@ def main() -> int:
                 n_folds=args.folds, top_k=args.top_k,
                 train_min_rows=args.train_min_rows,
                 min_score=floor,
+                calibrate=args.calibrate,
             )
             agg = result.aggregate
             rows.append({
@@ -86,6 +89,7 @@ def main() -> int:
         "folds": args.folds,
         "top_k": args.top_k,
         "rise_label_mode": "excess",
+        "calibrate": args.calibrate,
         "results": rows,
     }
     out = Path(args.out)
