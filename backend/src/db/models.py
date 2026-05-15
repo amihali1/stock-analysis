@@ -453,6 +453,38 @@ class SecCikMap(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SECFiling8K(Base):
+    """SEC Form 8-K material-event filing (P10-009).
+
+    One row per filing. The SEC submissions JSON returns 8-K item codes as a
+    comma-separated string (e.g. "2.02,9.01"); we preserve that shape and let
+    feature code split on demand. `accession_number` is globally unique across
+    SEC filings and de-dupes re-fetches. `is_material` is precomputed at insert
+    time so feature aggregation doesn't re-parse the item string on every
+    inference call.
+
+    Item codes covered as "material" (see src/features/sec_filings.py):
+      1.01/1.02 material agreements, 2.01 acquisition, 2.04 triggering event,
+      2.05 exit costs, 3.01 delisting, 4.02 non-reliance financials, 5.02
+      officer/director changes.
+    """
+
+    __tablename__ = "sec_filings_8k"
+    __table_args__ = (
+        Index("ix_sec_8k_accession", "accession_number", unique=True),
+        Index("ix_sec_8k_ticker_date", "ticker", "filing_date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String(10), nullable=False)
+    cik = Column(String(10), nullable=False)
+    accession_number = Column(String(30), nullable=False)
+    filing_date = Column(Date, nullable=False)
+    items = Column(String(200), nullable=False)  # "2.02,9.01"
+    is_material = Column(Boolean, default=False)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class InsiderTransaction(Base):
     """SEC Form 4 insider transaction (P10-005).
 

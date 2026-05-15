@@ -23,6 +23,7 @@ from src.features.earnings import EARNINGS_FEATURE_COLS, attach_earnings_feature
 from src.features.insider import INSIDER_FEATURE_COLS, attach_insider_features
 from src.features.macro import MACRO_FEATURE_COLS, attach_macro_features
 from src.features.options import OPTIONS_FEATURE_COLS, attach_options_features
+from src.features.sec_filings import SEC_8K_FEATURE_COLS, attach_sec_8k_features
 from src.features.sector import SECTOR_FEATURE_COLS, attach_sector_features
 from src.features.sentiment import SENTIMENT_FEATURE_COLS, attach_sentiment_features
 from src.features.short_interest import SHORT_INTEREST_FEATURE_COLS, attach_short_interest_features
@@ -96,6 +97,7 @@ FEATURE_COLS = [
     *SHORT_INTEREST_FEATURE_COLS, # P10-003
     *WIKIPEDIA_FEATURE_COLS,      # P10-008
     *INSIDER_FEATURE_COLS,        # P10-005
+    *SEC_8K_FEATURE_COLS,         # P10-009
 ]
 
 def _resolve_model_dir() -> Path:
@@ -260,6 +262,7 @@ class DirectionalModel:
         from src.features.insider import DEFAULT_INSIDER_FEATURES
         from src.features.macro import DEFAULT_MACRO_FEATURES
         from src.features.options import DEFAULT_FEATURES as OPTIONS_DEFAULTS
+        from src.features.sec_filings import DEFAULT_SEC_8K_FEATURES
         from src.features.sector import DEFAULT_SECTOR_FEATURES
         from src.features.sentiment import DEFAULT_SENTIMENT_FEATURES
         from src.features.short_interest import DEFAULT_SHORT_INTEREST_FEATURES
@@ -274,6 +277,7 @@ class DirectionalModel:
         out.update(DEFAULT_SHORT_INTEREST_FEATURES)
         out.update(DEFAULT_WIKIPEDIA_FEATURES)
         out.update(DEFAULT_INSIDER_FEATURES)
+        out.update(DEFAULT_SEC_8K_FEATURES)
         return out
 
     def train(self, tickers: list[str] | None = None, n_folds: int = 3) -> dict:
@@ -587,6 +591,7 @@ def build_dataset(
         df = attach_short_interest_features(db, df)
         df = attach_wikipedia_features(db, df)
         df = attach_insider_features(db, df)
+        df = attach_sec_8k_features(db, df)
     finally:
         db.close()
 
