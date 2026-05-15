@@ -1,0 +1,213 @@
+{
+  "feature_cols": [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bb_percent_b",
+    "bb_upper",
+    "bb_lower",
+    "sma_50",
+    "sma_200",
+    "sma_crossover",
+    "volume_zscore",
+    "return_5d_lag",
+    "return_10d_lag",
+    "return_20d_lag",
+    "close_to_sma50_ratio",
+    "close_to_sma200_ratio",
+    "volatility_20d",
+    "vix_level",
+    "vix_percentile_252d",
+    "spy_drawdown_pct",
+    "spy_above_sma_50",
+    "spy_above_sma_200",
+    "spy_return_5d",
+    "spy_return_20d",
+    "sector_return_5d",
+    "sector_return_20d",
+    "return_5d_vs_sector",
+    "return_20d_vs_sector",
+    "days_to_earnings",
+    "days_since_earnings",
+    "earnings_within_3d",
+    "earnings_within_10d",
+    "days_since_downgrade",
+    "days_since_upgrade",
+    "downgrades_30d",
+    "upgrades_30d",
+    "net_rating_actions_60d",
+    "analyst_action_5d",
+    "short_percent_of_float",
+    "short_ratio_days_to_cover",
+    "short_interest_change_pct",
+    "short_interest_zscore_180d",
+    "days_since_short_report",
+    "has_short_data",
+    "wiki_views_zscore_30d",
+    "wiki_views_zscore_180d",
+    "wiki_views_change_7d",
+    "wiki_views_spike",
+    "wiki_views_log",
+    "insider_buys_30d",
+    "insider_sells_30d",
+    "insider_net_buy_value_30d",
+    "insider_net_buy_value_90d",
+    "insider_cluster_buy_30d",
+    "insider_buy_sell_ratio_90d",
+    "days_since_insider_buy",
+    "days_since_insider_sell",
+    "pct_insider_ownership_change_90d",
+    "days_since_8k",
+    "days_since_material_8k",
+    "count_8k_30d",
+    "count_8k_90d",
+    "count_material_8k_30d"
+  ],
+  "n_features": 63,
+  "forward_days": 5,
+  "drop_threshold": -0.03,
+  "vol_k": 1.5,
+  "decile": 0.1,
+  "seeds": [
+    42,
+    7,
+    13,
+    29,
+    101
+  ],
+  "results": [
+    {
+      "mode": "absolute",
+      "n_rows": 48489,
+      "positive_rate": 0.1899193631545299,
+      "n_train": 32856,
+      "n_calib": 7742,
+      "n_test": 7891,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.5422169384316005,
+        0.5365376472794839,
+        0.5271005735541456,
+        0.5437148966902574,
+        0.5322977127830535
+      ],
+      "briers": [
+        0.18151522139242202,
+        0.1814617455534276,
+        0.1815141485389656,
+        0.18158154757502049,
+        0.1816342255826708
+      ],
+      "auc_mean": 0.5363735537477082,
+      "auc_std": 0.006904129718700892,
+      "brier_mean": 0.1815413777285013,
+      "brier_std": 6.70842876165702e-05
+    },
+    {
+      "mode": "excess_vs_spy",
+      "n_rows": 48489,
+      "positive_rate": 0.20039596609540308,
+      "n_train": 32856,
+      "n_calib": 7742,
+      "n_test": 7891,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.5146058484255094,
+        0.5187884590056666,
+        0.514237781914635,
+        0.5091779944529189,
+        0.5171834813166798
+      ],
+      "briers": [
+        0.20746407108687714,
+        0.20734188839356207,
+        0.20728858745376408,
+        0.20773618805947844,
+        0.20732974007847813
+      ],
+      "auc_mean": 0.5147987130230819,
+      "auc_std": 0.0036588765531955386,
+      "brier_mean": 0.20743209501443197,
+      "brier_std": 0.0001821422772082184
+    },
+    {
+      "mode": "vol_normalized",
+      "n_rows": 48489,
+      "positive_rate": 0.07201633360143538,
+      "n_train": 32856,
+      "n_calib": 7742,
+      "n_test": 7891,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6094124895584636,
+        0.6067796426081822,
+        0.6052914151317855,
+        0.6200658187053087,
+        0.6045069422639817
+      ],
+      "briers": [
+        0.06463744100600873,
+        0.06476091076721212,
+        0.06472852111069545,
+        0.06458580500084335,
+        0.06473376473046512
+      ],
+      "auc_mean": 0.6092112616535443,
+      "auc_std": 0.0063496159394614985,
+      "brier_mean": 0.06468928852304495,
+      "brier_std": 7.423624318661379e-05
+    },
+    {
+      "mode": "cross_sectional_decile",
+      "n_rows": 48489,
+      "positive_rate": 0.09496999319433273,
+      "n_train": 32856,
+      "n_calib": 7742,
+      "n_test": 7891,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.600272884283247,
+        0.5920776735284506,
+        0.5938693927087709,
+        0.5926168137048966,
+        0.597614526443542
+      ],
+      "briers": [
+        0.08519873449948412,
+        0.08520932707548587,
+        0.08533380892456728,
+        0.08532052315821571,
+        0.08527860878787157
+      ],
+      "auc_mean": 0.5952902581337814,
+      "auc_std": 0.003525466282558557,
+      "brier_mean": 0.08526820048912491,
+      "brier_std": 6.21330502532051e-05
+    }
+  ]
+}
