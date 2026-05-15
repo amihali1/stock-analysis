@@ -34,6 +34,7 @@ from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from src.models.directional import (
     FEATURE_COLS,
+    LABEL_MODE_ABSOLUTE,
     LABEL_MODE_EXCESS,
     PER_TICKER_RANK_SOURCE_COLS,
     build_dataset,
@@ -140,13 +141,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, default=5)
     parser.add_argument("--windows", nargs="+", type=int, default=[60, 90, 120])
+    parser.add_argument("--direction", choices=["rise", "drop"], default="rise")
+    parser.add_argument("--label-mode", choices=["absolute", "excess"],
+                        default=None,
+                        help="Default: excess for rise, absolute for drop")
     parser.add_argument("--out", type=str,
                         default="/app/trained_models/sweep_z_window.json")
     args = parser.parse_args()
 
-    logger.info("Building rise dataset (excess label, base FEATURE_COLS n=%d)...",
-                len(FEATURE_COLS))
-    base_df = build_dataset(direction="rise", label_mode=LABEL_MODE_EXCESS)
+    if args.label_mode is None:
+        label_mode = LABEL_MODE_EXCESS if args.direction == "rise" else LABEL_MODE_ABSOLUTE
+    else:
+        label_mode = args.label_mode
+
+    logger.info("Building %s dataset (label_mode=%s, base FEATURE_COLS n=%d)...",
+                args.direction, label_mode, len(FEATURE_COLS))
+    base_df = build_dataset(direction=args.direction, label_mode=label_mode)
     logger.info("Base dataset: %d rows, %d positive (%.1f%%)",
                 len(base_df), int(base_df["label"].sum()), base_df["label"].mean() * 100)
 
@@ -206,8 +216,8 @@ def main() -> int:
 
     payload = {
         "seeds": args.seeds,
-        "direction": "rise",
-        "label_mode": "excess",
+        "direction": args.direction,
+        "label_mode": label_mode,
         "summary": summary,
         "results": full_results,
     }
