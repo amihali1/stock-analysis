@@ -30,6 +30,37 @@ from src.features.wikipedia import WIKIPEDIA_FEATURE_COLS, attach_wikipedia_feat
 
 logger = logging.getLogger(__name__)
 
+PER_TICKER_RANK_WINDOW = 120
+# Rolling per-ticker z-score features: (value - rolling_mean) / rolling_std over
+# the last PER_TICKER_RANK_WINDOW trading days of the same ticker. These remove
+# scale-across-tickers confounds: a +3% 20-day return means very different things
+# for AAPL vs TSLA, but z-scoring within ticker gives the model an apples-to-apples
+# "how extreme is this for this ticker right now?" signal. Added 2026-05-14 to
+# address the macro-domination root cause flagged in
+# directional_auc_root_cause_2026-05-14.md.
+PER_TICKER_RANK_FEATURE_COLS = [
+    "return_5d_lag_z120",
+    "return_10d_lag_z120",
+    "return_20d_lag_z120",
+    "macd_z120",
+    "macd_histogram_z120",
+    "close_to_sma50_ratio_z120",
+    "close_to_sma200_ratio_z120",
+    "volatility_20d_z120",
+    "rsi_14_z120",
+]
+PER_TICKER_RANK_SOURCE_COLS = [
+    "return_5d_lag",
+    "return_10d_lag",
+    "return_20d_lag",
+    "macd",
+    "macd_histogram",
+    "close_to_sma50_ratio",
+    "close_to_sma200_ratio",
+    "volatility_20d",
+    "rsi_14",
+]
+
 FEATURE_COLS = [
     "rsi_14",
     "macd",
@@ -49,6 +80,8 @@ FEATURE_COLS = [
     "close_to_sma50_ratio",
     "close_to_sma200_ratio",
     "volatility_20d",
+    # Per-ticker rolling z-scores (computed in build_dataset)
+    *PER_TICKER_RANK_FEATURE_COLS,
     # Phase 9 features (only those with historical coverage; OPTIONS_FEATURE_COLS
     # and SENTIMENT_FEATURE_COLS are excluded from training because we lack
     # historical IV chains and historical sentiment scoring beyond ~2 weeks).
@@ -496,6 +529,15 @@ def build_dataset(
 
         # 20-day realized volatility
         g["volatility_20d"] = g["close"].pct_change().rolling(20).std() * np.sqrt(252)
+
+        # Per-ticker rolling z-scores over PER_TICKER_RANK_WINDOW. min_periods=30
+        # so we get a usable z-score from ~6 weeks in; the dropna at the end
+        # discards the head of each ticker series that has insufficient history.
+        for src_col in PER_TICKER_RANK_SOURCE_COLS:
+            roll = g[src_col].rolling(PER_TICKER_RANK_WINDOW, min_periods=30)
+            mean = roll.mean()
+            std = roll.std().replace(0, np.nan)
+            g[f"{src_col}_z120"] = (g[src_col] - mean) / std
 
         # Forward return for label.
         g["forward_return"] = g["close"].shift(-FORWARD_DAYS) / g["close"] - 1

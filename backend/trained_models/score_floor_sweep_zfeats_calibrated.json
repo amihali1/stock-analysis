@@ -1,0 +1,78 @@
+{
+  "generated_at": "2026-05-14",
+  "folds": 4,
+  "top_k": 10,
+  "rise_label_mode": "excess",
+  "calibrate": true,
+  "results": [
+    {
+      "floor": "none",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.21260124728914948,
+      "mean_rise_hit_rate": 0.2698736907504324,
+      "mean_avg_pnl": -0.8633474576271186,
+      "total_selected": 2360,
+      "direction_split": {
+        "rise": 1851,
+        "drop": 509
+      }
+    },
+    {
+      "floor": "0.50",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.0,
+      "mean_rise_hit_rate": 0.2898550724637681,
+      "mean_avg_pnl": -0.7753623188405797,
+      "total_selected": 138,
+      "direction_split": {
+        "rise": 138
+      }
+    },
+    {
+      "floor": "0.55",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.0,
+      "mean_rise_hit_rate": 0.3018867924528302,
+      "mean_avg_pnl": -0.7452830188679245,
+      "total_selected": 53,
+      "direction_split": {
+        "rise": 53
+      }
+    },
+    {
+      "floor": "0.60",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.0,
+      "mean_rise_hit_rate": 0.15384615384615385,
+      "mean_avg_pnl": -1.1153846153846154,
+      "total_selected": 13,
+      "direction_split": {
+        "rise": 13
+      }
+    },
+    {
+      "floor": "0.65",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.0,
+      "mean_rise_hit_rate": 0.0,
+      "mean_avg_pnl": 0.0,
+      "total_selected": 0,
+      "direction_split": {}
+    },
+    {
+      "floor": "0.70",
+      "mean_drop_auc": 0.5164888016202023,
+      "mean_rise_auc": 0.5998107659392966,
+      "mean_drop_hit_rate": 0.0,
+      "mean_rise_hit_rate": 0.0,
+      "mean_avg_pnl": 0.0,
+      "total_selected": 0,
+      "direction_split": {}
+    }
+  ]
+}
