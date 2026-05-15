@@ -38,9 +38,19 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.calibration import CalibratedClassifierCV
 
-from src.models.directional import DirectionalModel, build_dataset
+from src.models.directional import (
+    FEATURE_COLS,
+    PER_TICKER_RANK_FEATURE_COLS,
+    build_dataset,
+)
 from src.models.ensemble import EnsembleScore
 from src.pipeline.rec_ranker import Candidate, select_candidates
+
+# Research feature set: production base + per-ticker rolling z-scores. The
+# z-scores regress production training (see zfeats_retrain_negative_2026-05-15
+# memo, rise v3 mean AUC 0.6136 vs v2 0.6257) but improve joint-backtest
+# aggregate AUC across folds, so they remain available as a research opt-in.
+RESEARCH_FEATURE_COLS = FEATURE_COLS + PER_TICKER_RANK_FEATURE_COLS
 
 REPORT_DIR = Path(__file__).resolve().parent.parent / "backtest_reports"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -132,14 +142,23 @@ def _fit_xgb(
     return calib
 
 
-def _build_merged_dataset(rise_label_mode: str = "excess") -> pd.DataFrame:
+def _build_merged_dataset(
+    rise_label_mode: str = "excess",
+    include_z_features: bool = True,
+) -> pd.DataFrame:
     """Build a single frame with both `label_drop` and `label_rise`.
 
     Rise side defaults to excess-vs-SPY label (rise v2 production semantics,
     PR #46). Drop side stays on absolute label.
+
+    `include_z_features` controls whether per-ticker rolling z-scores are
+    pulled. Default True for joint-backtest research; set False to mirror
+    production training exactly.
     """
-    df_drop = build_dataset(direction="drop")
-    df_rise = build_dataset(direction="rise", label_mode=rise_label_mode)
+    feature_cols = RESEARCH_FEATURE_COLS if include_z_features else FEATURE_COLS
+    df_drop = build_dataset(direction="drop", feature_cols=feature_cols)
+    df_rise = build_dataset(direction="rise", label_mode=rise_label_mode,
+                            feature_cols=feature_cols)
     if df_drop.empty or df_rise.empty:
         raise ValueError("Empty drop or rise dataset")
     df = df_drop.rename(columns={"label": "label_drop"}).merge(
@@ -369,13 +388,21 @@ def main() -> int:
                         help="Wrap per-fold XGB in CalibratedClassifierCV(sigmoid) "
                              "using the most recent 15%% of the train slice as the "
                              "calibration holdout (mirrors prod DirectionalModel.train)")
+    parser.add_argument("--include-z-features", dest="include_z_features",
+                        action="store_true", default=True,
+                        help="Include per-ticker rolling z-score features "
+                             "(research default; not used in prod training)")
+    parser.add_argument("--no-z-features", dest="include_z_features",
+                        action="store_false",
+                        help="Exclude z-features to mirror production training exactly")
     parser.add_argument("--git-sha", default=_git_sha())
     args = parser.parse_args()
 
-    logger.info("Rise label mode: %s | calibrate=%s",
-                args.rise_label_mode, args.calibrate)
-    df = _build_merged_dataset(rise_label_mode=args.rise_label_mode)
-    feature_cols = DirectionalModel().feature_cols
+    logger.info("Rise label mode: %s | calibrate=%s | include_z_features=%s",
+                args.rise_label_mode, args.calibrate, args.include_z_features)
+    df = _build_merged_dataset(rise_label_mode=args.rise_label_mode,
+                               include_z_features=args.include_z_features)
+    feature_cols = RESEARCH_FEATURE_COLS if args.include_z_features else FEATURE_COLS
     result = run_joint_backtest(
         df=df, feature_cols=feature_cols,
         n_folds=args.folds, top_k=args.top_k,

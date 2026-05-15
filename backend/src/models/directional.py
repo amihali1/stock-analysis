@@ -80,8 +80,12 @@ FEATURE_COLS = [
     "close_to_sma50_ratio",
     "close_to_sma200_ratio",
     "volatility_20d",
-    # Per-ticker rolling z-scores (computed in build_dataset)
-    *PER_TICKER_RANK_FEATURE_COLS,
+    # NOTE: PER_TICKER_RANK_FEATURE_COLS are computed in build_dataset but
+    # intentionally NOT included here. The 10-seed sweep on 2026-05-15 showed
+    # they regress the recent-slice test AUC (rise v3 mean 0.6136 vs v2 0.6257).
+    # Research scripts (joint backtest, sweep) opt in via the
+    # `feature_cols` kwarg of build_dataset; production training and inference
+    # use the base set. See zfeats_retrain_negative_2026-05-15 memo.
     # Phase 9 features (only those with historical coverage; OPTIONS_FEATURE_COLS
     # and SENTIMENT_FEATURE_COLS are excluded from training because we lack
     # historical IV chains and historical sentiment scoring beyond ~2 weeks).
@@ -144,6 +148,7 @@ class DirectionalModel:
         direction: str = "drop",
         calibration_method: str | None = None,
         label_mode: str | None = None,
+        feature_cols: list[str] | None = None,
     ):
         """A binary directional classifier.
 
@@ -172,7 +177,7 @@ class DirectionalModel:
             self.model_path = DEFAULT_RISE_MODEL_PATH
         else:
             self.model_path = DEFAULT_MODEL_PATH
-        self.feature_cols = FEATURE_COLS
+        self.feature_cols = feature_cols if feature_cols is not None else FEATURE_COLS
         self.direction = direction
         self.calibration_method = calibration_method
         self.label_mode = label_mode
@@ -276,8 +281,10 @@ class DirectionalModel:
 
         Returns metrics dict.
         """
-        logger.info("Building dataset (direction=%s, label_mode=%s)...", self.direction, self.label_mode)
-        df = build_dataset(tickers, direction=self.direction, label_mode=self.label_mode)
+        logger.info("Building dataset (direction=%s, label_mode=%s, n_features=%d)...",
+                    self.direction, self.label_mode, len(self.feature_cols))
+        df = build_dataset(tickers, direction=self.direction, label_mode=self.label_mode,
+                           feature_cols=self.feature_cols)
 
         if len(df) < 500:
             raise ValueError(f"Not enough data to train: {len(df)} rows (need 500+)")
@@ -443,6 +450,7 @@ def build_dataset(
     tickers: list[str] | None = None,
     direction: str = "drop",
     label_mode: str = LABEL_MODE_ABSOLUTE,
+    feature_cols: list[str] | None = None,
 ) -> pd.DataFrame:
     """Build training dataset by joining price_history + technical_indicators.
 
@@ -454,7 +462,15 @@ def build_dataset(
     "absolute" → ticker's own forward return
     "excess"   → ticker forward return minus SPY's forward return (same window).
                  Removes macro confound — see module-level comment.
+
+    `feature_cols` lets research callers opt into experimental columns
+    (e.g. PER_TICKER_RANK_FEATURE_COLS). Defaults to FEATURE_COLS, the
+    production set. The dropna step uses this list, so opting in to
+    research features will also drop the head of each ticker series where
+    the experimental columns have insufficient history.
     """
+    if feature_cols is None:
+        feature_cols = FEATURE_COLS
     if label_mode not in (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS):
         raise ValueError(f"label_mode must be 'absolute' or 'excess', got {label_mode!r}")
     db = SessionLocal()
@@ -575,14 +591,14 @@ def build_dataset(
         db.close()
 
     # Drop rows with NaN features or missing labels (options cols are filled by defaults)
-    feature_cols_with_label = FEATURE_COLS + ["label"]
+    feature_cols_with_label = feature_cols + ["label"]
     df = df.dropna(subset=feature_cols_with_label)
     # np.where with NaN branch coerces label dtype to float; cast back now that
     # NaN rows are gone so downstream XGB sees integer labels.
     df["label"] = df["label"].astype(int)
 
     # Drop the helper columns but keep date and ticker for splitting
-    keep_cols = ["ticker", "date"] + FEATURE_COLS + ["label"]
+    keep_cols = ["ticker", "date"] + feature_cols + ["label"]
     df = df[keep_cols]
 
     return df

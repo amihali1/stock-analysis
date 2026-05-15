@@ -29,15 +29,21 @@ from sklearn.metrics import brier_score_loss, roc_auc_score
 from src.models.directional import (
     FEATURE_COLS,
     LABEL_MODE_EXCESS,
+    PER_TICKER_RANK_FEATURE_COLS,
     build_dataset,
 )
+
+# Rise v3 = production base + per-ticker z-feats. After 2026-05-15 the z-feats
+# were removed from the production FEATURE_COLS list (negative result on the
+# recent test slice), so this script now opts in explicitly.
+RISE_V3_FEATURE_COLS = FEATURE_COLS + PER_TICKER_RANK_FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("seed_sweep_rise_v3")
 
 
 def _train_one(df, seed: int, n_folds: int = 3) -> dict:
-    feature_cols = FEATURE_COLS
+    feature_cols = RISE_V3_FEATURE_COLS
     dates = sorted(df["date"].unique())
     fold_size = len(dates) // (n_folds + 2)  # leave room for calib + test
 
@@ -113,8 +119,9 @@ def main() -> int:
     args = parser.parse_args()
 
     logger.info("Building rise dataset (label_mode=excess, %d features)...",
-                len(FEATURE_COLS))
-    df = build_dataset(direction="rise", label_mode=LABEL_MODE_EXCESS)
+                len(RISE_V3_FEATURE_COLS))
+    df = build_dataset(direction="rise", label_mode=LABEL_MODE_EXCESS,
+                       feature_cols=RISE_V3_FEATURE_COLS)
     logger.info("Dataset: %d rows, %d positive (%.1f%%)",
                 len(df), int(df["label"].sum()), df["label"].mean() * 100)
 
@@ -131,7 +138,7 @@ def main() -> int:
     test_aucs = [r["test_auc"] for r in results if not np.isnan(r["test_auc"])]
     payload = {
         "n_seeds": len(seeds),
-        "n_features": len(FEATURE_COLS),
+        "n_features": len(RISE_V3_FEATURE_COLS),
         "direction": "rise",
         "label_mode": "excess",
         "test_auc_mean": float(mean(test_aucs)),
@@ -145,7 +152,7 @@ def main() -> int:
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info("Wrote %s", out)
 
-    print(f"\nSeed sweep ({len(test_aucs)} seeds, {len(FEATURE_COLS)} features, rise excess):")
+    print(f"\nSeed sweep ({len(test_aucs)} seeds, {len(RISE_V3_FEATURE_COLS)} features, rise excess):")
     print(f"  test AUC mean : {payload['test_auc_mean']:.4f}")
     print(f"  test AUC std  : {payload['test_auc_std']:.4f}")
     print(f"  test AUC range: [{payload['test_auc_min']:.4f}, {payload['test_auc_max']:.4f}]")

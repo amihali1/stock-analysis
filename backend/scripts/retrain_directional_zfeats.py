@@ -1,5 +1,12 @@
 """Retrain rise v3 and drop v2 with per-ticker z-score features (2026-05-15).
 
+HISTORICAL / RESEARCH-ONLY. The 10-seed sweep on rise v3 (see
+`zfeats_retrain_negative_2026-05-15` memo) showed z-features regress
+production walk-forward AUC by ~1.2pp vs rise v2. The z-features were
+therefore removed from the production `FEATURE_COLS` list. This script
+opts back into them explicitly via `DirectionalModel(feature_cols=...)`
+so the experiment remains reproducible.
+
 Trains:
   * rise v3 → directional_xgb_rise_v3.pkl (label_mode=excess, sigmoid calib)
   * drop v2 → directional_xgb_v2.pkl       (label_mode=absolute, sigmoid calib)
@@ -19,10 +26,14 @@ from pathlib import Path
 
 from src.models.directional import (
     DirectionalModel,
+    FEATURE_COLS,
     LABEL_MODE_ABSOLUTE,
     LABEL_MODE_EXCESS,
+    PER_TICKER_RANK_FEATURE_COLS,
     _resolve_model_dir,
 )
+
+RESEARCH_FEATURE_COLS = FEATURE_COLS + PER_TICKER_RANK_FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("retrain_zfeats")
@@ -47,6 +58,7 @@ def main() -> int:
             direction=direction,
             label_mode=label_mode,
             calibration_method="sigmoid",
+            feature_cols=RESEARCH_FEATURE_COLS,
         )
         metrics = model.train(n_folds=3)
         outputs[name] = metrics

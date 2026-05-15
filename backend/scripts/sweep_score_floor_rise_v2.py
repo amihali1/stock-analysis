@@ -21,11 +21,12 @@ from pathlib import Path
 # Reuse helpers from the joint backtest script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_joint_topk_backtest import (  # type: ignore
+    RESEARCH_FEATURE_COLS,
     _build_merged_dataset,
     run_joint_backtest,
 )
 
-from src.models.directional import DirectionalModel
+from src.models.directional import FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("score_floor_sweep_v2")
@@ -43,6 +44,13 @@ def main() -> int:
                              f"Default: {DEFAULT_FLOORS}")
     parser.add_argument("--calibrate", action="store_true",
                         help="Enable per-fold sigmoid calibration on a held-out slice")
+    parser.add_argument("--include-z-features", dest="include_z_features",
+                        action="store_true", default=True,
+                        help="Include per-ticker rolling z-score features "
+                             "(research default; not used in prod training)")
+    parser.add_argument("--no-z-features", dest="include_z_features",
+                        action="store_false",
+                        help="Exclude z-features to mirror production training exactly")
     parser.add_argument("--out", type=str,
                         default="/app/trained_models/score_floor_sweep_rise_v2.json")
     args = parser.parse_args()
@@ -52,9 +60,11 @@ def main() -> int:
     else:
         floors = [None if f.lower() == "none" else float(f) for f in args.floors]
 
-    logger.info("Building merged dataset (rise label_mode=excess)...")
-    df = _build_merged_dataset(rise_label_mode="excess")
-    feature_cols = DirectionalModel().feature_cols
+    logger.info("Building merged dataset (rise label_mode=excess, include_z=%s)...",
+                args.include_z_features)
+    df = _build_merged_dataset(rise_label_mode="excess",
+                               include_z_features=args.include_z_features)
+    feature_cols = RESEARCH_FEATURE_COLS if args.include_z_features else FEATURE_COLS
     logger.info("Dataset: %d rows, %d features", len(df), len(feature_cols))
 
     rows = []
