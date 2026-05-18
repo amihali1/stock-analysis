@@ -721,7 +721,13 @@ def init_scheduler():
     scheduler.add_job(job_fetch_options, CronTrigger(hour=6, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_options", replace_existing=True)
     scheduler.add_job(job_fetch_insider_transactions, CronTrigger(hour=6, minute=50, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_insider_transactions", replace_existing=True)
     scheduler.add_job(job_fetch_wikipedia_pageviews, CronTrigger(hour=5, minute=30, timezone="US/Eastern"), id="fetch_wikipedia_pageviews", replace_existing=True)
-    scheduler.add_job(job_sentiment, CronTrigger(hour=7, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
+    # Sentiment job takes ~3.3h on the homelab (159 tickers × ~20 headlines × 3.74s
+    # per scored headline, post-parallelization on 2026-05-18 with OLLAMA_NUM_PARALLEL=2).
+    # Started at 07:00 ET it could not finish before the 07:30 ET recommendations cut.
+    # 04:00 ET start finishes ~07:20 — ~10 min cushion before recs, and catches the
+    # 04:00-07:30 pre-market wire window (BMO earnings, EU open, overnight catalysts)
+    # for the tickers scored later in the run.
+    scheduler.add_job(job_sentiment, CronTrigger(hour=4, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
     # Auto-execute: 8:00 AM ET (after 7:30 AM recommendation generation)
