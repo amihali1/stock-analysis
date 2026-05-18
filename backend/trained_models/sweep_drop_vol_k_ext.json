@@ -1,0 +1,235 @@
+{
+  "feature_cols": [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bb_percent_b",
+    "bb_upper",
+    "bb_lower",
+    "sma_50",
+    "sma_200",
+    "sma_crossover",
+    "volume_zscore",
+    "return_5d_lag",
+    "return_10d_lag",
+    "return_20d_lag",
+    "close_to_sma50_ratio",
+    "close_to_sma200_ratio",
+    "volatility_20d",
+    "vix_level",
+    "vix_percentile_252d",
+    "spy_drawdown_pct",
+    "spy_above_sma_50",
+    "spy_above_sma_200",
+    "spy_return_5d",
+    "spy_return_20d",
+    "sector_return_5d",
+    "sector_return_20d",
+    "return_5d_vs_sector",
+    "return_20d_vs_sector",
+    "days_to_earnings",
+    "days_since_earnings",
+    "earnings_within_3d",
+    "earnings_within_10d",
+    "days_since_downgrade",
+    "days_since_upgrade",
+    "downgrades_30d",
+    "upgrades_30d",
+    "net_rating_actions_60d",
+    "analyst_action_5d",
+    "short_percent_of_float",
+    "short_ratio_days_to_cover",
+    "short_interest_change_pct",
+    "short_interest_zscore_180d",
+    "days_since_short_report",
+    "has_short_data",
+    "wiki_views_zscore_30d",
+    "wiki_views_zscore_180d",
+    "wiki_views_change_7d",
+    "wiki_views_spike",
+    "wiki_views_log",
+    "insider_buys_30d",
+    "insider_sells_30d",
+    "insider_net_buy_value_30d",
+    "insider_net_buy_value_90d",
+    "insider_cluster_buy_30d",
+    "insider_buy_sell_ratio_90d",
+    "days_since_insider_buy",
+    "days_since_insider_sell",
+    "pct_insider_ownership_change_90d",
+    "days_since_8k",
+    "days_since_material_8k",
+    "count_8k_30d",
+    "count_8k_90d",
+    "count_material_8k_30d"
+  ],
+  "n_features": 63,
+  "forward_days": 5,
+  "ks": [
+    2.5,
+    3.0,
+    3.5,
+    4.0,
+    5.0
+  ],
+  "seeds": [
+    42,
+    7,
+    13,
+    29,
+    101
+  ],
+  "results": [
+    {
+      "k": 2.5,
+      "n_rows": 48489,
+      "positive_rate": 0.021159438223102147,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6697232073179165,
+        0.6563268662761408,
+        0.6750513676640555,
+        0.6600287955270618,
+        0.6702356491588545
+      ],
+      "briers": [
+        0.013244955268134751,
+        0.013155278786892006,
+        0.013165563714678261,
+        0.013299912743177761,
+        0.013292954783765274
+      ],
+      "auc_mean": 0.6662731771888059,
+      "auc_std": 0.007787520836792036,
+      "brier_mean": 0.013231733059329611,
+      "brier_std": 6.85474900775904e-05
+    },
+    {
+      "k": 3.0,
+      "n_rows": 48489,
+      "positive_rate": 0.012291447544803977,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6073243266207833,
+        0.6076217180729033,
+        0.600031155294984,
+        0.5935990030305605,
+        0.6224318123884782
+      ],
+      "briers": [
+        0.005769793786117189,
+        0.005751076665509202,
+        0.005760149696268727,
+        0.0057652223763573224,
+        0.005782677745150759
+      ],
+      "auc_mean": 0.6062016030815418,
+      "auc_std": 0.010765650036259466,
+      "brier_mean": 0.00576578405388064,
+      "brier_std": 1.1724370957393973e-05
+    },
+    {
+      "k": 3.5,
+      "n_rows": 48489,
+      "positive_rate": 0.006950029903689496,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6655551787800008,
+        0.6556836592441883,
+        0.6951838664707434,
+        0.6568469537696394,
+        0.6678158321088128
+      ],
+      "briers": [
+        0.003418204641203124,
+        0.003421659135631102,
+        0.0034199105523616455,
+        0.003421189670368162,
+        0.003431371913488866
+      ],
+      "auc_mean": 0.6682170980746769,
+      "auc_std": 0.0159751423848803,
+      "brier_mean": 0.0034224671826105797,
+      "brier_std": 5.154726640310774e-06
+    },
+    {
+      "k": 4.0,
+      "n_rows": 48489,
+      "positive_rate": 0.0041452700612510055,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.48575418487821687,
+        0.5570648724133553,
+        0.5725076624530732,
+        0.5555414497905294,
+        0.5423475217178404
+      ],
+      "briers": [
+        0.001784543741990398,
+        0.0017777522882836327,
+        0.0017769639982099274,
+        0.0017794847911197925,
+        0.0017777013179820964
+      ],
+      "auc_mean": 0.5426431382506031,
+      "auc_std": 0.03355101737511841,
+      "brier_mean": 0.0017792892275171695,
+      "brier_std": 3.079711743915991e-06
+    },
+    {
+      "k": 5.0,
+      "n_rows": 48489,
+      "positive_rate": 0.0015673657943038627,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.5535827520608751,
+        0.49947157049249635,
+        0.5397378989642782,
+        0.4422532234199958,
+        0.7191291481716339
+      ],
+      "briers": [
+        0.0007631821316915023,
+        0.0007631477375408606,
+        0.0007631478780085239,
+        0.0007631519022977194,
+        0.0007631477542339116
+      ],
+      "auc_mean": 0.5508349186218559,
+      "auc_std": 0.10353963033255678,
+      "brier_mean": 0.0007631554807545035,
+      "brier_std": 1.5004466170740517e-08
+    }
+  ]
+}

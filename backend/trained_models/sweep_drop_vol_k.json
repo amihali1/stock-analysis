@@ -1,0 +1,266 @@
+{
+  "feature_cols": [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bb_percent_b",
+    "bb_upper",
+    "bb_lower",
+    "sma_50",
+    "sma_200",
+    "sma_crossover",
+    "volume_zscore",
+    "return_5d_lag",
+    "return_10d_lag",
+    "return_20d_lag",
+    "close_to_sma50_ratio",
+    "close_to_sma200_ratio",
+    "volatility_20d",
+    "vix_level",
+    "vix_percentile_252d",
+    "spy_drawdown_pct",
+    "spy_above_sma_50",
+    "spy_above_sma_200",
+    "spy_return_5d",
+    "spy_return_20d",
+    "sector_return_5d",
+    "sector_return_20d",
+    "return_5d_vs_sector",
+    "return_20d_vs_sector",
+    "days_to_earnings",
+    "days_since_earnings",
+    "earnings_within_3d",
+    "earnings_within_10d",
+    "days_since_downgrade",
+    "days_since_upgrade",
+    "downgrades_30d",
+    "upgrades_30d",
+    "net_rating_actions_60d",
+    "analyst_action_5d",
+    "short_percent_of_float",
+    "short_ratio_days_to_cover",
+    "short_interest_change_pct",
+    "short_interest_zscore_180d",
+    "days_since_short_report",
+    "has_short_data",
+    "wiki_views_zscore_30d",
+    "wiki_views_zscore_180d",
+    "wiki_views_change_7d",
+    "wiki_views_spike",
+    "wiki_views_log",
+    "insider_buys_30d",
+    "insider_sells_30d",
+    "insider_net_buy_value_30d",
+    "insider_net_buy_value_90d",
+    "insider_cluster_buy_30d",
+    "insider_buy_sell_ratio_90d",
+    "days_since_insider_buy",
+    "days_since_insider_sell",
+    "pct_insider_ownership_change_90d",
+    "days_since_8k",
+    "days_since_material_8k",
+    "count_8k_30d",
+    "count_8k_90d",
+    "count_material_8k_30d"
+  ],
+  "n_features": 63,
+  "forward_days": 5,
+  "ks": [
+    1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+    2.5
+  ],
+  "seeds": [
+    42,
+    7,
+    13,
+    29,
+    101
+  ],
+  "results": [
+    {
+      "k": 1.0,
+      "n_rows": 48489,
+      "positive_rate": 0.141825981150364,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.5646699189170081,
+        0.582202115823277,
+        0.5725635100488582,
+        0.5826490831804577,
+        0.5781559045956952
+      ],
+      "briers": [
+        0.1299395306940022,
+        0.129727756853228,
+        0.1298546102089463,
+        0.12987995093822036,
+        0.12994063210603338
+      ],
+      "auc_mean": 0.5760481065130593,
+      "auc_std": 0.007541437227084159,
+      "brier_mean": 0.12986849616008603,
+      "brier_std": 8.715085166314827e-05
+    },
+    {
+      "k": 1.25,
+      "n_rows": 48489,
+      "positive_rate": 0.10039390377198952,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.5879194649533385,
+        0.5770017589975278,
+        0.571817390962833,
+        0.5874725037162776,
+        0.5827642050085379
+      ],
+      "briers": [
+        0.09215514086687233,
+        0.09215071866527215,
+        0.09222045897991056,
+        0.0920094870559246,
+        0.09214546699886306
+      ],
+      "auc_mean": 0.581395064727703,
+      "auc_std": 0.006935607004037064,
+      "brier_mean": 0.09213625451336854,
+      "brier_std": 7.715432000279581e-05
+    },
+    {
+      "k": 1.5,
+      "n_rows": 48489,
+      "positive_rate": 0.07201633360143538,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6094124895584636,
+        0.6067796426081822,
+        0.6052914151317855,
+        0.6200658187053087,
+        0.6045069422639817
+      ],
+      "briers": [
+        0.06463744100600873,
+        0.06476091076721212,
+        0.06472852111069545,
+        0.06458580500084335,
+        0.06473376473046512
+      ],
+      "auc_mean": 0.6092112616535443,
+      "auc_std": 0.0063496159394614985,
+      "brier_mean": 0.06468928852304495,
+      "brier_std": 7.423624318661379e-05
+    },
+    {
+      "k": 1.75,
+      "n_rows": 48489,
+      "positive_rate": 0.05248613087504382,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6440469593262141,
+        0.6420301731608214,
+        0.6409517961182706,
+        0.6394654616231144,
+        0.6433360649365563
+      ],
+      "briers": [
+        0.044831478265076954,
+        0.04489761701228821,
+        0.04478562906978948,
+        0.04485581441995812,
+        0.044923062596438974
+      ],
+      "auc_mean": 0.6419660910329954,
+      "auc_std": 0.001836633434362057,
+      "brier_mean": 0.044858720272710345,
+      "brier_std": 5.4188988450428255e-05
+    },
+    {
+      "k": 2.0,
+      "n_rows": 48489,
+      "positive_rate": 0.03809111344841098,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6314179362183989,
+        0.641294699131599,
+        0.6337049301190424,
+        0.6331175572066259,
+        0.6398307688070556
+      ],
+      "briers": [
+        0.030666279686678614,
+        0.030648209983775782,
+        0.0306720036283141,
+        0.030616037175334496,
+        0.030776021336883296
+      ],
+      "auc_mean": 0.6358731782965443,
+      "auc_std": 0.004393157763475539,
+      "brier_mean": 0.030675710362197257,
+      "brier_std": 6.0170859232198156e-05
+    },
+    {
+      "k": 2.5,
+      "n_rows": 48489,
+      "positive_rate": 0.021159438223102147,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "aucs": [
+        0.6697232073179165,
+        0.6563268662761408,
+        0.6750513676640555,
+        0.6600287955270618,
+        0.6702356491588545
+      ],
+      "briers": [
+        0.013244955268134751,
+        0.013155278786892006,
+        0.013165563714678261,
+        0.013299912743177761,
+        0.013292954783765274
+      ],
+      "auc_mean": 0.6662731771888059,
+      "auc_std": 0.007787520836792036,
+      "brier_mean": 0.013231733059329611,
+      "brier_std": 6.85474900775904e-05
+    }
+  ]
+}
