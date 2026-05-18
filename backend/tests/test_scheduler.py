@@ -147,6 +147,37 @@ def test_recommendations_counter_emits_both_directions(clean_scheduler):
     assert pipeline_recommendations_generated_total.labels(direction="bull")._value.get() == bull_before + 10
 
 
+class _RecLike:
+    """Tiny stand-in for a Recommendation row — only the fields _rec_capital_cost reads."""
+    def __init__(self, position_size, max_loss):
+        self.position_size = position_size
+        self.max_loss = max_loss
+
+
+def test_rec_capital_cost_takes_max_of_position_and_loss():
+    """Credit spreads write `position_size = credit received` (small) and
+    `max_loss = collateral` (larger). The capital cost is the collateral.
+    Long stock/options write `position_size = capital deployed` (larger) and
+    `max_loss = stop-loss-bounded` (smaller). The capital cost is the deployed.
+    `max()` handles both without a per-strategy lookup."""
+    # Credit spread shape
+    assert scheduler_module._rec_capital_cost(_RecLike(50.0, 450.0)) == 450.0
+    # Long stock shape (capital deployed >> stop-loss max loss)
+    assert scheduler_module._rec_capital_cost(_RecLike(1000.0, 50.0)) == 1000.0
+    # Long call (both equal — premium = max loss = capital)
+    assert scheduler_module._rec_capital_cost(_RecLike(300.0, 300.0)) == 300.0
+    # Null safety
+    assert scheduler_module._rec_capital_cost(_RecLike(None, 500.0)) == 500.0
+    assert scheduler_module._rec_capital_cost(_RecLike(500.0, None)) == 500.0
+
+
+def test_daily_capital_cap_default_is_5000():
+    """User decision (bullish_side_build memo, 2026-05-12): $5k direction-blind
+    pool. Lock the default so a config drift doesn't silently re-open the gate."""
+    from src.config import get_settings
+    assert get_settings().daily_capital_cap == 5000.0
+
+
 def test_sentiment_upsert_failure_does_not_drop_batch(clean_scheduler, monkeypatch):
     """A single ticker's sentiment upsert blowing up must not silently drop the
     remaining tickers in the batch. Regression target: prior to this fix the

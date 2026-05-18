@@ -31,6 +31,13 @@ class Settings(BaseSettings):
 
     # Trading constraints
     max_position_size: float = 1000.0
+    # Total daily capital cap across ALL recommendations, direction-blind.
+    # Bull and bear share one pool — the long-term aim is max profit-potential,
+    # not balanced hedging (bullish_side_build memo, 2026-05-12). At ~$1k/trade
+    # and $5k aggregate, we get up to 5 concurrent positions before the cap
+    # kicks in. Capital consumed per rec is `max(position_size, max_loss)` so
+    # credit spreads count collateral (max_loss), not credit received.
+    daily_capital_cap: float = 5000.0
     min_confidence: float = 0.75  # Deprecated — kept for back-compat; see min_directional_lift / min_sentiment_confidence below
 
     # Alpaca

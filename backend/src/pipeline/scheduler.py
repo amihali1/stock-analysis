@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
+def _rec_capital_cost(rec) -> float:
+    """Capital deployed by a Recommendation, for the direction-blind daily cap.
+
+    Most strategies write `position_size` = cash deployed (long stock value,
+    premium paid, short margin). Credit spreads break that convention: their
+    `position_size` is the credit RECEIVED, while the actual capital tied up
+    is the broker collateral = `max_loss`. Taking `max(position_size, max_loss)`
+    consistently captures capital-at-risk across both flavors without a
+    per-strategy lookup table.
+    """
+    return max(rec.position_size or 0.0, rec.max_loss or 0.0)
+
+
 def _record_run(job_name: str, status: str):
     """Record job completion time in health endpoint state and Prometheus gauge.
 
@@ -285,6 +298,9 @@ def job_generate_recommendations():
         no_sizer_match = 0
         bear_recs = 0
         bull_recs = 0
+        capital_used = 0.0
+        capital_capped = 0
+        capital_cap = settings.daily_capital_cap
         candidates: list[Candidate] = []
 
         try:
@@ -468,7 +484,12 @@ def job_generate_recommendations():
                             risk_type="defined",
                             notes=bull_spread_rec.strategy_name,
                         )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost > capital_cap:
+                            capital_capped += 1
+                            continue
                         db.add(rec)
+                        capital_used += cost
                         count += 1
                         bull_spread_recs += 1
                         bull_recs += 1
@@ -493,7 +514,12 @@ def job_generate_recommendations():
                             option_type=call_rec.option_type,
                             risk_type="defined",
                         )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost > capital_cap:
+                            capital_capped += 1
+                            continue
                         db.add(rec)
+                        capital_used += cost
                         count += 1
                         call_options_recs += 1
                         bull_recs += 1
@@ -515,7 +541,12 @@ def job_generate_recommendations():
                             max_loss=long_rec.max_loss,
                             risk_type=long_rec.risk_type,
                         )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost > capital_cap:
+                            capital_capped += 1
+                            continue
                         db.add(rec)
+                        capital_used += cost
                         count += 1
                         long_recs += 1
                         bull_recs += 1
@@ -547,7 +578,12 @@ def job_generate_recommendations():
                         risk_type="defined",
                         notes=spread_rec.strategy_name,
                     )
+                    cost = _rec_capital_cost(rec)
+                    if capital_used + cost > capital_cap:
+                        capital_capped += 1
+                        continue
                     db.add(rec)
+                    capital_used += cost
                     count += 1
                     spread_recs += 1
                     bear_recs += 1
@@ -572,7 +608,12 @@ def job_generate_recommendations():
                         option_type=options_rec.option_type,
                         risk_type="defined",
                     )
+                    cost = _rec_capital_cost(rec)
+                    if capital_used + cost > capital_cap:
+                        capital_capped += 1
+                        continue
                     db.add(rec)
+                    capital_used += cost
                     count += 1
                     options_recs += 1
                     bear_recs += 1
@@ -595,7 +636,12 @@ def job_generate_recommendations():
                         risk_type="undefined",
                         notes="Naked short — no defined-risk alternative available",
                     )
+                    cost = _rec_capital_cost(rec)
+                    if capital_used + cost > capital_cap:
+                        capital_capped += 1
+                        continue
                     db.add(rec)
+                    capital_used += cost
                     count += 1
                     short_recs += 1
                     bear_recs += 1
@@ -625,12 +671,14 @@ def job_generate_recommendations():
             "top_k=%d selected, "
             "bear sizers: %d spread / %d options / %d short, "
             "bull sizers: %d bull_spread / %d call / %d long, "
-            "%d no_sizer_match",
+            "%d no_sizer_match, "
+            "capital: $%.0f used / $%.0f cap, %d capped",
             count, bear_recs, bull_recs, len(watchlist), len(candidates),
             no_indicator, no_price, len(selected),
             spread_recs, options_recs, short_recs,
             bull_spread_recs, call_options_recs, long_recs,
             no_sizer_match,
+            capital_used, capital_cap, capital_capped,
         )
         _record_run(
             "recommendations",
@@ -639,7 +687,8 @@ def job_generate_recommendations():
             f"{no_indicator} no_ind, {no_price} no_price, "
             f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
-            f"{no_sizer_match} none)",
+            f"{no_sizer_match} none, "
+            f"cap: ${capital_used:.0f}/${capital_cap:.0f}, {capital_capped} capped)",
         )
 
     except Exception:
