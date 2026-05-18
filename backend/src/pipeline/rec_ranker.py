@@ -1,8 +1,18 @@
 """Recommendation candidate selection.
 
-Phase 3 (bullish-side build, 2026-05-13): candidates are now direction-tagged.
-Each ticker can contribute up to two candidates (one drop, one rise). The ranker
-dedups by ticker, keeping the higher-scoring direction, then applies top-K.
+Phase 3 (bullish-side build, 2026-05-13): candidates are direction-tagged. The
+original Phase 4 design joint-ranked across directions with cross-direction
+per-ticker dedup ("keep higher score").
+
+Phase 4 revision (2026-05-18): cross-direction dedup REMOVED. Drop v7
+(vol_normalized label, K=1.75) ships drop_prob with base rate ~5% while rise
+v2 (excess label) ships rise_prob with base rate ~17%. Composite scores for
+the two sides are not on the same scale, so joint ranking gives bulls a
+structural advantage and produces a drop-side dead zone (5 days of 0 short
+recs after Phase 4 went live). Fix: rank within each direction independently,
+take top_k per side, allow same ticker to emit both directions. The "$5,000
+direction-blind capital cap" decision (bullish_side_build memo) is a sizing
+concern, not a ranker concern — position sizing happens downstream.
 
 Prior history of the bearish-only gate (still relevant for the composite-score
 rationale): the original `score >= 0.5` floor produced zero recs because
@@ -39,32 +49,45 @@ def select_candidates(
     min_dir_prob_lift: float | None = None,  # accepted for back-compat; ignored
     min_score: float | None = None,
 ) -> list[Candidate]:
-    """Rank candidates by composite score (descending), cap at top_k.
+    """Rank candidates per direction, cap at top_k per direction.
 
-    When a ticker appears in both directions, keep only the higher-scoring side.
-    This enforces the user's direction-blind capital cap (bullish_side_build memo):
-    bullish and bearish candidates compete for the same top-K slots, and only one
-    direction-of-conviction wins per ticker.
+    `top_k` is the cap **per direction**. A call with top_k=10 returns up to
+    10 drop + 10 rise = 20 candidates. The two sides rank independently so
+    the lower-base-rate drop probabilities don't get squeezed out by the
+    higher-base-rate rise probabilities (see module docstring).
 
-    `min_score` (optional, in [0, 1]) is an absolute composite-score floor applied
-    *before* top-K so the ranker never returns picks below a minimum conviction.
-    Motivation: the 2026-05-14 joint top-K backtest on prod data showed hit rates
-    of 25-30% (vs. 60% break-even at the -1.5/+1.0 payoff) because top-K=10 forces
-    the ranker to fill slots with low-confidence candidates on flat days. Setting
-    this floor enforces the project's "risk-first filtering, skip marginal setups"
-    rule even when fewer than top_k qualified picks exist.
+    Within a direction, same-ticker duplicates collapse to the higher score.
+    No cross-direction dedup — a ticker can appear on both sides if both
+    sides produce a meaningful composite. Downstream sizing decides what to
+    do with a both-sides ticker.
 
-    No absolute `dir_prob` floor — see module docstring. `meets_confidence` is
-    intentionally not applied here so the scheduler can log per-rec filter rates.
+    `min_score` (optional, in [0, 1]) is an absolute composite-score floor
+    applied per candidate *before* the top-K cap so the ranker never returns
+    picks below a minimum conviction (project's "skip marginal setups" rule).
+
+    Output is sorted by composite score descending across both directions.
+    No absolute `dir_prob` floor — see module docstring.
     """
     if top_k <= 0 or not candidates:
         return []
-    best_by_ticker: dict[str, Candidate] = {}
+
+    best_by_dir_ticker: dict[tuple[str, str], Candidate] = {}
     for c in candidates:
         if min_score is not None and c.score.score < min_score:
             continue
-        prev = best_by_ticker.get(c.ticker)
+        key = (c.direction, c.ticker)
+        prev = best_by_dir_ticker.get(key)
         if prev is None or c.score.score > prev.score.score:
-            best_by_ticker[c.ticker] = c
-    ranked = sorted(best_by_ticker.values(), key=lambda c: c.score.score, reverse=True)
-    return ranked[:top_k]
+            best_by_dir_ticker[key] = c
+
+    by_direction: dict[str, list[Candidate]] = {}
+    for c in best_by_dir_ticker.values():
+        by_direction.setdefault(c.direction, []).append(c)
+
+    selected: list[Candidate] = []
+    for direction, cands in by_direction.items():
+        cands.sort(key=lambda c: c.score.score, reverse=True)
+        selected.extend(cands[:top_k])
+
+    selected.sort(key=lambda c: c.score.score, reverse=True)
+    return selected

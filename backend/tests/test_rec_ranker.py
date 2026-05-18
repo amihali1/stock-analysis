@@ -1,10 +1,12 @@
 """Tests for the recommendation candidate ranker.
 
-Phase 3 (bullish-side build): candidates are direction-tagged and the ranker
-dedups by ticker (keep higher score) before applying top-K. The legacy absolute
-`dir_prob` gate is gone — under sigmoid calibration, dir_prob values cluster
-tightly around the base rate and the composite score is the only meaningful
-ranking signal across tickers.
+Phase 4 revision (2026-05-18): `top_k` is per direction. No cross-direction
+dedup — same ticker can emit both bear and bull recs. Within a direction,
+same-ticker duplicates collapse to the higher score.
+
+The legacy absolute `dir_prob` gate is gone — under sigmoid calibration,
+dir_prob values cluster tightly around the base rate and the composite score
+is the only meaningful ranking signal across tickers.
 """
 
 from __future__ import annotations
@@ -63,13 +65,16 @@ def test_sorted_by_score_descending():
     assert [c.ticker for c in out] == ["HIGH", "MID", "LOW"]
 
 
-def test_top_k_caps_output():
-    cands = [_cand(f"T{i}", 0.30, 0.5 + i * 0.01) for i in range(20)]
-    out = select_candidates(cands, top_k=5)
-    assert len(out) == 5
-    # Highest scores first
+def test_top_k_per_direction_caps_each_side():
+    # 20 drops + 20 rises; top_k=5 yields 5 of each = 10 total.
+    drops = [_cand(f"D{i}", 0.30, 0.50 + i * 0.01, direction="drop") for i in range(20)]
+    rises = [_cand(f"R{i}", 0.30, 0.40 + i * 0.01, direction="rise") for i in range(20)]
+    out = select_candidates(drops + rises, top_k=5)
+    assert len(out) == 10
+    assert sum(1 for c in out if c.direction == "drop") == 5
+    assert sum(1 for c in out if c.direction == "rise") == 5
+    # Highest scores first within the merged output
     assert out[0].score.score == pytest.approx(0.69)
-    assert out[-1].score.score == pytest.approx(0.65)
 
 
 def test_meets_confidence_does_not_filter():
@@ -82,37 +87,40 @@ def test_meets_confidence_does_not_filter():
     assert {c.ticker for c in out} == {"UNCONF", "CONF"}
 
 
-def test_dedup_keeps_higher_scoring_direction():
-    # Same ticker contributes both directions; bearish wins on score.
+def test_same_ticker_both_directions_emits_both():
+    # Phase 4 revision: cross-direction dedup removed. The two sides are scored
+    # against different label bases (drop ~5%, rise ~17%) so they should not
+    # compete. If both clear their direction's top-K, both emit.
     cands = [
-        _cand("AAPL", 0.30, 0.65, direction="drop"),
-        _cand("AAPL", 0.30, 0.45, direction="rise"),
+        _cand("AAPL", 0.30, 0.45, direction="drop"),
+        _cand("AAPL", 0.30, 0.65, direction="rise"),
+    ]
+    out = select_candidates(cands, top_k=10)
+    assert len(out) == 2
+    assert {c.direction for c in out} == {"drop", "rise"}
+
+
+def test_same_direction_same_ticker_collapses_to_higher_score():
+    # Within a direction, same-ticker duplicates still collapse.
+    cands = [
+        _cand("AAPL", 0.30, 0.40, direction="drop"),
+        _cand("AAPL", 0.30, 0.70, direction="drop"),
     ]
     out = select_candidates(cands, top_k=10)
     assert len(out) == 1
-    assert out[0].direction == "drop"
-    assert out[0].score.score == 0.65
+    assert out[0].score.score == 0.70
 
 
-def test_dedup_keeps_higher_scoring_direction_bull_wins():
-    cands = [
-        _cand("MSFT", 0.30, 0.40, direction="drop"),
-        _cand("MSFT", 0.30, 0.72, direction="rise"),
-    ]
-    out = select_candidates(cands, top_k=10)
-    assert len(out) == 1
-    assert out[0].direction == "rise"
-
-
-def test_mixed_directions_compete_for_top_k():
-    cands = [
-        _cand("AAPL", 0.30, 0.60, direction="drop"),
-        _cand("MSFT", 0.30, 0.80, direction="rise"),
-        _cand("GOOG", 0.30, 0.50, direction="drop"),
-        _cand("TSLA", 0.30, 0.70, direction="rise"),
-    ]
-    out = select_candidates(cands, top_k=3)
-    assert [c.ticker for c in out] == ["MSFT", "TSLA", "AAPL"]
+def test_drop_side_protected_when_rises_dominate():
+    # The bug this revision fixes: bulls flooding the top-K and starving bears.
+    # Many strong rises, one weak drop. Drop must still emit because top_k is
+    # per direction now.
+    rises = [_cand(f"R{i}", 0.30, 0.80 - i * 0.02, direction="rise") for i in range(15)]
+    drops = [_cand("BEAR1", 0.05, 0.30, direction="drop")]
+    out = select_candidates(rises + drops, top_k=5)
+    assert any(c.direction == "drop" for c in out)
+    assert sum(1 for c in out if c.direction == "rise") == 5
+    assert sum(1 for c in out if c.direction == "drop") == 1
 
 
 def test_extras_passthrough():
@@ -173,16 +181,14 @@ def test_min_score_none_preserves_legacy_behavior():
     assert sorted(c.ticker for c in out) == ["A", "B"]
 
 
-def test_min_score_applied_before_dedup():
-    """Per-ticker dedup keeps the higher direction, BUT only among candidates
-    that already cleared the floor. If a ticker's better side is below the
-    floor and the weaker side is above, the weaker side should win — not be
-    masked by the dedup picking the (filtered-out) better side first.
+def test_min_score_applied_before_per_direction_dedup():
+    """Same-direction same-ticker dedup keeps the higher score among
+    candidates that already cleared the floor.
     """
     cands = [
         _cand("AAPL", 0.30, 0.50, direction="drop"),  # below 0.60 floor
-        _cand("AAPL", 0.20, 0.65, direction="rise"),  # above floor
+        _cand("AAPL", 0.20, 0.65, direction="drop"),  # above floor
     ]
     out = select_candidates(cands, top_k=10, min_score=0.60)
     assert len(out) == 1
-    assert out[0].direction == "rise"
+    assert out[0].score.score == 0.65

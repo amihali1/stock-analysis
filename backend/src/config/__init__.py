@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # top 2-4 most-bearish picks per day. Bump to 1.5 (0.2625) for stricter quality
     # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
     min_dir_prob_lift: float = 1.3
-    recommendations_top_k: int = 10  # max recs emitted per scheduler run, ranked by score
+    recommendations_top_k: int = 10  # max recs emitted PER DIRECTION (drop/rise); 10 → up to 20 total
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots
