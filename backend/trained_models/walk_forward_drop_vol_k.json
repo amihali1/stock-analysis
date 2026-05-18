@@ -1,0 +1,215 @@
+{
+  "feature_cols": [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bb_percent_b",
+    "bb_upper",
+    "bb_lower",
+    "sma_50",
+    "sma_200",
+    "sma_crossover",
+    "volume_zscore",
+    "return_5d_lag",
+    "return_10d_lag",
+    "return_20d_lag",
+    "close_to_sma50_ratio",
+    "close_to_sma200_ratio",
+    "volatility_20d",
+    "vix_level",
+    "vix_percentile_252d",
+    "spy_drawdown_pct",
+    "spy_above_sma_50",
+    "spy_above_sma_200",
+    "spy_return_5d",
+    "spy_return_20d",
+    "sector_return_5d",
+    "sector_return_20d",
+    "return_5d_vs_sector",
+    "return_20d_vs_sector",
+    "days_to_earnings",
+    "days_since_earnings",
+    "earnings_within_3d",
+    "earnings_within_10d",
+    "days_since_downgrade",
+    "days_since_upgrade",
+    "downgrades_30d",
+    "upgrades_30d",
+    "net_rating_actions_60d",
+    "analyst_action_5d",
+    "short_percent_of_float",
+    "short_ratio_days_to_cover",
+    "short_interest_change_pct",
+    "short_interest_zscore_180d",
+    "days_since_short_report",
+    "has_short_data",
+    "wiki_views_zscore_30d",
+    "wiki_views_zscore_180d",
+    "wiki_views_change_7d",
+    "wiki_views_spike",
+    "wiki_views_log",
+    "insider_buys_30d",
+    "insider_sells_30d",
+    "insider_net_buy_value_30d",
+    "insider_net_buy_value_90d",
+    "insider_cluster_buy_30d",
+    "insider_buy_sell_ratio_90d",
+    "days_since_insider_buy",
+    "days_since_insider_sell",
+    "pct_insider_ownership_change_90d",
+    "days_since_8k",
+    "days_since_material_8k",
+    "count_8k_30d",
+    "count_8k_90d",
+    "count_material_8k_30d"
+  ],
+  "n_features": 63,
+  "forward_days": 5,
+  "ks": [
+    1.75,
+    2.5
+  ],
+  "seeds": [
+    42,
+    7,
+    13,
+    29,
+    101
+  ],
+  "n_folds": 3,
+  "results": [
+    {
+      "k": 1.75,
+      "n_folds": 3,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "folds": [
+        {
+          "fold": 1,
+          "train_size": 9472,
+          "test_size": 12956,
+          "pos_rate_train": 0.09089949324324324,
+          "pos_rate_test": 0.03179993825254708,
+          "aucs": [
+            0.5833624863780463,
+            0.5853943632975035,
+            0.5818661999083614,
+            0.5876966476062513,
+            0.5972799048320785
+          ],
+          "auc_mean": 0.5871199204044482,
+          "auc_std": 0.0060880073644436795,
+          "brier_mean": 0.058534721336405506
+        },
+        {
+          "fold": 2,
+          "train_size": 22428,
+          "test_size": 12956,
+          "pos_rate_train": 0.05675940788300339,
+          "pos_rate_test": 0.04221982093238654,
+          "aucs": [
+            0.5757732011161917,
+            0.5902455064828073,
+            0.5879937940897118,
+            0.5809064394643093,
+            0.5755059539112011
+          ],
+          "auc_mean": 0.5820849790128442,
+          "auc_std": 0.006819445930074188,
+          "brier_mean": 0.0849274655639898
+        },
+        {
+          "fold": 3,
+          "train_size": 35384,
+          "test_size": 13105,
+          "pos_rate_train": 0.051435677142211166,
+          "pos_rate_test": 0.05532239603204884,
+          "aucs": [
+            0.6197242493454403,
+            0.6263483928471951,
+            0.6255437580079105,
+            0.6255379644588045,
+            0.630824299481923
+          ],
+          "auc_mean": 0.6255957328282546,
+          "auc_std": 0.003949201286696583,
+          "brier_mean": 0.09700212320700373
+        }
+      ],
+      "overall_auc_mean": 0.5982668774151824,
+      "overall_auc_std": 0.020807851527246526
+    },
+    {
+      "k": 2.5,
+      "n_folds": 3,
+      "seeds": [
+        42,
+        7,
+        13,
+        29,
+        101
+      ],
+      "folds": [
+        {
+          "fold": 1,
+          "train_size": 9472,
+          "test_size": 12956,
+          "pos_rate_train": 0.04603040540540541,
+          "pos_rate_test": 0.012658227848101266,
+          "aucs": [
+            0.6104277254076481,
+            0.6275354070379353,
+            0.6090353727177047,
+            0.5955031917814488,
+            0.6155347663936301
+          ],
+          "auc_mean": 0.6116072926676734,
+          "auc_std": 0.011580998378420294,
+          "brier_mean": 0.023396767476800386
+        },
+        {
+          "fold": 2,
+          "train_size": 22428,
+          "test_size": 12956,
+          "pos_rate_train": 0.02675227394328518,
+          "pos_rate_test": 0.013275702377276937,
+          "aucs": [
+            0.5589524605611665,
+            0.554422133771866,
+            0.5408413860348691,
+            0.5604464246732835,
+            0.5460773095730128
+          ],
+          "auc_mean": 0.5521479429228396,
+          "auc_std": 0.008441401269923904,
+          "brier_mean": 0.031939566937248046
+        },
+        {
+          "fold": 3,
+          "train_size": 35384,
+          "test_size": 13105,
+          "pos_rate_train": 0.021817770743839022,
+          "pos_rate_test": 0.019381915299504004,
+          "aucs": [
+            0.6554117851057273,
+            0.6593585964387709,
+            0.659771873508419,
+            0.6647406954451291,
+            0.6617154092607149
+          ],
+          "auc_mean": 0.6601996719517522,
+          "auc_std": 0.003418063557563564,
+          "brier_mean": 0.04163335742115285
+        }
+      ],
+      "overall_auc_mean": 0.6079849691807551,
+      "overall_auc_std": 0.04641011998666315
+    }
+  ]
+}
