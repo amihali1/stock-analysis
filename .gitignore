@@ -52,5 +52,11 @@ Thumbs.db
 # Logs
 *.log
 
-# Claude Code local config
-.claude/
+# Claude Code local config — ignore everything except shared skills
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/*/
+.claude/skills/*/*
+!.claude/skills/*/SKILL.md
+!.claude/skills/*/README.md
