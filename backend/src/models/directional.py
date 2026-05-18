@@ -131,16 +131,23 @@ RISE_THRESHOLD = 0.03
 FORWARD_DAYS = 5
 
 # Label modes:
-#   "absolute" — label fires on ticker's own forward return crossing ±3% threshold.
-#   "excess"   — label fires on (ticker_fwd_return - SPY_fwd_return) crossing ±3%.
+#   "absolute"       — label fires on ticker's own forward return crossing ±3% threshold.
+#   "excess"         — label fires on (ticker_fwd_return - SPY_fwd_return) crossing ±3%.
+#   "vol_normalized" — drop-only. Label fires on fwd_return < -K * vol_5d, where
+#                      vol_5d = volatility_20d / sqrt(252/FORWARD_DAYS). K from walk-forward
+#                      sweep (2026-05-15): K=1.75 gave AUC 0.598 ± 0.021. Vol formula MUST
+#                      match scripts/sweep_drop_vol_k.py to keep prod label identical to
+#                      the validated research label.
 # The excess-vs-SPY label removes the macro confound that dominated absolute labels
 # (2026-05-14 root cause: volatile regimes show 40% rise base rate driven by
 # bounce-back; model learned "high VIX → rise" instead of per-ticker discrimination).
-# Rise v2 ships with label_mode="excess"; drop side stays "absolute" pending a
-# catalyst-feature backfill (sentiment historicals).
+# Rise v2 ships with label_mode="excess"; drop side ships with vol_normalized (2026-05-18).
 LABEL_MODE_ABSOLUTE = "absolute"
 LABEL_MODE_EXCESS = "excess"
+LABEL_MODE_VOL_NORMALIZED = "vol_normalized"
+VALID_LABEL_MODES = (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS, LABEL_MODE_VOL_NORMALIZED)
 SPY_TICKER = "SPY"
+DEFAULT_DROP_VOL_K = 1.75
 
 
 class DirectionalModel:
@@ -151,6 +158,7 @@ class DirectionalModel:
         calibration_method: str | None = None,
         label_mode: str | None = None,
         feature_cols: list[str] | None = None,
+        vol_k: float | None = None,
     ):
         """A binary directional classifier.
 
@@ -160,16 +168,22 @@ class DirectionalModel:
                    sigmoid otherwise). Override to "sigmoid" to skip isotonic —
                    we use sigmoid for both directions now after the 2026-05-12
                    plateau finding (see directional_calibration_plateaus memory).
-        label_mode: "absolute" or "excess". When None, defaults to "excess" for
-                   rise (rise v2 ships with regime-relative label, 2026-05-14)
-                   and "absolute" for drop.
+        label_mode: "absolute", "excess", or "vol_normalized". When None, defaults
+                   to "excess" for rise (rise v2, 2026-05-14), "vol_normalized" for
+                   drop (drop v7, 2026-05-18).
+        vol_k: K multiplier for vol_normalized label. Defaults to DEFAULT_DROP_VOL_K
+               (1.75 from walk-forward sweep). Only used when label_mode=vol_normalized.
         """
         if direction not in ("drop", "rise"):
             raise ValueError(f"direction must be 'drop' or 'rise', got {direction!r}")
         if label_mode is None:
-            label_mode = LABEL_MODE_EXCESS if direction == "rise" else LABEL_MODE_ABSOLUTE
-        if label_mode not in (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS):
-            raise ValueError(f"label_mode must be 'absolute' or 'excess', got {label_mode!r}")
+            label_mode = LABEL_MODE_EXCESS if direction == "rise" else LABEL_MODE_VOL_NORMALIZED
+        if label_mode not in VALID_LABEL_MODES:
+            raise ValueError(f"label_mode must be one of {VALID_LABEL_MODES}, got {label_mode!r}")
+        if label_mode == LABEL_MODE_VOL_NORMALIZED and direction != "drop":
+            raise ValueError("label_mode='vol_normalized' is only supported for direction='drop'")
+        if vol_k is None:
+            vol_k = DEFAULT_DROP_VOL_K
         self.model: xgb.XGBClassifier | None = None
         self.calibrator: CalibratedClassifierCV | None = None
         self.brier_score: float | None = None
@@ -183,6 +197,7 @@ class DirectionalModel:
         self.direction = direction
         self.calibration_method = calibration_method
         self.label_mode = label_mode
+        self.vol_k = float(vol_k)
 
     def load(self) -> None:
         """Load a trained model from disk."""
@@ -196,9 +211,10 @@ class DirectionalModel:
         # we trained before 2026-05-12).
         self.direction = data.get("direction", "drop")
         self.label_mode = data.get("label_mode", LABEL_MODE_ABSOLUTE)
+        self.vol_k = float(data.get("vol_k", DEFAULT_DROP_VOL_K))
         logger.info(
-            "Loaded directional model from %s (direction=%s, label_mode=%s, calibrator=%s)",
-            self.model_path, self.direction, self.label_mode,
+            "Loaded directional model from %s (direction=%s, label_mode=%s, vol_k=%.2f, calibrator=%s)",
+            self.model_path, self.direction, self.label_mode, self.vol_k,
             "present" if self.calibrator is not None else "absent",
         )
 
@@ -212,6 +228,7 @@ class DirectionalModel:
             "brier_score": self.brier_score,
             "direction": self.direction,
             "label_mode": self.label_mode,
+            "vol_k": self.vol_k,
         }
         with open(self.model_path, "wb") as f:
             pickle.dump(payload, f)
@@ -285,10 +302,10 @@ class DirectionalModel:
 
         Returns metrics dict.
         """
-        logger.info("Building dataset (direction=%s, label_mode=%s, n_features=%d)...",
-                    self.direction, self.label_mode, len(self.feature_cols))
+        logger.info("Building dataset (direction=%s, label_mode=%s, vol_k=%.2f, n_features=%d)...",
+                    self.direction, self.label_mode, self.vol_k, len(self.feature_cols))
         df = build_dataset(tickers, direction=self.direction, label_mode=self.label_mode,
-                           feature_cols=self.feature_cols)
+                           feature_cols=self.feature_cols, vol_k=self.vol_k)
 
         if len(df) < 500:
             raise ValueError(f"Not enough data to train: {len(df)} rows (need 500+)")
@@ -455,6 +472,7 @@ def build_dataset(
     direction: str = "drop",
     label_mode: str = LABEL_MODE_ABSOLUTE,
     feature_cols: list[str] | None = None,
+    vol_k: float = DEFAULT_DROP_VOL_K,
 ) -> pd.DataFrame:
     """Build training dataset by joining price_history + technical_indicators.
 
@@ -463,20 +481,27 @@ def build_dataset(
     "rise"           → label=1 when forward_return > +3%
 
     `label_mode` controls the return used for the threshold comparison:
-    "absolute" → ticker's own forward return
-    "excess"   → ticker forward return minus SPY's forward return (same window).
-                 Removes macro confound — see module-level comment.
+    "absolute"       → ticker's own forward return vs ±3%
+    "excess"         → ticker fwd return minus SPY fwd return vs ±3%
+    "vol_normalized" → drop-only. fwd_return < -vol_k * vol_5d
+                       where vol_5d = volatility_20d / sqrt(252/FORWARD_DAYS).
+                       Must match scripts/sweep_drop_vol_k.py formula.
 
     `feature_cols` lets research callers opt into experimental columns
     (e.g. PER_TICKER_RANK_FEATURE_COLS). Defaults to FEATURE_COLS, the
     production set. The dropna step uses this list, so opting in to
     research features will also drop the head of each ticker series where
     the experimental columns have insufficient history.
+
+    `vol_k` is the multiplier for the vol-normalized label. Ignored unless
+    label_mode == "vol_normalized".
     """
     if feature_cols is None:
         feature_cols = FEATURE_COLS
-    if label_mode not in (LABEL_MODE_ABSOLUTE, LABEL_MODE_EXCESS):
-        raise ValueError(f"label_mode must be 'absolute' or 'excess', got {label_mode!r}")
+    if label_mode not in VALID_LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {VALID_LABEL_MODES}, got {label_mode!r}")
+    if label_mode == LABEL_MODE_VOL_NORMALIZED and direction != "drop":
+        raise ValueError("label_mode='vol_normalized' is only supported for direction='drop'")
     db = SessionLocal()
     try:
         query = db.query(
@@ -570,7 +595,13 @@ def build_dataset(
 
         # Build label only where label_return is defined. NaN rows get NaN
         # labels and are dropped at the end alongside NaN-feature rows.
-        if direction == "rise":
+        if label_mode == LABEL_MODE_VOL_NORMALIZED:
+            # vol_5d formula must match scripts/sweep_drop_vol_k.py exactly:
+            # vol_5d = volatility_20d / sqrt(252/FORWARD_DAYS).
+            vol_5d = g["volatility_20d"] / np.sqrt(252.0 / FORWARD_DAYS)
+            valid = label_return.notna() & vol_5d.notna() & (vol_5d > 0)
+            g["label"] = np.where(valid, (label_return < -vol_k * vol_5d).astype(int), np.nan)
+        elif direction == "rise":
             g["label"] = np.where(label_return.notna(), (label_return > RISE_THRESHOLD).astype(int), np.nan)
         else:
             g["label"] = np.where(label_return.notna(), (label_return < DROP_THRESHOLD).astype(int), np.nan)
