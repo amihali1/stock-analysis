@@ -282,6 +282,131 @@ class TestRecencyGate:
         assert result["scores_computed"] == 1
 
 
+class TestAnalyzeTickerHeadlineConcurrency:
+    """analyze_ticker fans out headline-level Ollama calls with asyncio.gather.
+    Serial would block on each ~5-10s Ollama call. The regression we're
+    guarding: anyone reintroducing a for-loop over headlines would silently
+    halve the sentiment job's throughput."""
+
+    @pytest.mark.asyncio
+    async def test_headlines_scored_concurrently(self, db_session, monkeypatch):
+        analyzer = SentimentAnalyzer(db=db_session)
+        analyzer.headline_concurrency = 4
+
+        headlines = [
+            Headline(title=f"H{i}", source="finviz", date=date.today())
+            for i in range(6)
+        ]
+
+        def mock_finviz_fetch(self, ticker, max_headlines=10):
+            return headlines
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch", mock_finviz_fetch
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def mock_generate(self, prompt, model=None):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+            return json.dumps({"sentiment": 0.1, "confidence": 0.7, "reasoning": "x"})
+
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        t0 = time.perf_counter()
+        result = await analyzer.analyze_ticker("AAPL")
+        elapsed = time.perf_counter() - t0
+
+        assert result["scores_computed"] == 6
+        # 6 headlines at concurrency=4, 0.05s each: 2 batches ≈ 0.10s.
+        # Serial would be 0.30s. Generous bound for CI.
+        assert elapsed < 0.25, f"expected concurrent execution, got {elapsed:.3f}s"
+        assert max_in_flight >= 2, "headlines did not overlap"
+        assert max_in_flight <= 4, "headline concurrency cap exceeded"
+
+    @pytest.mark.asyncio
+    async def test_batch_commit_writes_all_rows(self, db_session, monkeypatch):
+        """Per-headline commits were replaced by a single batch commit per
+        ticker. Verify all rows still land."""
+        analyzer = SentimentAnalyzer(db=db_session)
+
+        def mock_finviz_fetch(self, ticker, max_headlines=10):
+            return [
+                Headline(title=f"H{i}", source="finviz", date=date.today())
+                for i in range(3)
+            ]
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch", mock_finviz_fetch
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+
+        async def mock_generate(self, prompt, model=None):
+            return json.dumps({"sentiment": 0.2, "confidence": 0.8, "reasoning": "ok"})
+
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        await analyzer.analyze_ticker("AAPL")
+
+        rows = db_session.query(SentimentScore).filter_by(ticker="AAPL").all()
+        assert len(rows) == 3
+        assert all(r.sentiment == 0.2 for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_one_failing_headline_does_not_drop_others(
+        self, db_session, monkeypatch
+    ):
+        """`return_exceptions=True` on the headline gather keeps a single
+        Ollama failure from killing the entire ticker's batch."""
+        analyzer = SentimentAnalyzer(db=db_session)
+
+        def mock_finviz_fetch(self, ticker, max_headlines=10):
+            return [
+                Headline(title="GOOD-1", source="finviz", date=date.today()),
+                Headline(title="BOOM",   source="finviz", date=date.today()),
+                Headline(title="GOOD-2", source="finviz", date=date.today()),
+            ]
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch", mock_finviz_fetch
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+
+        async def mock_generate(self, prompt, model=None):
+            if "BOOM" in prompt:
+                raise RuntimeError("ollama down")
+            return json.dumps({"sentiment": 0.3, "confidence": 0.6, "reasoning": "ok"})
+
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        result = await analyzer.analyze_ticker("AAPL")
+        assert result["scores_computed"] == 2
+
+        rows = db_session.query(SentimentScore).filter_by(ticker="AAPL").all()
+        assert {r.headline for r in rows} == {"GOOD-1", "GOOD-2"}
+
+
 class _NopSession:
     def close(self):
         pass

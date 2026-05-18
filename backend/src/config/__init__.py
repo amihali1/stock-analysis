@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # burns LLM time. Default 7d (~one news cycle); empirically about 60% of
     # Finviz headlines fall within this window.
     sentiment_max_headline_age_days: int = 7
+    # Max concurrent Ollama calls *per ticker* inside analyze_ticker. Combined
+    # with analyze_all's ticker-level concurrency (default 3), Ollama sees up
+    # to ticker_concurrency * headline_concurrency in-flight requests. With
+    # OLLAMA_NUM_PARALLEL=1 on the host, Ollama still serializes internally
+    # but the asyncio overlap removes Python-side dead time between calls.
+    # If OLLAMA_NUM_PARALLEL is bumped on the homelab, this is the dial that
+    # actually exploits the extra slots.
+    sentiment_headline_concurrency: int = 4
 
     # Trading constraints
     max_position_size: float = 1000.0

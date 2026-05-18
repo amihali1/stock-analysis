@@ -40,7 +40,9 @@ class SentimentAnalyzer:
         self.db = db or SessionLocal()
         self.ollama = OllamaClient()
         self.fetchers = [FinvizFetcher(), YahooRssFetcher()]
-        self.max_headline_age_days = get_settings().sentiment_max_headline_age_days
+        settings = get_settings()
+        self.max_headline_age_days = settings.sentiment_max_headline_age_days
+        self.headline_concurrency = settings.sentiment_headline_concurrency
 
     def close(self):
         if self._owns_db:
@@ -97,15 +99,48 @@ class SentimentAnalyzer:
             logger.info(f"{ticker}: analyzing {len(recent)} headlines")
         headlines = recent
 
-        # Analyze each headline with Ollama
+        # Analyze headlines concurrently. Ollama is the per-call bottleneck
+        # (5-10s on the homelab GPU), and a serial loop made the sentiment job
+        # the longest task in the daily run (~2-3h for the full watchlist).
+        # Each _analyze_headline is now pure (no DB) and we batch-commit at
+        # the end of the ticker — one transaction per ticker, not per headline.
+        headline_sem = asyncio.Semaphore(self.headline_concurrency)
+
+        async def _bounded(h: Headline):
+            async with headline_sem:
+                return await self._analyze_headline(ticker, h)
+
+        gathered = await asyncio.gather(
+            *(_bounded(h) for h in headlines), return_exceptions=True
+        )
+
         scores: list[SentimentResult] = []
-        for headline in headlines:
-            try:
-                result = await self._analyze_headline(ticker, headline, db=db)
-                if result:
-                    scores.append(result)
-            except Exception:
-                logger.exception(f"{ticker}: failed to analyze headline: {headline.title[:60]}")
+        rows: list[SentimentScore] = []
+        for headline, outcome in zip(headlines, gathered):
+            if isinstance(outcome, BaseException):
+                logger.exception(
+                    f"{ticker}: failed to analyze headline: {headline.title[:60]}",
+                    exc_info=outcome,
+                )
+                continue
+            result, raw_response = outcome
+            if result is None:
+                continue
+            scores.append(result)
+            rows.append(SentimentScore(
+                ticker=ticker,
+                date=headline.date or date.today(),
+                source=headline.source,
+                headline=headline.title,
+                sentiment=result.sentiment,
+                confidence=result.confidence,
+                reasoning=result.reasoning,
+                raw_response=raw_response,
+            ))
+
+        if rows:
+            db.add_all(rows)
+            db.commit()
 
         # Compute composite score (confidence-weighted average)
         composite = _weighted_average(scores) if scores else None
@@ -118,10 +153,15 @@ class SentimentAnalyzer:
         }
 
     async def _analyze_headline(
-        self, ticker: str, headline: Headline, db: Session | None = None
-    ) -> SentimentResult | None:
-        """Analyze a single headline with Ollama and store the result."""
-        db = db or self.db
+        self, ticker: str, headline: Headline
+    ) -> tuple[SentimentResult | None, str]:
+        """Score a single headline with Ollama. Pure — no DB writes.
+
+        Returns (parsed result or None, raw Ollama response). The caller
+        batches DB inserts so we open one transaction per ticker instead of
+        one per headline (per-headline commits serialized analyze_ticker even
+        though Ollama calls are now async).
+        """
         prompt = SENTIMENT_PROMPT.format(ticker=ticker, headline=headline.title)
 
         raw_response = await self.ollama.generate(prompt)
@@ -140,23 +180,9 @@ class SentimentAnalyzer:
             result = _fallback_parse(raw_response)
             if result is None:
                 logger.warning(f"Could not parse sentiment for: {headline.title[:60]}")
-                return None
+                return None, raw_response
 
-        # Store in DB
-        score = SentimentScore(
-            ticker=ticker,
-            date=headline.date or date.today(),
-            source=headline.source,
-            headline=headline.title,
-            sentiment=result.sentiment,
-            confidence=result.confidence,
-            reasoning=result.reasoning,
-            raw_response=raw_response,
-        )
-        db.add(score)
-        db.commit()
-
-        return result
+        return result, raw_response
 
     async def analyze_all(
         self, tickers: list[str] | None = None, concurrency: int = 3
