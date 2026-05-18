@@ -67,6 +67,20 @@ class Settings(BaseSettings):
     # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
     min_dir_prob_lift: float = 1.3
     recommendations_top_k: int = 10  # max recs emitted PER DIRECTION (drop/rise); 10 → up to 20 total
+    # Spread-vs-options routing in SpreadBuilder. The legacy gates
+    # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
+    # directional model emitted uncalibrated probs and dir_prob could swing
+    # 0.0-0.9. Post sigmoid calibration drop_prob clusters at base rate 0.05
+    # (range ~0.04-0.10) and rise_prob at base rate 0.175 (range ~0.18-0.27),
+    # so the absolute gates were structurally unreachable — 0 bull_spreads
+    # ever emitted, and bear spreads only emitted via the unrelated
+    # `vol_signal > 0.6 + dir_signal < 0.4` iron-condor branch.
+    # Replacement: per-direction *relative* lift thresholds + a calibrated
+    # composite-score floor that matches the actual production score range.
+    drop_base_rate: float = 0.05  # vol-normalized drop label (v7) pos_rate
+    # rise_base_rate reuses `directional_base_rate` above (0.175).
+    spread_directional_lift: float = 1.3  # multiplier on direction base-rate
+    spread_min_score: float = 0.30  # composite-score fallback, calibrated to today's range
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

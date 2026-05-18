@@ -77,7 +77,22 @@ class PositionSizer:
     """Calculate position sizes within the $1,000 budget constraint."""
 
     def __init__(self, max_position: float | None = None):
-        self.max_position = max_position or get_settings().max_position_size
+        settings = get_settings()
+        self.max_position = max_position or settings.max_position_size
+        self._drop_base_rate = settings.drop_base_rate
+        self._rise_base_rate = settings.directional_base_rate
+        self._spread_directional_lift = settings.spread_directional_lift
+        self._spread_min_score = settings.spread_min_score
+
+    def _make_spread_builder(self):
+        from src.models.options_strategies import SpreadBuilder
+        return SpreadBuilder(
+            max_position=self.max_position,
+            drop_base_rate=self._drop_base_rate,
+            rise_base_rate=self._rise_base_rate,
+            directional_lift=self._spread_directional_lift,
+            min_score=self._spread_min_score,
+        )
 
     def size_short(
         self,
@@ -250,9 +265,7 @@ class PositionSizer:
 
         Returns a SpreadRecommendation or None.
         """
-        from src.models.options_strategies import SpreadBuilder
-
-        builder = SpreadBuilder(max_position=self.max_position)
+        builder = self._make_spread_builder()
         return builder.suggest_spread(
             score, current_price, implied_vol, expiry_days, chain_data=chain_data,
         )
@@ -269,9 +282,7 @@ class PositionSizer:
 
         Returns a SpreadRecommendation with direction="long" or None.
         """
-        from src.models.options_strategies import SpreadBuilder
-
-        builder = SpreadBuilder(max_position=self.max_position)
+        builder = self._make_spread_builder()
         return builder.suggest_bull_spread(
             score, current_price, implied_vol, expiry_days, chain_data=chain_data,
         )

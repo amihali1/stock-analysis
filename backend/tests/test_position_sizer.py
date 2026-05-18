@@ -316,8 +316,14 @@ class TestSizeBullSpread:
         assert rec.net_credit < 0
 
     def test_low_score_returns_none(self, sizer):
-        """Weak directional + sub-0.5 score → no bull spread suggested."""
-        score = EnsembleScore(ticker="X", score=0.3, directional_signal=0.4, volatility_signal=0.3, sentiment_signal=0.5)
+        """Sub-floor directional AND sub-floor score → no bull spread.
+        Post-sigmoid calibration rise_prob clusters at base 0.175 (range
+        ~0.18-0.27); the lift floor (base × 1.3 = 0.228) plus the calibrated
+        score floor (default 0.30) are what now suppress weak picks."""
+        score = EnsembleScore(
+            ticker="X", score=0.20, directional_signal=0.18,
+            volatility_signal=0.3, sentiment_signal=0.5,
+        )
         assert sizer.size_bull_spread(score, current_price=100.0) is None
 
     def test_bull_put_credit_max_loss_within_budget(self, sizer):

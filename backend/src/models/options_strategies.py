@@ -52,8 +52,30 @@ class SpreadRecommendation(BaseModel):
 class SpreadBuilder:
     """Build defined-risk options spread strategies from ensemble signals."""
 
-    def __init__(self, max_position: float = 1000.0):
+    def __init__(
+        self,
+        max_position: float = 1000.0,
+        drop_base_rate: float = 0.05,
+        rise_base_rate: float = 0.175,
+        directional_lift: float = 1.3,
+        min_score: float = 0.30,
+    ):
+        # Direction-aware lift gates replaced the legacy absolute
+        # `directional_signal > 0.6` threshold (unreachable under sigmoid
+        # calibration). See config.spread_* for rationale.
         self.max_position = max_position
+        self.drop_base_rate = drop_base_rate
+        self.rise_base_rate = rise_base_rate
+        self.directional_lift = directional_lift
+        self.min_score = min_score
+
+    @property
+    def _drop_lift_floor(self) -> float:
+        return self.drop_base_rate * self.directional_lift
+
+    @property
+    def _rise_lift_floor(self) -> float:
+        return self.rise_base_rate * self.directional_lift
 
     def suggest_spread(
         self,
@@ -85,14 +107,22 @@ class SpreadBuilder:
             if 0 < days_to_earnings < expiry_days:
                 earnings_warning = True
 
-        # Choose strategy based on signals
-        if score.directional_signal > 0.6 and score.volatility_signal < 0.5:
+        # Bear-spread routing uses drop-side calibrated probability scale.
+        # `_drop_lift_floor` defaults to ~0.065 (drop base 0.05 × lift 1.3).
+        # Iron condor stays gated on "low directional + high vol" — direction
+        # is below the lift floor (genuinely no edge), not below 0.4 absolute.
+        high_dir = score.directional_signal > self._drop_lift_floor
+        low_dir = score.directional_signal < self._drop_lift_floor
+        high_vol = score.volatility_signal >= 0.5
+        very_high_vol = score.volatility_signal > 0.6
+
+        if high_dir and not high_vol:
             return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.directional_signal > 0.6 and score.volatility_signal >= 0.5:
+        elif high_dir and high_vol:
             return self._bear_put_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.volatility_signal > 0.6 and score.directional_signal < 0.4:
+        elif very_high_vol and low_dir:
             return self._iron_condor(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.score >= 0.5:
+        elif score.score >= self.min_score:
             return self._bear_call_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
 
         return None
@@ -372,11 +402,16 @@ class SpreadBuilder:
             if 0 < days_to_earnings < expiry_days:
                 earnings_warning = True
 
-        if score.directional_signal > 0.6 and score.volatility_signal < 0.5:
+        # Bull-spread routing uses rise-side calibrated probability scale.
+        # `_rise_lift_floor` defaults to ~0.228 (rise base 0.175 × lift 1.3).
+        high_dir = score.directional_signal > self._rise_lift_floor
+        high_vol = score.volatility_signal >= 0.5
+
+        if high_dir and not high_vol:
             return self._bull_put_credit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.directional_signal > 0.6 and score.volatility_signal >= 0.5:
+        elif high_dir and high_vol:
             return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.score >= 0.5:
+        elif score.score >= self.min_score:
             return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
 
         return None

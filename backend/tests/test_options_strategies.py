@@ -45,9 +45,11 @@ class TestSpreadBuilder:
         assert result.net_credit < 0  # Debit spread
 
     def test_iron_condor_high_vol_low_dir(self):
-        """High vol + neutral direction should suggest iron condor."""
+        """High vol + neutral direction should suggest iron condor.
+        `directional=0.04` is below the calibrated drop lift floor
+        (base 0.05 × 1.3 = 0.065), so this counts as "no directional edge"."""
         builder = SpreadBuilder(max_position=1000)
-        score = _make_score(directional=0.3, volatility=0.8, score=0.6)
+        score = _make_score(directional=0.04, volatility=0.8, score=0.6)
         result = builder.suggest_spread(score, current_price=150.0)
 
         assert result is not None
@@ -109,10 +111,82 @@ class TestSpreadBuilder:
             assert hasattr(result, 'vega_exposure')
 
     def test_low_score_returns_none(self):
-        """Very low score should not produce a spread."""
+        """Below-floor directional, vol, AND score → no spread.
+        directional=0.04 is below drop lift floor 0.065; score=0.2 below
+        min_score default 0.30."""
         builder = SpreadBuilder()
-        score = _make_score(score=0.2, directional=0.2, volatility=0.2, sentiment=0.2)
+        score = _make_score(score=0.2, directional=0.04, volatility=0.2, sentiment=0.2)
         result = builder.suggest_spread(score, current_price=150.0)
+        assert result is None
+
+
+class TestCalibratedThresholds:
+    """Spread thresholds must fire on realistic post-sigmoid-calibration
+    probabilities. The legacy `directional_signal > 0.6` / `score >= 0.5`
+    gates were unreachable — drop_prob clusters at ~0.05 base rate (range
+    0.04-0.10), rise_prob at ~0.175 (range 0.18-0.27). These tests lock
+    the lift-based gates so a future re-introduction of absolute floors
+    fails loudly."""
+
+    def test_bear_spread_fires_at_calibrated_drop_prob(self):
+        """drop_prob ~0.07 (1.4× base 0.05) and score 0.32 should fire
+        a bear call spread — typical production short pick under v7 model."""
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.07, volatility=0.3, score=0.32)
+        result = builder.suggest_spread(score, current_price=150.0)
+        assert result is not None
+        assert result.strategy_name == "bear_call_spread"
+
+    def test_bear_spread_falls_through_below_lift(self):
+        """drop_prob 0.04 (below base × 1.3 = 0.065) AND score below
+        min_score floor — no spread."""
+        builder = SpreadBuilder(max_position=1000, min_score=0.30)
+        score = _make_score(directional=0.04, volatility=0.3, score=0.20)
+        result = builder.suggest_spread(score, current_price=150.0)
+        assert result is None
+
+    def test_bear_spread_score_floor_catches_borderline(self):
+        """Low dir_prob but composite score >= min_score still routes to
+        bear_call_spread — the score floor exists for exactly this case
+        (vol or sentiment carrying the conviction)."""
+        builder = SpreadBuilder(max_position=1000, min_score=0.30)
+        score = _make_score(directional=0.04, volatility=0.6, score=0.40)
+        result = builder.suggest_spread(score, current_price=150.0)
+        assert result is not None
+        # Could be iron_condor (vol > 0.6, dir below lift) — both acceptable
+        assert result.strategy_name in ("bear_call_spread", "iron_condor")
+
+    def test_bull_spread_fires_at_calibrated_rise_prob(self):
+        """rise_prob ~0.24 (1.4× base 0.175) with score 0.40 should fire
+        a bull put credit spread — typical production long pick."""
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.24, volatility=0.3, score=0.40)
+        result = builder.suggest_bull_spread(score, current_price=150.0)
+        assert result is not None
+        assert result.strategy_name == "bull_put_credit_spread"
+
+    def test_bull_spread_falls_through_below_lift_and_score(self):
+        """rise_prob 0.18 (below base × 1.3 = 0.228) AND score below
+        min_score — no spread, caller will route to call_options."""
+        builder = SpreadBuilder(max_position=1000, min_score=0.30)
+        score = _make_score(directional=0.18, volatility=0.3, score=0.25)
+        result = builder.suggest_bull_spread(score, current_price=150.0)
+        assert result is None
+
+    def test_bull_spread_score_floor_catches_borderline(self):
+        """Low rise_prob but score crosses min_score → bull_call_debit_spread."""
+        builder = SpreadBuilder(max_position=1000, min_score=0.30)
+        score = _make_score(directional=0.20, volatility=0.4, score=0.35)
+        result = builder.suggest_bull_spread(score, current_price=150.0)
+        assert result is not None
+        assert result.strategy_name == "bull_call_debit_spread"
+
+    def test_custom_lift_multiplier(self):
+        """A higher lift multiplier (stricter) suppresses borderline picks."""
+        strict = SpreadBuilder(max_position=1000, directional_lift=2.0, min_score=0.99)
+        # rise_prob 0.24 was previously above 1.3× base; with 2.0× it must be > 0.35
+        score = _make_score(directional=0.24, volatility=0.3, score=0.50)
+        result = strict.suggest_bull_spread(score, current_price=150.0)
         assert result is None
 
 
@@ -165,8 +239,8 @@ class TestSpreadRiskType:
         if result_bp:
             assert result_bp.risk_type == "defined"
 
-        # Iron condor (low dir, high vol)
-        score_ic = _make_score(directional=0.3, volatility=0.8, score=0.6)
+        # Iron condor (low dir, high vol) — directional below calibrated floor
+        score_ic = _make_score(directional=0.04, volatility=0.8, score=0.6)
         result_ic = builder.suggest_spread(score_ic, current_price=150.0)
         if result_ic:
             assert result_ic.risk_type == "defined"
