@@ -299,7 +299,8 @@ def job_generate_recommendations():
         bear_recs = 0
         bull_recs = 0
         capital_used = 0.0
-        capital_capped = 0
+        bear_capped = 0
+        bull_capped = 0
         capital_cap = settings.daily_capital_cap
         candidates: list[Candidate] = []
 
@@ -486,7 +487,7 @@ def job_generate_recommendations():
                         )
                         cost = _rec_capital_cost(rec)
                         if capital_used + cost > capital_cap:
-                            capital_capped += 1
+                            bull_capped += 1
                             continue
                         db.add(rec)
                         capital_used += cost
@@ -516,7 +517,7 @@ def job_generate_recommendations():
                         )
                         cost = _rec_capital_cost(rec)
                         if capital_used + cost > capital_cap:
-                            capital_capped += 1
+                            bull_capped += 1
                             continue
                         db.add(rec)
                         capital_used += cost
@@ -543,7 +544,7 @@ def job_generate_recommendations():
                         )
                         cost = _rec_capital_cost(rec)
                         if capital_used + cost > capital_cap:
-                            capital_capped += 1
+                            bull_capped += 1
                             continue
                         db.add(rec)
                         capital_used += cost
@@ -580,7 +581,7 @@ def job_generate_recommendations():
                     )
                     cost = _rec_capital_cost(rec)
                     if capital_used + cost > capital_cap:
-                        capital_capped += 1
+                        bear_capped += 1
                         continue
                     db.add(rec)
                     capital_used += cost
@@ -610,7 +611,7 @@ def job_generate_recommendations():
                     )
                     cost = _rec_capital_cost(rec)
                     if capital_used + cost > capital_cap:
-                        capital_capped += 1
+                        bear_capped += 1
                         continue
                     db.add(rec)
                     capital_used += cost
@@ -638,7 +639,7 @@ def job_generate_recommendations():
                     )
                     cost = _rec_capital_cost(rec)
                     if capital_used + cost > capital_cap:
-                        capital_capped += 1
+                        bear_capped += 1
                         continue
                     db.add(rec)
                     capital_used += cost
@@ -672,13 +673,13 @@ def job_generate_recommendations():
             "bear sizers: %d spread / %d options / %d short, "
             "bull sizers: %d bull_spread / %d call / %d long, "
             "%d no_sizer_match, "
-            "capital: $%.0f used / $%.0f cap, %d capped",
+            "capital: $%.0f used / $%.0f cap, %d capped (%db/%dB)",
             count, bear_recs, bull_recs, len(watchlist), len(candidates),
             no_indicator, no_price, len(selected),
             spread_recs, options_recs, short_recs,
             bull_spread_recs, call_options_recs, long_recs,
             no_sizer_match,
-            capital_used, capital_cap, capital_capped,
+            capital_used, capital_cap, bear_capped + bull_capped, bear_capped, bull_capped,
         )
         _record_run(
             "recommendations",
@@ -688,7 +689,8 @@ def job_generate_recommendations():
             f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
             f"{no_sizer_match} none, "
-            f"cap: ${capital_used:.0f}/${capital_cap:.0f}, {capital_capped} capped)",
+            f"cap: ${capital_used:.0f}/${capital_cap:.0f}, "
+            f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B])",
         )
 
     except Exception:
