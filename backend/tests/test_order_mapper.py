@@ -138,6 +138,61 @@ class TestLongMapping:
         assert result is not None
         assert result.is_bracket is False
 
+    def test_long_unaffordable_without_fractional_returns_none(self):
+        """Default (fractional off): when entry > per-trade cap, no order.
+        Locks in the legacy whole-share-only behavior."""
+        mapper = OrderMapper(max_position=250)
+        mapper.enable_fractional = False
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="long", entry_price=400.0,
+            stop_loss=380.0, target_price=440.0, position_size=250.0,
+        )
+        assert result is None
+
+    def test_long_fractional_emits_market_order_no_bracket(self):
+        """With fractional on, a $400 stock at $250 cap sizes ~0.625 shares.
+        Alpaca only supports fractional as market without brackets — stop/target
+        must be stripped to avoid silent API rejection."""
+        mapper = OrderMapper(max_position=250)
+        mapper.enable_fractional = True
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="long", entry_price=400.0,
+            stop_loss=380.0, target_price=440.0, position_size=250.0,
+        )
+        assert result is not None
+        assert 0 < result.qty < 1
+        assert result.order_type == "market"
+        assert result.limit_price is None
+        assert result.stop_loss_price is None
+        assert result.take_profit_price is None
+        assert result.is_bracket is False
+        assert result.qty * 400.0 <= 250.0
+
+    def test_long_fractional_below_one_dollar_returns_none(self):
+        """Alpaca enforces a $1 notional minimum on fractional orders."""
+        mapper = OrderMapper(max_position=0.5)
+        mapper.enable_fractional = True
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="long", entry_price=400.0,
+            stop_loss=None, target_price=None, position_size=0.5,
+        )
+        assert result is None
+
+    def test_long_whole_shares_unchanged_when_fractional_on(self):
+        """Fractional setting should NOT change behavior for normal whole-share
+        sizing — bracket order with limit price must still be emitted."""
+        mapper = OrderMapper(max_position=1000)
+        mapper.enable_fractional = True
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="long", entry_price=150.0,
+            stop_loss=142.5, target_price=165.0, position_size=1000.0,
+        )
+        assert result is not None
+        assert result.qty >= 1
+        assert isinstance(result.qty, int)
+        assert result.order_type == "limit"
+        assert result.is_bracket is True
+
 
 class TestCallOptionsMapping:
     def test_basic_call_options(self):

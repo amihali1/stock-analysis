@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # spread/option setups on expensive tickers, where the sizer might have
     # succeeded; acceptable trade-off when top-K slots are scarce.
     max_ticker_price: float = 0.0
+    # Enable fractional-share orders for long stock when whole-share qty
+    # rounds down to 0 (price > per-trade cap). Alpaca supports fractional
+    # for long positions only, and ONLY as market orders without brackets —
+    # so stop-loss/take-profit are dropped and execution becomes market-on-
+    # submit. Default off. Turn on for $1k live so a $400 stock at $250/trade
+    # can still be sized at ~0.6 shares. Min notional $1 (Alpaca constraint).
+    enable_fractional_shares: bool = False
     min_confidence: float = 0.75  # Deprecated — kept for back-compat; see min_directional_lift / min_sentiment_confidence below
 
     # Alpaca

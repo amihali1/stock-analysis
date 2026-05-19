@@ -30,7 +30,9 @@ class OrderMapper:
     """Translate recommendations into Alpaca order params."""
 
     def __init__(self, max_position: float | None = None):
-        self.max_position = max_position or get_settings().effective_per_trade_cap
+        settings = get_settings()
+        self.max_position = max_position or settings.effective_per_trade_cap
+        self.enable_fractional = settings.enable_fractional_shares
 
     def recommendation_to_order(
         self,
@@ -144,8 +146,37 @@ class OrderMapper:
 
         size = min(position_size or self.max_position, self.max_position)
         shares = int(size / entry_price)
+
+        # Fractional fallback: only when whole-share floor is 0 AND the
+        # setting is on. Alpaca only supports fractional as market orders
+        # without brackets — limit/stop/target are silently dropped at the
+        # API layer if we send them with a non-integer qty, so we strip them
+        # here. Stays opt-in so paper mode keeps its bracket protections.
         if shares < 1:
-            return None
+            if not self.enable_fractional:
+                return None
+            qty = round(size / entry_price, 4)
+            notional = qty * entry_price
+            if notional < 1.0:  # Alpaca fractional minimum
+                return None
+            if buying_power is not None and notional > buying_power:
+                logger.warning(
+                    f"Insufficient buying power for {ticker} long (fractional): "
+                    f"need ${notional:.2f}, have ${buying_power:.0f}"
+                )
+                return None
+            return AlpacaOrderParams(
+                ticker=ticker,
+                qty=qty,
+                side="buy",
+                order_type="market",
+                limit_price=None,
+                stop_loss_price=None,
+                take_profit_price=None,
+                is_bracket=False,
+                strategy="long",
+                dry_run=dry_run,
+            )
 
         actual_size = shares * entry_price
         if buying_power is not None and actual_size > buying_power:
