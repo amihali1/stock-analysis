@@ -224,6 +224,14 @@ def test_daily_capital_cap_default_is_5000():
     assert get_settings().daily_capital_cap == 5000.0
 
 
+def test_max_ticker_price_default_off():
+    """Default disables the watchlist price filter — paper mode at $5k/$1k
+    per-trade can afford most names, and the filter sacrifices spread setups
+    on expensive tickers. Live $1k mode opts in by setting it explicitly."""
+    from src.config import get_settings
+    assert get_settings().max_ticker_price == 0.0
+
+
 def test_sentiment_upsert_failure_does_not_drop_batch(clean_scheduler, monkeypatch):
     """A single ticker's sentiment upsert blowing up must not silently drop the
     remaining tickers in the batch. Regression target: prior to this fix the

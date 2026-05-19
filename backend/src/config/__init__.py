@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # kicks in. Capital consumed per rec is `max(position_size, max_loss)` so
     # credit spreads count collateral (max_loss), not credit received.
     daily_capital_cap: float = 5000.0
+    # Drop watchlist tickers whose latest close > this threshold BEFORE running
+    # ML. Default 0.0 = disabled. At $250/trade, a $500 stock can't fit a long
+    # share or short (with 1.5x margin), so its ranked slot is wasted on a
+    # no-sizer-match. Live $1k mode should set this near `effective_per_trade_cap`
+    # (e.g. 250) — paper mode leaves it off. Caveat: blanket skip also drops
+    # spread/option setups on expensive tickers, where the sizer might have
+    # succeeded; acceptable trade-off when top-K slots are scarce.
+    max_ticker_price: float = 0.0
     min_confidence: float = 0.75  # Deprecated — kept for back-compat; see min_directional_lift / min_sentiment_confidence below
 
     # Alpaca

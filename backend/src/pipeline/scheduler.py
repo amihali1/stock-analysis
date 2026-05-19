@@ -324,6 +324,7 @@ def job_generate_recommendations():
         capital_used = 0.0
         bear_capped = 0
         bull_capped = 0
+        too_expensive = 0
         capital_cap = settings.daily_capital_cap
         open_capital = _open_position_capital(db)
         available_cap = max(0.0, capital_cap - open_capital)
@@ -353,6 +354,12 @@ def job_generate_recommendations():
                 )
                 if not price or not price.close:
                     no_price += 1
+                    continue
+
+                # Drop unaffordable tickers before ML (saves top-K slots).
+                # See config.max_ticker_price for trade-off rationale.
+                if settings.max_ticker_price > 0 and price.close > settings.max_ticker_price:
+                    too_expensive += 1
                     continue
 
                 # Lagged returns mirror training (directional.py: close.pct_change(N)).
@@ -694,6 +701,7 @@ def job_generate_recommendations():
             "Scheduler: recommendations complete — %d new (%d bear / %d bull), "
             "%d watchlist, %d candidates evaluated (dual-direction), "
             "%d skipped (no indicator), %d skipped (no price), "
+            "%d skipped (too expensive), "
             "top_k=%d selected, "
             "bear sizers: %d spread / %d options / %d short, "
             "bull sizers: %d bull_spread / %d call / %d long, "
@@ -701,7 +709,7 @@ def job_generate_recommendations():
             "capital: $%.0f used / $%.0f avail (open $%.0f, cap $%.0f), "
             "%d capped (%db/%dB)",
             count, bear_recs, bull_recs, len(watchlist), len(candidates),
-            no_indicator, no_price, len(selected),
+            no_indicator, no_price, too_expensive, len(selected),
             spread_recs, options_recs, short_recs,
             bull_spread_recs, call_options_recs, long_recs,
             no_sizer_match,
@@ -713,6 +721,7 @@ def job_generate_recommendations():
             f"ok ({count} recs [{bear_recs}b/{bull_recs}B], "
             f"{len(candidates)}/{len(watchlist)*2} candidates, "
             f"{no_indicator} no_ind, {no_price} no_price, "
+            f"{too_expensive} too_exp, "
             f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
             f"{no_sizer_match} none, "
