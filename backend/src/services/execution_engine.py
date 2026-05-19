@@ -108,6 +108,7 @@ class ExecutionEngine:
             contracts=rec.contracts,
             strike=rec.strike,
             option_type=rec.option_type,
+            expiry=rec.expiry,
             buying_power=buying_power,
         )
 
@@ -124,11 +125,16 @@ class ExecutionEngine:
                 "status": "blocked", "reason": rail_reason,
             }
 
+        # For option contracts, Alpaca needs the OCC symbol (e.g.
+        # AAPL250418P00150000), not the equity ticker. Mapper sets occ_symbol
+        # on single-leg option params; fall back to ticker for stock orders.
+        submit_symbol = order_params.occ_symbol or order_params.ticker
+
         # Submit to Alpaca
         try:
             if order_params.is_bracket:
                 result = self.alpaca.submit_bracket_order(
-                    ticker=order_params.ticker,
+                    ticker=submit_symbol,
                     qty=order_params.qty,
                     side=order_params.side,
                     limit_price=order_params.limit_price,
@@ -138,7 +144,7 @@ class ExecutionEngine:
                 )
             else:
                 result = self.alpaca.submit_order(
-                    ticker=order_params.ticker,
+                    ticker=submit_symbol,
                     qty=order_params.qty,
                     side=order_params.side,
                     order_type=order_params.order_type,

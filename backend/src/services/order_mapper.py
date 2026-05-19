@@ -4,10 +4,32 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def build_occ_symbol(ticker: str, expiry: date, option_type: str, strike: float) -> str:
+    """Build an OCC option symbol.
+
+    Format: ROOT + YYMMDD + C/P + 8-digit strike-times-1000.
+    e.g. AAPL 2025-04-18 put strike $150 -> "AAPL250418P00150000".
+    """
+    if not ticker:
+        raise ValueError("ticker required")
+    if strike <= 0:
+        raise ValueError(f"strike must be positive, got {strike}")
+    side = option_type.strip().lower()
+    if side in ("c", "call"):
+        code = "C"
+    elif side in ("p", "put"):
+        code = "P"
+    else:
+        raise ValueError(f"option_type must be call|put, got {option_type!r}")
+    strike_int = int(round(strike * 1000))
+    return f"{ticker.upper()}{expiry.strftime('%y%m%d')}{code}{strike_int:08d}"
 
 
 @dataclass
@@ -24,6 +46,7 @@ class AlpacaOrderParams:
     is_bracket: bool = False
     strategy: str = ""
     dry_run: bool = False
+    occ_symbol: str | None = None
 
 
 class OrderMapper:
@@ -45,6 +68,7 @@ class OrderMapper:
         contracts: int | None = None,
         strike: float | None = None,
         option_type: str | None = None,
+        expiry: date | None = None,
         buying_power: float | None = None,
         dry_run: bool = False,
     ) -> AlpacaOrderParams | None:
@@ -65,13 +89,13 @@ class OrderMapper:
         elif strategy == "options":
             return self._map_options(
                 ticker, entry_price, position_size, contracts,
-                strike, option_type or "put", buying_power, dry_run,
+                strike, option_type or "put", expiry, buying_power, dry_run,
                 strategy_label="options",
             )
         elif strategy == "call_options":
             return self._map_call_options(
                 ticker, entry_price, position_size, contracts,
-                strike, buying_power, dry_run,
+                strike, expiry, buying_power, dry_run,
             )
         elif strategy == "spread":
             return self._map_spread(
@@ -207,17 +231,31 @@ class OrderMapper:
         contracts: int | None,
         strike: float | None,
         option_type: str | None,
+        expiry: date | None,
         buying_power: float | None,
         dry_run: bool,
         strategy_label: str = "options",
     ) -> AlpacaOrderParams | None:
-        """Map an options recommendation to a single-leg order.
+        """Map a single-leg options recommendation to an Alpaca order.
 
-        Note: Alpaca options require the OCC symbol format (e.g. AAPL250418P00150000).
-        This mapper builds the equity-based params; the execution engine handles
-        OCC symbol construction when options trading is available.
+        When `expiry`, `strike`, and `option_type` are all present, builds the
+        OCC symbol on params; downstream Alpaca submission keys off occ_symbol
+        for option contracts. Without expiry/strike, returns None — research-
+        only recs (no chain selection) can't be routed.
         """
         if not contracts or contracts < 1:
+            return None
+        if expiry is None or strike is None or not option_type:
+            logger.warning(
+                f"Cannot route {ticker} {strategy_label}: missing expiry/strike/option_type "
+                f"(expiry={expiry}, strike={strike}, option_type={option_type})"
+            )
+            return None
+
+        try:
+            occ = build_occ_symbol(ticker, expiry, option_type, strike)
+        except ValueError as e:
+            logger.warning(f"OCC symbol build failed for {ticker} {strategy_label}: {e}")
             return None
 
         # Estimate premium cost
@@ -240,6 +278,7 @@ class OrderMapper:
             limit_price=round(premium_per_share, 2),
             strategy=strategy_label,
             dry_run=dry_run,
+            occ_symbol=occ,
         )
 
     def _map_call_options(
@@ -249,17 +288,17 @@ class OrderMapper:
         position_size: float | None,
         contracts: int | None,
         strike: float | None,
+        expiry: date | None,
         buying_power: float | None,
         dry_run: bool,
     ) -> AlpacaOrderParams | None:
         """Map a long-call recommendation to a single-leg buy order.
 
         Same shape as `_map_options` for puts — buying premium for an OTM call.
-        Execution-engine OCC construction is needed for real submission.
         """
         return self._map_options(
             ticker, entry_price, position_size, contracts,
-            strike, "call", buying_power, dry_run,
+            strike, "call", expiry, buying_power, dry_run,
             strategy_label="call_options",
         )
 

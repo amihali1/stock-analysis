@@ -1,6 +1,10 @@
 """Tests for OrderMapper."""
 
-from src.services.order_mapper import OrderMapper
+from datetime import date
+
+import pytest
+
+from src.services.order_mapper import OrderMapper, build_occ_symbol
 
 
 class TestShortMapping:
@@ -62,11 +66,13 @@ class TestOptionsMapping:
             ticker="AAPL", strategy="options", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=2000.0,
             contracts=3, strike=145.0, option_type="put",
+            expiry=date(2025, 4, 18),
         )
         assert result is not None
         assert result.side == "buy"
         assert result.strategy == "options"
         assert result.qty == 3
+        assert result.occ_symbol == "AAPL250418P00145000"
 
     def test_options_no_contracts(self):
         mapper = OrderMapper(max_position=1000)
@@ -82,7 +88,29 @@ class TestOptionsMapping:
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="options", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=2000.0,
-            contracts=3, buying_power=10.0,
+            contracts=3, strike=145.0, option_type="put",
+            expiry=date(2025, 4, 18), buying_power=10.0,
+        )
+        assert result is None
+
+    def test_options_missing_expiry_returns_none(self):
+        """Without expiry the mapper can't build OCC — must reject so we never
+        ship an equity-shaped order to Alpaca for an option rec."""
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="options", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=2000.0,
+            contracts=3, strike=145.0, option_type="put",
+        )
+        assert result is None
+
+    def test_options_missing_strike_returns_none(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="options", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=2000.0,
+            contracts=3, strike=None, option_type="put",
+            expiry=date(2025, 4, 18),
         )
         assert result is None
 
@@ -201,11 +229,13 @@ class TestCallOptionsMapping:
             ticker="AAPL", strategy="call_options", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=500.0,
             contracts=2, strike=157.5, option_type="call",
+            expiry=date(2025, 4, 18),
         )
         assert result is not None
         assert result.side == "buy"
         assert result.strategy == "call_options"
         assert result.qty == 2
+        assert result.occ_symbol == "AAPL250418C00157500"
 
     def test_call_options_no_contracts(self):
         mapper = OrderMapper(max_position=1000)
@@ -221,9 +251,58 @@ class TestCallOptionsMapping:
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="call_options", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=500.0,
-            contracts=2, buying_power=5.0,
+            contracts=2, strike=157.5, option_type="call",
+            expiry=date(2025, 4, 18), buying_power=5.0,
         )
         assert result is None
+
+    def test_call_options_missing_expiry_returns_none(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="call_options", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=500.0,
+            contracts=2, strike=157.5, option_type="call",
+        )
+        assert result is None
+
+
+class TestBuildOccSymbol:
+    """OCC option symbol format: ROOT + YYMMDD + C/P + 8-digit strike*1000."""
+
+    def test_put_strike_whole_number(self):
+        assert build_occ_symbol("AAPL", date(2025, 4, 18), "put", 150.0) == "AAPL250418P00150000"
+
+    def test_call_strike_with_decimal(self):
+        assert build_occ_symbol("AAPL", date(2025, 4, 18), "call", 157.5) == "AAPL250418C00157500"
+
+    def test_ticker_uppercased(self):
+        assert build_occ_symbol("aapl", date(2025, 4, 18), "p", 150.0) == "AAPL250418P00150000"
+
+    def test_option_type_short_form(self):
+        assert build_occ_symbol("AAPL", date(2025, 4, 18), "C", 150.0) == "AAPL250418C00150000"
+
+    def test_high_strike_pads_correctly(self):
+        # NVDA at $1200 strike — still fits 8 digits ($99,999.999 max)
+        assert build_occ_symbol("NVDA", date(2026, 1, 16), "call", 1200.0) == "NVDA260116C01200000"
+
+    def test_low_strike_pads_correctly(self):
+        assert build_occ_symbol("F", date(2025, 6, 20), "put", 12.5) == "F250620P00012500"
+
+    def test_fractional_strike_rounds(self):
+        # Sub-cent strike rounds — 100.005 -> 100005 milli-dollars
+        assert build_occ_symbol("AAPL", date(2025, 4, 18), "call", 100.005) == "AAPL250418C00100005"
+
+    def test_invalid_option_type_raises(self):
+        with pytest.raises(ValueError):
+            build_occ_symbol("AAPL", date(2025, 4, 18), "straddle", 150.0)
+
+    def test_zero_strike_raises(self):
+        with pytest.raises(ValueError):
+            build_occ_symbol("AAPL", date(2025, 4, 18), "put", 0)
+
+    def test_empty_ticker_raises(self):
+        with pytest.raises(ValueError):
+            build_occ_symbol("", date(2025, 4, 18), "put", 150.0)
 
 
 class TestBullSpreadMapping:

@@ -284,7 +284,7 @@ def job_generate_recommendations():
         from src.models.ensemble import Ensemble, SignalInputs
         from src.models.position_sizer import PositionSizer
         from src.pipeline.rec_ranker import Candidate, select_candidates
-        from datetime import date
+        from datetime import date, timedelta
         from sqlalchemy import func
 
         settings = get_settings()
@@ -545,6 +545,7 @@ def job_generate_recommendations():
                             contracts=call_rec.contracts,
                             strike=call_rec.strike,
                             option_type=call_rec.option_type,
+                            expiry=today + timedelta(days=call_rec.expiry_days),
                             risk_type="defined",
                         )
                         cost = _rec_capital_cost(rec)
@@ -639,6 +640,7 @@ def job_generate_recommendations():
                         contracts=options_rec.contracts,
                         strike=options_rec.strike,
                         option_type=options_rec.option_type,
+                        expiry=today + timedelta(days=options_rec.expiry_days),
                         risk_type="defined",
                     )
                     cost = _rec_capital_cost(rec)
