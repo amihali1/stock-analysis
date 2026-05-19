@@ -73,6 +73,24 @@ class TestSpreadBuilder:
         if result:
             assert result.max_loss <= 1000 * 1.5  # Some tolerance for rounding
 
+    def test_returns_none_when_single_contract_busts_cap(self):
+        """A $5-wide spread on a $400 underlying has max_loss/contract ≈ $350.
+        At max_position=$50 the legacy `max(1, int(...))` floor emitted 1
+        contract anyway, busting the cap downstream. New behavior: return None
+        so the top-K slot doesn't get wasted on a recommendation safety_rails
+        will reject."""
+        builder = SpreadBuilder(max_position=50)
+        score = _make_score(directional=0.8, volatility=0.3, score=0.9)
+        result = builder.suggest_spread(score, current_price=400.0)
+        assert result is None
+
+    def test_bull_spread_returns_none_when_single_contract_busts_cap(self):
+        """Same as above for the bull-side debit spread path."""
+        builder = SpreadBuilder(max_position=50)
+        score = _make_score(directional=0.5, volatility=0.3, score=0.9)
+        result = builder.suggest_bull_spread(score, current_price=400.0)
+        assert result is None
+
     def test_earnings_warning(self):
         """Should flag when expiry crosses earnings date."""
         builder = SpreadBuilder()

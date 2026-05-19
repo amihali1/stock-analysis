@@ -199,7 +199,12 @@ class SpreadBuilder:
 
         confidence_scale = min(score.score * 2, 1.0)
         effective_max = self.max_position * confidence_scale
-        contracts = max(1, int(effective_max / max_loss_per_contract))
+        # Floor at 1 contract is rejected when single-contract max_loss exceeds
+        # the per-trade cap — emitting a busted recommendation just wastes a
+        # top-K slot and gets blocked downstream by safety_rails. Drop instead.
+        contracts = int(effective_max / max_loss_per_contract)
+        if contracts < 1:
+            return None
 
         net_credit = net_credit_per_share * 100 * contracts
         max_loss = max_loss_per_contract * contracts
@@ -269,7 +274,9 @@ class SpreadBuilder:
 
         confidence_scale = min(score.score * 2, 1.0)
         effective_max = self.max_position * confidence_scale
-        contracts = max(1, int(effective_max / cost_per_contract))
+        contracts = int(effective_max / cost_per_contract)
+        if contracts < 1:
+            return None
 
         net_debit = cost_per_contract * contracts
         max_profit = max_profit_per_contract * contracts
@@ -341,7 +348,9 @@ class SpreadBuilder:
 
         confidence_scale = min(score.score * 2, 1.0)
         effective_max = self.max_position * confidence_scale
-        contracts = max(1, int(effective_max / max_loss_per_contract))
+        contracts = int(effective_max / max_loss_per_contract)
+        if contracts < 1:
+            return None
 
         net_credit = net_credit_per_share * 100 * contracts
         max_loss = max_loss_per_contract * contracts
@@ -446,7 +455,9 @@ class SpreadBuilder:
 
         confidence_scale = min(score.score * 2, 1.0)
         effective_max = self.max_position * confidence_scale
-        contracts = max(1, int(effective_max / cost_per_contract))
+        contracts = int(effective_max / cost_per_contract)
+        if contracts < 1:
+            return None
 
         net_debit = cost_per_contract * contracts
         max_profit = max_profit_per_contract * contracts
@@ -513,7 +524,9 @@ class SpreadBuilder:
 
         confidence_scale = min(score.score * 2, 1.0)
         effective_max = self.max_position * confidence_scale
-        contracts = max(1, int(effective_max / max_loss_per_contract))
+        contracts = int(effective_max / max_loss_per_contract)
+        if contracts < 1:
+            return None
 
         net_credit = net_credit_per_share * 100 * contracts
         max_loss = max_loss_per_contract * contracts
