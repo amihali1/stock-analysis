@@ -28,6 +28,7 @@ EXPECTED_JOB_IDS = {
     "execute_recommendations",
     "portfolio_sync",
     "portfolio_sync_close",
+    "monitor_exits",
     "retrain_models",
     "fetch_earnings",
 }

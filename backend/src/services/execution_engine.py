@@ -160,6 +160,91 @@ class ExecutionEngine:
             self._log(rec.ticker, "error", rec.strategy, reason=reason)
             return {"rec_id": rec.id, "ticker": rec.ticker, "status": "error", "reason": reason}
 
+    def monitor_fractional_exits(self) -> list[dict]:
+        """Poll fractional long positions and close on stop/target breach.
+
+        Alpaca brackets only apply to whole-share orders, so when the scheduler
+        emits a fractional long via the `_map_long` fallback (qty<1, market
+        order, no bracket), the broker has no automatic exit. This method
+        serves as a polling bracket: scan open positions with non-integer qty,
+        compare current_price against the originating recommendation's
+        stop_loss/target_price, and call `close_position` on breach.
+
+        Side note: Alpaca fractional shorts aren't supported, so fractional
+        positions are effectively long-only — but the side check is included
+        defensively in case a manual fractional short ever appears.
+
+        Returns one dict per fractional position evaluated (closed, in-band,
+        or error).
+        """
+        try:
+            positions = self.alpaca.get_positions()
+        except Exception:
+            logger.exception("monitor_fractional_exits: get_positions failed")
+            return []
+
+        results: list[dict] = []
+        for pos in positions:
+            qty = pos.get("qty", 0)
+            try:
+                if float(qty).is_integer():
+                    continue
+            except (TypeError, ValueError):
+                continue
+
+            ticker = pos.get("ticker")
+            current = pos.get("current_price") or 0
+            side = (pos.get("side") or "long").lower()
+            if not ticker or current <= 0:
+                continue
+
+            rec = (
+                self.db.query(Recommendation)
+                .filter_by(ticker=ticker)
+                .order_by(Recommendation.date.desc(), Recommendation.id.desc())
+                .first()
+            )
+            if rec is None:
+                results.append({"ticker": ticker, "status": "skipped", "reason": "no_rec"})
+                continue
+
+            stop = rec.stop_loss
+            target = rec.target_price
+            breach: str | None = None
+
+            if side == "long":
+                if stop is not None and current <= stop:
+                    breach = f"stop hit ({current:.2f} <= {stop:.2f})"
+                elif target is not None and current >= target:
+                    breach = f"target hit ({current:.2f} >= {target:.2f})"
+            else:
+                if stop is not None and current >= stop:
+                    breach = f"stop hit ({current:.2f} >= {stop:.2f})"
+                elif target is not None and current <= target:
+                    breach = f"target hit ({current:.2f} <= {target:.2f})"
+
+            if breach is None:
+                results.append({"ticker": ticker, "status": "in_band", "current": current})
+                continue
+
+            try:
+                close_result = self.alpaca.close_position(ticker)
+                self._log(ticker, "fractional_exit", strategy=rec.strategy or "", reason=breach)
+                self._send_alert(
+                    ticker, "fractional_exit",
+                    close_result.get("order_id", "") if isinstance(close_result, dict) else "",
+                    rec.strategy or "",
+                )
+                results.append({
+                    "ticker": ticker, "status": "closed", "reason": breach,
+                    "order_id": close_result.get("order_id") if isinstance(close_result, dict) else None,
+                })
+            except Exception as e:
+                logger.exception(f"monitor_fractional_exits: close {ticker} failed")
+                results.append({"ticker": ticker, "status": "error", "reason": str(e)})
+
+        return results
+
     def close_position(self, ticker: str) -> dict:
         """Close a specific position."""
         try:

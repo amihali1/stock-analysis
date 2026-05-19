@@ -783,6 +783,44 @@ def job_sync_portfolio():
         _record_run("portfolio_sync", "error")
 
 
+def job_monitor_fractional_exits():
+    """Every 5 min during market hours — poll fractional positions for stop/target breach.
+
+    Fractional long orders ship without broker-side brackets (Alpaca constraint),
+    so the scheduler acts as the polling bracket. Skipped when
+    `enable_fractional_shares` is off — paper $5k uses whole-share brackets and
+    has no fractional positions to monitor.
+    """
+    try:
+        from src.config import get_settings
+        from src.db.session import SessionLocal
+        from src.services.execution_engine import ExecutionEngine
+
+        if not get_settings().enable_fractional_shares:
+            _record_run("monitor_exits", "skipped (fractional disabled)")
+            return
+
+        logger.info("Scheduler: starting fractional exit monitor")
+        db = SessionLocal()
+        try:
+            engine = ExecutionEngine(db)
+            results = engine.monitor_fractional_exits()
+            closed = sum(1 for r in results if r["status"] == "closed")
+            errors = sum(1 for r in results if r["status"] == "error")
+            logger.info(
+                f"Scheduler: fractional exit monitor — {closed} closed, "
+                f"{errors} errors, {len(results)} evaluated"
+            )
+            _record_run("monitor_exits", f"ok ({closed} closed / {len(results)} evaluated)")
+        finally:
+            db.close()
+    except ValueError:
+        _record_run("monitor_exits", "skipped (no credentials)")
+    except Exception:
+        logger.exception("Scheduler: fractional exit monitor failed")
+        _record_run("monitor_exits", "error")
+
+
 def job_retrain_models():
     """First Sunday of each month — Retrain ML models with latest data."""
     logger.info("Scheduler: starting model retraining")
@@ -825,6 +863,12 @@ def init_scheduler():
     scheduler.add_job(job_sync_portfolio, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync", replace_existing=True)
     # Also catch the 16:00 close
     scheduler.add_job(job_sync_portfolio, CronTrigger(minute="0,5", hour=16, timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync_close", replace_existing=True)
+
+    # Fractional exit monitor: every 5 minutes, weekdays 9:30 AM - 4:00 PM ET.
+    # Acts as the polling bracket for fractional long orders, which Alpaca
+    # cannot attach broker-side stop/target to. Skipped automatically when
+    # enable_fractional_shares is off.
+    scheduler.add_job(job_monitor_fractional_exits, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="monitor_exits", replace_existing=True)
 
     # Monthly model retraining: first Sunday of each month at 2:00 AM ET
     scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)

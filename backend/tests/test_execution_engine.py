@@ -195,6 +195,121 @@ class TestEmergencyClose:
         alpaca.close_all_positions.assert_called_once()
 
 
+class TestMonitorFractionalExits:
+    """Fractional longs ship with no broker bracket. monitor_fractional_exits
+    must poll non-integer-qty positions, compare to the originating rec's
+    stop/target, and close on breach."""
+
+    def _rec(self, db, ticker="AAPL", stop=142.0, target=165.0):
+        db.add(Stock(ticker=ticker))
+        db.commit()
+        rec = Recommendation(
+            ticker=ticker, date=date.today(), strategy="long",
+            score=0.85, entry_price=150.0, stop_loss=stop,
+            target_price=target, position_size=250.0, max_loss=20.0,
+            direction="long",
+        )
+        db.add(rec)
+        db.commit()
+        return rec
+
+    def _position(self, ticker="AAPL", qty=0.625, current_price=150.0, side="long"):
+        return {
+            "ticker": ticker, "qty": qty, "side": side,
+            "avg_entry_price": 150.0, "current_price": current_price,
+            "market_value": qty * current_price, "unrealized_pl": 0.0,
+        }
+
+    def test_skips_integer_positions(self):
+        db = _make_db()
+        self._rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=1.0, current_price=130.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            results = engine.monitor_fractional_exits()
+
+        assert results == []
+        alpaca.close_position.assert_not_called()
+
+    def test_closes_when_stop_breached(self):
+        db = _make_db()
+        self._rec(db, stop=142.0, target=165.0)
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=0.625, current_price=140.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            results = engine.monitor_fractional_exits()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "closed"
+        assert "stop hit" in results[0]["reason"]
+        alpaca.close_position.assert_called_once_with("AAPL")
+
+    def test_closes_when_target_breached(self):
+        db = _make_db()
+        self._rec(db, stop=142.0, target=165.0)
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=0.625, current_price=166.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            results = engine.monitor_fractional_exits()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "closed"
+        assert "target hit" in results[0]["reason"]
+
+    def test_in_band_no_action(self):
+        db = _make_db()
+        self._rec(db, stop=142.0, target=165.0)
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=0.625, current_price=150.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            results = engine.monitor_fractional_exits()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "in_band"
+        alpaca.close_position.assert_not_called()
+
+    def test_no_rec_skipped(self):
+        db = _make_db()
+        # Position exists but no Recommendation row for ticker
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=0.625, current_price=140.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            results = engine.monitor_fractional_exits()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "skipped"
+        assert results[0]["reason"] == "no_rec"
+        alpaca.close_position.assert_not_called()
+
+    def test_logs_and_alerts_on_close(self):
+        db = _make_db()
+        self._rec(db, stop=142.0, target=165.0)
+        alpaca = _mock_alpaca()
+        alpaca.get_positions.return_value = [self._position(qty=0.625, current_price=140.0)]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            engine.monitor_fractional_exits()
+
+        logs = db.query(TradingLog).filter_by(action="fractional_exit").all()
+        assert len(logs) == 1
+        assert logs[0].ticker == "AAPL"
+
+        alerts = db.query(Alert).all()
+        assert len(alerts) == 1
+        assert "FRACTIONAL_EXIT" in alerts[0].message
+
+
 class TestExecutionLog:
     def test_returns_log_entries(self):
         db = _make_db()
