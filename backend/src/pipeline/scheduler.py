@@ -25,6 +25,29 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
+def _open_position_capital(db) -> float:
+    """Sum of capital currently locked in open Alpaca positions.
+
+    Subtracted from daily_capital_cap at the start of each rec-generation
+    run so the cap is account-wide, not per-run. Without this deduction the
+    scheduler would happily emit a fresh $1k of recs each day on top of
+    carry-over positions, and Alpaca would reject the lot on insufficient
+    buying power.
+
+    Shorts are weighted by the 1.5x margin multiplier to match the rec
+    sizer's position_size convention (size_short writes margin_required as
+    position_size). Longs use market_value directly.
+    """
+    from src.db.models import AlpacaPosition
+    total = 0.0
+    for p in db.query(AlpacaPosition).all():
+        mv = abs(p.market_value or 0.0)
+        if (p.side or "").lower() == "short":
+            mv *= 1.5
+        total += mv
+    return total
+
+
 def _rec_capital_cost(rec) -> float:
     """Capital deployed by a Recommendation, for the direction-blind daily cap.
 
@@ -302,6 +325,8 @@ def job_generate_recommendations():
         bear_capped = 0
         bull_capped = 0
         capital_cap = settings.daily_capital_cap
+        open_capital = _open_position_capital(db)
+        available_cap = max(0.0, capital_cap - open_capital)
         candidates: list[Candidate] = []
 
         try:
@@ -486,7 +511,7 @@ def job_generate_recommendations():
                             notes=bull_spread_rec.strategy_name,
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost > capital_cap:
+                        if capital_used + cost > available_cap:
                             bull_capped += 1
                             continue
                         db.add(rec)
@@ -516,7 +541,7 @@ def job_generate_recommendations():
                             risk_type="defined",
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost > capital_cap:
+                        if capital_used + cost > available_cap:
                             bull_capped += 1
                             continue
                         db.add(rec)
@@ -543,7 +568,7 @@ def job_generate_recommendations():
                             risk_type=long_rec.risk_type,
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost > capital_cap:
+                        if capital_used + cost > available_cap:
                             bull_capped += 1
                             continue
                         db.add(rec)
@@ -580,7 +605,7 @@ def job_generate_recommendations():
                         notes=spread_rec.strategy_name,
                     )
                     cost = _rec_capital_cost(rec)
-                    if capital_used + cost > capital_cap:
+                    if capital_used + cost > available_cap:
                         bear_capped += 1
                         continue
                     db.add(rec)
@@ -610,7 +635,7 @@ def job_generate_recommendations():
                         risk_type="defined",
                     )
                     cost = _rec_capital_cost(rec)
-                    if capital_used + cost > capital_cap:
+                    if capital_used + cost > available_cap:
                         bear_capped += 1
                         continue
                     db.add(rec)
@@ -638,7 +663,7 @@ def job_generate_recommendations():
                         notes="Naked short — no defined-risk alternative available",
                     )
                     cost = _rec_capital_cost(rec)
-                    if capital_used + cost > capital_cap:
+                    if capital_used + cost > available_cap:
                         bear_capped += 1
                         continue
                     db.add(rec)
@@ -673,13 +698,15 @@ def job_generate_recommendations():
             "bear sizers: %d spread / %d options / %d short, "
             "bull sizers: %d bull_spread / %d call / %d long, "
             "%d no_sizer_match, "
-            "capital: $%.0f used / $%.0f cap, %d capped (%db/%dB)",
+            "capital: $%.0f used / $%.0f avail (open $%.0f, cap $%.0f), "
+            "%d capped (%db/%dB)",
             count, bear_recs, bull_recs, len(watchlist), len(candidates),
             no_indicator, no_price, len(selected),
             spread_recs, options_recs, short_recs,
             bull_spread_recs, call_options_recs, long_recs,
             no_sizer_match,
-            capital_used, capital_cap, bear_capped + bull_capped, bear_capped, bull_capped,
+            capital_used, available_cap, open_capital, capital_cap,
+            bear_capped + bull_capped, bear_capped, bull_capped,
         )
         _record_run(
             "recommendations",
@@ -689,7 +716,8 @@ def job_generate_recommendations():
             f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
             f"{no_sizer_match} none, "
-            f"cap: ${capital_used:.0f}/${capital_cap:.0f}, "
+            f"cap: ${capital_used:.0f}/${available_cap:.0f} "
+            f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
             f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B])",
         )
 

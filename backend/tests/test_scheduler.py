@@ -171,6 +171,52 @@ def test_rec_capital_cost_takes_max_of_position_and_loss():
     assert scheduler_module._rec_capital_cost(_RecLike(500.0, None)) == 500.0
 
 
+class _PosLike:
+    """Stand-in for AlpacaPosition — only the fields _open_position_capital reads."""
+    def __init__(self, market_value, side="long"):
+        self.market_value = market_value
+        self.side = side
+
+
+class _FakeDB:
+    def __init__(self, positions): self._positions = positions
+    def query(self, *a, **kw): return self
+    def all(self): return self._positions
+
+
+def test_open_position_capital_sums_longs_at_market_value():
+    """A $400 long and a $250 long contribute their full market_value
+    (no margin multiplier on longs)."""
+    db = _FakeDB([_PosLike(400.0, "long"), _PosLike(250.0, "long")])
+    assert scheduler_module._open_position_capital(db) == 650.0
+
+
+def test_open_position_capital_weights_shorts_by_margin():
+    """A $200 short locks 1.5x margin = $300. Matches size_short which
+    writes margin_required (not market_value) as position_size."""
+    db = _FakeDB([_PosLike(200.0, "short")])
+    assert scheduler_module._open_position_capital(db) == 300.0
+
+
+def test_open_position_capital_handles_mixed_and_negative_market_value():
+    """Alpaca returns negative market_value for shorts. abs() before scaling.
+    Mixed account: $300 long + $100 short → 300 + 100 * 1.5 = 450."""
+    db = _FakeDB([_PosLike(300.0, "long"), _PosLike(-100.0, "short")])
+    assert scheduler_module._open_position_capital(db) == 450.0
+
+
+def test_open_position_capital_empty_account_is_zero():
+    """No positions → no deduction."""
+    db = _FakeDB([])
+    assert scheduler_module._open_position_capital(db) == 0.0
+
+
+def test_open_position_capital_handles_null_fields():
+    """Safety: a row with null market_value or null side must not blow up."""
+    db = _FakeDB([_PosLike(None, "long"), _PosLike(100.0, None)])
+    assert scheduler_module._open_position_capital(db) == 100.0
+
+
 def test_daily_capital_cap_default_is_5000():
     """User decision (bullish_side_build memo, 2026-05-12): $5k direction-blind
     pool. Lock the default so a config drift doesn't silently re-open the gate."""
