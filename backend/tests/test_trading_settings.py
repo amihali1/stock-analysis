@@ -66,6 +66,39 @@ def test_update_rejects_invalid_mode(db):
         update_trading_settings(db, {"trading_mode": "yolo"})
 
 
+class TestEffectivePerTradeCap:
+    """`effective_per_trade_cap` derives per-trade cap from
+    `daily_capital_cap × max_position_ratio` when ratio > 0, else falls back
+    to `max_position_size`. Locks the auto-scale behavior so dropping the
+    daily cap for live trading also shrinks per-trade — without this,
+    cap=$1000 with stale max_position_size=$1000 fills the pool with one
+    position."""
+
+    def test_falls_back_to_max_position_size_when_ratio_zero(self):
+        """Ratio=0 = legacy mode: read max_position_size verbatim. Today's
+        prod config (ratio default 0.0)."""
+        from src.config import Settings
+        s = Settings(max_position_size=1000.0, max_position_ratio=0.0,
+                     daily_capital_cap=5000.0)
+        assert s.effective_per_trade_cap == 1000.0
+
+    def test_ratio_derives_from_cap(self):
+        """Ratio>0 = derive from cap. $1k cap × 0.25 = $250/trade."""
+        from src.config import Settings
+        s = Settings(max_position_size=1000.0, max_position_ratio=0.25,
+                     daily_capital_cap=1000.0)
+        assert s.effective_per_trade_cap == 250.0
+
+    def test_ratio_overrides_legacy_max_position_size(self):
+        """When ratio>0, max_position_size is IGNORED — ratio wins. Prevents
+        the trap of a stale absolute value silently capping at $1000 after
+        the user reduces cap to $1000 for live mode."""
+        from src.config import Settings
+        s = Settings(max_position_size=1000.0, max_position_ratio=0.20,
+                     daily_capital_cap=1000.0)
+        assert s.effective_per_trade_cap == 200.0
+
+
 def test_bool_coercion_round_trip(db):
     update_trading_settings(db, {"auto_execute_enabled": True})
     out = get_trading_settings(db)

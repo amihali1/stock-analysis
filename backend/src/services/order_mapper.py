@@ -30,7 +30,7 @@ class OrderMapper:
     """Translate recommendations into Alpaca order params."""
 
     def __init__(self, max_position: float | None = None):
-        self.max_position = max_position or get_settings().max_position_size
+        self.max_position = max_position or get_settings().effective_per_trade_cap
 
     def recommendation_to_order(
         self,

@@ -56,6 +56,7 @@ def _settings(**overrides):
     s.max_daily_loss = overrides.get("max_daily_loss", 200.0)
     s.max_open_positions = overrides.get("max_open_positions", 5)
     s.max_position_size = overrides.get("max_position_size", 1000.0)
+    s.effective_per_trade_cap = overrides.get("effective_per_trade_cap", s.max_position_size)
     s.max_daily_orders = overrides.get("max_daily_orders", 20)
     s.allowed_hours_only = overrides.get("allowed_hours_only", False)
     s.blocked_tickers = overrides.get("blocked_tickers", [])

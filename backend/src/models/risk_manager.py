@@ -35,7 +35,7 @@ class RiskManager:
         self.max_correlation = max_correlation
         self.max_sector_pct = max_sector_pct
         self.max_positions = max_positions
-        self.max_position_size = get_settings().max_position_size
+        self.max_position_size = get_settings().effective_per_trade_cap
 
     def get_open_trades(self) -> list[PaperTrade]:
         return self.db.query(PaperTrade).filter_by(status="open").all()

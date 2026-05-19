@@ -78,7 +78,7 @@ class PositionSizer:
 
     def __init__(self, max_position: float | None = None):
         settings = get_settings()
-        self.max_position = max_position or settings.max_position_size
+        self.max_position = max_position or settings.effective_per_trade_cap
         self._drop_base_rate = settings.drop_base_rate
         self._rise_base_rate = settings.directional_base_rate
         self._spread_directional_lift = settings.spread_directional_lift

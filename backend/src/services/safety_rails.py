@@ -26,7 +26,7 @@ class TradingSafetyRails:
         self.mode = overrides["trading_mode"]
         self.max_daily_loss = overrides["max_daily_loss"]
         self.max_open_positions = overrides["max_open_positions"]
-        self.max_single_position = settings.max_position_size
+        self.max_single_position = settings.effective_per_trade_cap
         self.max_daily_orders = settings.max_daily_orders
         self.allowed_hours_only = settings.allowed_hours_only
         self.blocked_tickers = set(settings.blocked_tickers)

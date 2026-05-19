@@ -30,7 +30,17 @@ class Settings(BaseSettings):
     sentiment_headline_concurrency: int = 4
 
     # Trading constraints
+    # Absolute per-trade cap. Used when `max_position_ratio` is 0 (legacy mode).
+    # When ratio > 0, `effective_per_trade_cap` overrides this to keep per-trade
+    # auto-scaled to the daily pool — important for live trading at smaller
+    # capital ($1k pool ÷ 5 = $200/trade, not stuck at $1k from the default).
     max_position_size: float = 1000.0
+    # Per-trade cap as a fraction of `daily_capital_cap`. 0 disables (use
+    # max_position_size directly). 0.20 = up to 5 concurrent positions per day.
+    # Live $1k starter config: cap=1000, ratio=0.25 → $250/trade. Paper $5k
+    # current config: cap=5000, ratio=0.0 → $1000/trade (preserves today's
+    # behavior — set ratio=0.2 to make it derived instead).
+    max_position_ratio: float = 0.0
     # Total daily capital cap across ALL recommendations, direction-blind.
     # Bull and bear share one pool — the long-term aim is max profit-potential,
     # not balanced hedging (bullish_side_build memo, 2026-05-12). At ~$1k/trade
@@ -162,6 +172,20 @@ class Settings(BaseSettings):
         # --- Sector ETFs (P9-003, existing) ---
         "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLC", "XLRE",
     ]
+
+    @property
+    def effective_per_trade_cap(self) -> float:
+        """Per-trade dollar cap, derived from cap × ratio when ratio > 0.
+
+        Set ratio=0 (default) to use max_position_size verbatim — preserves
+        legacy behavior. Set ratio>0 to auto-scale per-trade with the daily
+        pool: cap=$1000, ratio=0.25 → $250/trade. Avoids the trap of dropping
+        cap to $1k for live trading and leaving per-trade at $1k (one
+        position fills the entire pool).
+        """
+        if self.max_position_ratio > 0:
+            return self.daily_capital_cap * self.max_position_ratio
+        return self.max_position_size
 
 
 # Static ticker → sector-ETF map (P9-003). Tickers not listed default to SPY.
