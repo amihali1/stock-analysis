@@ -109,6 +109,7 @@ class ExecutionEngine:
             strike=rec.strike,
             option_type=rec.option_type,
             expiry=rec.expiry,
+            legs_json=rec.legs_json,
             buying_power=buying_power,
         )
 
@@ -132,7 +133,16 @@ class ExecutionEngine:
 
         # Submit to Alpaca
         try:
-            if order_params.is_bracket:
+            if order_params.legs:
+                # Multi-leg spread: per-leg OCC symbols already built by mapper.
+                # mleg orders are submitted DAY-only (Alpaca rejects GTC on mleg).
+                result = self.alpaca.submit_spread_order(
+                    legs=order_params.legs,
+                    qty=order_params.qty,
+                    limit_price=order_params.limit_price,
+                    time_in_force="day",
+                )
+            elif order_params.is_bracket:
                 result = self.alpaca.submit_bracket_order(
                     ticker=submit_symbol,
                     qty=order_params.qty,

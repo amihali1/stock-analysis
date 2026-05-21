@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 
@@ -538,6 +539,8 @@ def job_generate_recommendations():
                             position_size=abs(bull_spread_rec.net_credit),
                             max_loss=bull_spread_rec.max_loss,
                             contracts=bull_spread_rec.contracts,
+                            expiry=today + timedelta(days=bull_spread_rec.expiry_days),
+                            legs_json=json.dumps([leg.model_dump() for leg in bull_spread_rec.legs]),
                             risk_type="defined",
                             notes=bull_spread_rec.strategy_name,
                         )
@@ -645,6 +648,8 @@ def job_generate_recommendations():
                         position_size=abs(spread_rec.net_credit),
                         max_loss=spread_rec.max_loss,
                         contracts=spread_rec.contracts,
+                        expiry=today + timedelta(days=spread_rec.expiry_days),
+                        legs_json=json.dumps([leg.model_dump() for leg in spread_rec.legs]),
                         risk_type="defined",
                         notes=spread_rec.strategy_name,
                     )

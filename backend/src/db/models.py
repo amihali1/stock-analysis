@@ -138,6 +138,7 @@ class Recommendation(Base):
     strike = Column(Float)  # For options
     expiry = Column(Date)  # For options
     option_type = Column(String(4))  # call, put
+    legs_json = Column(Text)  # JSON-encoded list[SpreadLeg] for multi-leg spreads
     risk_type = Column(String(10), default="undefined")  # defined, undefined
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -161,6 +162,7 @@ class PaperTrade(Base):
     contracts = Column(Integer)
     strike = Column(Float)
     option_type = Column(String(4))
+    legs_json = Column(Text)  # JSON-encoded list[SpreadLeg] for multi-leg spreads
     exit_price = Column(Float)
     pnl = Column(Float)  # Realized P&L in dollars
     opened_at = Column(DateTime, default=datetime.utcnow)

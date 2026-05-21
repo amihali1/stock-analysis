@@ -1,5 +1,6 @@
 """Tests for OrderMapper."""
 
+import json
 from datetime import date
 
 import pytest
@@ -305,26 +306,45 @@ class TestBuildOccSymbol:
             build_occ_symbol("", date(2025, 4, 18), "put", 150.0)
 
 
+_BULL_LEGS = json.dumps([
+    {"option_type": "call", "action": "buy", "strike": 150.0, "premium": 3.0, "contracts": 2},
+    {"option_type": "call", "action": "sell", "strike": 155.0, "premium": 1.0, "contracts": 2},
+])
+_BEAR_LEGS = json.dumps([
+    {"option_type": "put", "action": "buy", "strike": 145.0, "premium": 2.5, "contracts": 2},
+    {"option_type": "put", "action": "sell", "strike": 140.0, "premium": 1.0, "contracts": 2},
+])
+_EXPIRY = date(2025, 4, 18)
+
+
 class TestBullSpreadMapping:
     def test_basic_bull_spread(self):
         mapper = OrderMapper(max_position=1000)
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="bull_spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=400.0,
-            contracts=2,
+            contracts=2, expiry=_EXPIRY, legs_json=_BULL_LEGS,
         )
         assert result is not None
         assert result.strategy == "bull_spread"
         assert result.qty == 2
         # per-contract limit = position_size / contracts
         assert result.limit_price == 200.0
+        # Per-leg OCC symbols built. Leg shape: occ_symbol, side, ratio_qty.
+        assert result.legs is not None
+        assert len(result.legs) == 2
+        assert result.legs[0]["occ_symbol"] == "AAPL250418C00150000"
+        assert result.legs[0]["side"] == "buy"
+        assert result.legs[0]["ratio_qty"] == 1
+        assert result.legs[1]["occ_symbol"] == "AAPL250418C00155000"
+        assert result.legs[1]["side"] == "sell"
 
     def test_bull_spread_no_contracts(self):
         mapper = OrderMapper(max_position=1000)
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="bull_spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=400.0,
-            contracts=0,
+            contracts=0, expiry=_EXPIRY, legs_json=_BULL_LEGS,
         )
         assert result is None
 
@@ -333,7 +353,7 @@ class TestBullSpreadMapping:
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="bull_spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=5000.0,
-            contracts=4,
+            contracts=4, expiry=_EXPIRY, legs_json=_BULL_LEGS,
         )
         assert result is not None
         assert result.qty * result.limit_price <= 1000
@@ -343,7 +363,45 @@ class TestBullSpreadMapping:
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="bull_spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=400.0,
-            contracts=2, buying_power=10.0,
+            contracts=2, expiry=_EXPIRY, legs_json=_BULL_LEGS,
+            buying_power=10.0,
+        )
+        assert result is None
+
+    def test_bull_spread_missing_expiry(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, legs_json=_BULL_LEGS,
+        )
+        assert result is None
+
+    def test_bull_spread_missing_legs(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY,
+        )
+        assert result is None
+
+    def test_bull_spread_malformed_legs_json(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json="not-json",
+        )
+        assert result is None
+
+    def test_bull_spread_single_leg_rejected(self):
+        single_leg = json.dumps([{"option_type": "call", "action": "buy", "strike": 150.0}])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=single_leg,
         )
         assert result is None
 
@@ -354,11 +412,14 @@ class TestBearSpreadMapping:
         result = mapper.recommendation_to_order(
             ticker="AAPL", strategy="spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=400.0,
-            contracts=2,
+            contracts=2, expiry=_EXPIRY, legs_json=_BEAR_LEGS,
         )
         assert result is not None
         assert result.strategy == "spread"
         assert result.qty == 2
+        assert result.legs is not None
+        assert result.legs[0]["occ_symbol"] == "AAPL250418P00145000"
+        assert result.legs[1]["occ_symbol"] == "AAPL250418P00140000"
 
 
 class TestValidation:

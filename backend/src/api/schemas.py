@@ -29,6 +29,14 @@ class TickerListResponse(BaseModel):
     count: int
 
 
+class SpreadLegResponse(BaseModel):
+    option_type: str  # call|put
+    action: str  # buy|sell
+    strike: float
+    premium: float | None = None
+    contracts: int | None = None
+
+
 class RecommendationResponse(BaseModel):
     id: int | None = None
     ticker: str
@@ -47,6 +55,7 @@ class RecommendationResponse(BaseModel):
     strike: float | None = None
     expiry: date | None = None
     option_type: str | None = None
+    legs: list[SpreadLegResponse] | None = None
     risk_type: str = "undefined"
     notes: str | None = None
 

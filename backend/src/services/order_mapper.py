@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from src.config import get_settings
@@ -47,6 +48,11 @@ class AlpacaOrderParams:
     strategy: str = ""
     dry_run: bool = False
     occ_symbol: str | None = None
+    # Multi-leg spread support. Each leg dict carries:
+    #   {"occ_symbol": str, "side": "buy"|"sell", "ratio_qty": int, "option_type": "call"|"put", "strike": float}
+    # When legs is set, the alpaca client routes via OptionOrderRequest(legs=[...])
+    # instead of the single-symbol submit path.
+    legs: list[dict] | None = None
 
 
 class OrderMapper:
@@ -69,6 +75,7 @@ class OrderMapper:
         strike: float | None = None,
         option_type: str | None = None,
         expiry: date | None = None,
+        legs_json: str | None = None,
         buying_power: float | None = None,
         dry_run: bool = False,
     ) -> AlpacaOrderParams | None:
@@ -99,13 +106,13 @@ class OrderMapper:
             )
         elif strategy == "spread":
             return self._map_spread(
-                ticker, entry_price, position_size, contracts,
-                buying_power, dry_run, strategy_label="spread",
+                ticker, entry_price, position_size, contracts, expiry,
+                legs_json, buying_power, dry_run, strategy_label="spread",
             )
         elif strategy == "bull_spread":
             return self._map_bull_spread(
-                ticker, entry_price, position_size, contracts,
-                buying_power, dry_run,
+                ticker, entry_price, position_size, contracts, expiry,
+                legs_json, buying_power, dry_run,
             )
         else:
             logger.warning(f"Unknown strategy: {strategy}")
@@ -308,24 +315,78 @@ class OrderMapper:
         entry_price: float,
         position_size: float | None,
         contracts: int | None,
+        expiry: date | None,
+        legs_json: str | None,
         buying_power: float | None,
         dry_run: bool,
         strategy_label: str = "spread",
     ) -> AlpacaOrderParams | None:
-        """Map a bearish credit/debit spread recommendation to a placeholder order.
+        """Map a multi-leg spread recommendation to a multi-leg option order.
 
-        Spreads are multi-leg orders. Without OCC symbol construction and chain
-        data the mapper can only emit a placeholder sized to the recommendation's
-        net cost; the execution engine is responsible for the actual leg build.
-        Max loss is the position_size from the recommendation (defined risk).
+        Reads the per-leg payload from legs_json (written at rec-generation time
+        by the scheduler from SpreadRecommendation.legs). Builds an OCC symbol
+        per leg and emits AlpacaOrderParams.legs with the Alpaca leg shape.
+        Without legs_json or expiry, returns None — the rec cannot be routed.
+
+        The top-level qty is the spread's contract count; per-leg ratio_qty is
+        ALWAYS 1 because SpreadRecommendation legs already carry the resolved
+        per-spread contract count (multi-spread orders are submitted N spreads
+        x 1 ratio rather than 1 spread x N ratio per the Alpaca convention).
         """
         if not contracts or contracts < 1:
             return None
+        if expiry is None:
+            logger.warning(f"Cannot route {ticker} {strategy_label}: missing expiry")
+            return None
+        if not legs_json:
+            logger.warning(f"Cannot route {ticker} {strategy_label}: missing legs_json")
+            return None
+
+        try:
+            raw_legs = json.loads(legs_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Cannot route {ticker} {strategy_label}: legs_json parse failed: {e}")
+            return None
+        if not isinstance(raw_legs, list) or len(raw_legs) < 2:
+            logger.warning(
+                f"Cannot route {ticker} {strategy_label}: legs_json must be a list of "
+                f"2+ legs, got {raw_legs!r}"
+            )
+            return None
+
+        legs: list[dict] = []
+        for i, leg in enumerate(raw_legs):
+            try:
+                opt_type = str(leg["option_type"])
+                action = str(leg["action"]).strip().lower()
+                strike = float(leg["strike"])
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(
+                    f"Cannot route {ticker} {strategy_label}: leg {i} malformed: {e} (leg={leg!r})"
+                )
+                return None
+            if action not in ("buy", "sell"):
+                logger.warning(
+                    f"Cannot route {ticker} {strategy_label}: leg {i} action must be buy|sell, "
+                    f"got {action!r}"
+                )
+                return None
+            try:
+                occ = build_occ_symbol(ticker, expiry, opt_type, strike)
+            except ValueError as e:
+                logger.warning(f"OCC symbol build failed for {ticker} {strategy_label} leg {i}: {e}")
+                return None
+            legs.append({
+                "occ_symbol": occ,
+                "side": action,
+                "ratio_qty": 1,
+                "option_type": opt_type,
+                "strike": strike,
+            })
 
         cost = min(position_size or self.max_position, self.max_position)
         if cost <= 0:
             return None
-
         if buying_power is not None and cost > buying_power:
             logger.warning(
                 f"Insufficient buying power for {ticker} {strategy_label}: "
@@ -342,6 +403,7 @@ class OrderMapper:
             limit_price=round(per_contract, 2),
             strategy=strategy_label,
             dry_run=dry_run,
+            legs=legs,
         )
 
     def _map_bull_spread(
@@ -350,13 +412,15 @@ class OrderMapper:
         entry_price: float,
         position_size: float | None,
         contracts: int | None,
+        expiry: date | None,
+        legs_json: str | None,
         buying_power: float | None,
         dry_run: bool,
     ) -> AlpacaOrderParams | None:
-        """Map a bullish spread recommendation to a placeholder order."""
+        """Map a bullish spread recommendation to a multi-leg option order."""
         return self._map_spread(
-            ticker, entry_price, position_size, contracts,
-            buying_power, dry_run, strategy_label="bull_spread",
+            ticker, entry_price, position_size, contracts, expiry,
+            legs_json, buying_power, dry_run, strategy_label="bull_spread",
         )
 
     def validate_order(self, params: AlpacaOrderParams) -> tuple[bool, str]:

@@ -10,12 +10,15 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OptionLegRequest,
     StopLossRequest,
     TakeProfitRequest,
 )
 from alpaca.trading.enums import (
+    OrderClass,
     OrderSide,
     OrderType,
+    PositionIntent,
     QueryOrderStatus,
     TimeInForce,
 )
@@ -160,6 +163,60 @@ class AlpacaClient:
         order = self._client.submit_order(request)
         return self._order_to_dict(order)
 
+    def submit_spread_order(
+        self,
+        legs: list[dict],
+        qty: float,
+        limit_price: float | None = None,
+        time_in_force: str = "day",
+    ) -> dict:
+        """Submit a multi-leg option spread order.
+
+        `legs` is a list of dicts shaped per AlpacaOrderParams.legs:
+            {"occ_symbol": str, "side": "buy"|"sell", "ratio_qty": int}
+
+        Alpaca's multi-leg (mleg) order class fans out a single qty (number of
+        spreads) into the per-leg ratio_qty contracts; for a 2-leg vertical we
+        always use ratio_qty=1 per leg and let top-level qty carry the spread
+        count. limit_price is the net debit (positive) / net credit (negative)
+        the order should fill at. time_in_force defaults to DAY because mleg
+        orders are not supported as GTC.
+        """
+        if not legs or len(legs) < 2:
+            raise ValueError(f"submit_spread_order requires 2+ legs, got {len(legs) if legs else 0}")
+
+        tif = TimeInForce.DAY if time_in_force == "day" else TimeInForce.GTC
+        order_legs: list[OptionLegRequest] = []
+        for i, leg in enumerate(legs):
+            try:
+                occ_symbol = str(leg["occ_symbol"])
+                side_str = str(leg["side"]).strip().lower()
+                ratio_qty = int(leg["ratio_qty"])
+            except (KeyError, TypeError, ValueError) as e:
+                raise ValueError(f"leg {i} malformed: {e} (leg={leg!r})") from e
+            if side_str not in ("buy", "sell"):
+                raise ValueError(f"leg {i} side must be buy|sell, got {side_str!r}")
+            leg_side = OrderSide.BUY if side_str == "buy" else OrderSide.SELL
+            order_legs.append(OptionLegRequest(
+                symbol=occ_symbol,
+                ratio_qty=ratio_qty,
+                side=leg_side,
+            ))
+
+        kwargs = {
+            "qty": qty,
+            "time_in_force": tif,
+            "order_class": OrderClass.MLEG,
+            "legs": order_legs,
+        }
+        if limit_price is not None:
+            request = LimitOrderRequest(**kwargs, limit_price=limit_price)
+        else:
+            request = MarketOrderRequest(**kwargs)
+
+        order = self._client.submit_order(request)
+        return self._order_to_dict(order)
+
     def get_order(self, order_id: str) -> dict:
         """Get a specific order by ID."""
         order = self._client.get_order_by_id(order_id)
@@ -225,6 +282,21 @@ class AlpacaClient:
 
     @staticmethod
     def _order_to_dict(order) -> dict:
+        legs = getattr(order, "legs", None)
+        leg_dicts = None
+        if legs:
+            leg_dicts = [
+                {
+                    "order_id": str(leg.id),
+                    "symbol": leg.symbol,
+                    "side": leg.side.value if leg.side else None,
+                    "qty": float(leg.qty) if leg.qty else 0,
+                    "status": leg.status.value if leg.status else None,
+                    "filled_price": float(leg.filled_avg_price) if leg.filled_avg_price else None,
+                    "filled_qty": float(leg.filled_qty) if leg.filled_qty else 0,
+                }
+                for leg in legs
+            ]
         return {
             "order_id": str(order.id),
             "ticker": order.symbol,
@@ -238,4 +310,5 @@ class AlpacaClient:
             "filled_qty": float(order.filled_qty) if order.filled_qty else 0,
             "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
             "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+            "legs": leg_dicts,
         }

@@ -39,7 +39,8 @@ def _mock_position(symbol="AAPL", qty="10", side="long", avg_entry="150.00",
 
 def _mock_order(order_id="abc-123", symbol="AAPL", side="sell", qty="10",
                 order_type="market", status="filled", limit_price=None,
-                stop_price=None, filled_avg_price="155.00", filled_qty="10"):
+                stop_price=None, filled_avg_price="155.00", filled_qty="10",
+                legs=None):
     order = MagicMock()
     order.id = order_id
     order.symbol = symbol
@@ -53,6 +54,7 @@ def _mock_order(order_id="abc-123", symbol="AAPL", side="sell", qty="10",
     order.filled_qty = filled_qty
     order.submitted_at = datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
     order.filled_at = datetime(2026, 4, 14, 10, 1, tzinfo=timezone.utc)
+    order.legs = legs
     return order
 
 
@@ -244,3 +246,60 @@ class TestConnection:
 
         assert result["connected"] is False
         assert "Connection refused" in result["error"]
+
+
+
+class TestSubmitSpreadOrder:
+    _BULL_LEGS = [
+        {"occ_symbol": "AAPL250418C00150000", "side": "buy", "ratio_qty": 1},
+        {"occ_symbol": "AAPL250418C00155000", "side": "sell", "ratio_qty": 1},
+    ]
+
+    def test_basic_spread_submit(self):
+        from alpaca.trading.enums import OrderClass
+        from alpaca.trading.requests import LimitOrderRequest
+        client, mock = _make_client()
+        mock.submit_order.return_value = _mock_order(symbol="AAPL250418C00150000")
+
+        result = client.submit_spread_order(
+            legs=self._BULL_LEGS, qty=2, limit_price=2.0,
+        )
+
+        assert result["order_id"] == "abc-123"
+        submitted = mock.submit_order.call_args.args[0]
+        assert isinstance(submitted, LimitOrderRequest)
+        assert submitted.order_class == OrderClass.MLEG
+        assert submitted.qty == 2
+        assert submitted.limit_price == 2.0
+        assert len(submitted.legs) == 2
+        assert submitted.legs[0].symbol == "AAPL250418C00150000"
+        assert submitted.legs[1].symbol == "AAPL250418C00155000"
+
+    def test_market_spread_when_no_limit(self):
+        from alpaca.trading.requests import MarketOrderRequest
+        client, mock = _make_client()
+        mock.submit_order.return_value = _mock_order()
+
+        client.submit_spread_order(legs=self._BULL_LEGS, qty=1)
+
+        submitted = mock.submit_order.call_args.args[0]
+        assert isinstance(submitted, MarketOrderRequest)
+
+    def test_single_leg_rejected(self):
+        client, _ = _make_client()
+        with pytest.raises(ValueError, match="2\+ legs"):
+            client.submit_spread_order(legs=[self._BULL_LEGS[0]], qty=1)
+
+    def test_empty_legs_rejected(self):
+        client, _ = _make_client()
+        with pytest.raises(ValueError, match="2\+ legs"):
+            client.submit_spread_order(legs=[], qty=1)
+
+    def test_malformed_leg_rejected(self):
+        client, _ = _make_client()
+        bad_legs = [
+            {"occ_symbol": "AAPL250418C00150000", "side": "buy", "ratio_qty": 1},
+            {"occ_symbol": "AAPL250418C00155000", "side": "hold", "ratio_qty": 1},
+        ]
+        with pytest.raises(ValueError, match=r"side must be buy\|sell"):
+            client.submit_spread_order(legs=bad_legs, qty=1)
