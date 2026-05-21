@@ -325,6 +325,18 @@ def job_generate_recommendations():
         bear_capped = 0
         bull_capped = 0
         too_expensive = 0
+        # Per-stage sizer-rejection telemetry. Diagnoses bear-shutout root cause
+        # (2026-05-19+: 0 bear / N bull across multiple runs). Each counter is
+        # bumped when the corresponding sizer returns None for a selected
+        # candidate of that direction, BEFORE falling through to the next
+        # sizer in the cascade. A bear with all three None still contributes
+        # to bear_no_short AND no_sizer_match.
+        bear_no_spread = 0
+        bear_no_options = 0
+        bear_no_short = 0
+        bull_no_bull_spread = 0
+        bull_no_call = 0
+        bull_no_long = 0
         capital_cap = settings.daily_capital_cap
         open_capital = _open_position_capital(db)
         available_cap = max(0.0, capital_cap - open_capital)
@@ -483,11 +495,15 @@ def job_generate_recommendations():
             # knife-edge on v3's isotonic calibration plateaus; under sigmoid
             # calibration outputs cluster tightly around base rate, making any
             # absolute lift floor noise. See rec_ranker.py for full history.
+            cand_bear = sum(1 for c in candidates if c.direction == "drop")
+            cand_bull = len(candidates) - cand_bear
             selected = select_candidates(
                 candidates,
                 top_k=settings.recommendations_top_k,
                 min_score=settings.recommendations_min_score or None,
             )
+            selected_bear = sum(1 for c in selected if c.direction == "drop")
+            selected_bull = len(selected) - selected_bear
 
             for cand in selected:
                 ticker = cand.ticker
@@ -500,6 +516,8 @@ def job_generate_recommendations():
                     # then long stock. Long-stock is direction-equivalent to a
                     # short borrow on the bearish side (highest-risk fallback).
                     bull_spread_rec = sizer.size_bull_spread(score, close_price)
+                    if bull_spread_rec is None:
+                        bull_no_bull_spread += 1
                     if bull_spread_rec:
                         rec = Recommendation(
                             ticker=ticker, date=today, direction="long",
@@ -529,6 +547,8 @@ def job_generate_recommendations():
                         continue
 
                     call_rec = sizer.size_options(score, close_price, option_type="call")
+                    if call_rec is None:
+                        bull_no_call += 1
                     if call_rec:
                         rec = Recommendation(
                             ticker=ticker, date=today, direction="long",
@@ -560,6 +580,8 @@ def job_generate_recommendations():
                         continue
 
                     long_rec = sizer.size_long(score, close_price)
+                    if long_rec is None:
+                        bull_no_long += 1
                     if long_rec:
                         rec = Recommendation(
                             ticker=ticker, date=today, direction="long",
@@ -595,6 +617,8 @@ def job_generate_recommendations():
 
                 # Bearish routing (direction == "drop"): spread → put options → short.
                 spread_rec = sizer.size_spread(score, close_price)
+                if spread_rec is None:
+                    bear_no_spread += 1
                 if spread_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, direction="short",
@@ -624,6 +648,8 @@ def job_generate_recommendations():
                     continue
 
                 options_rec = sizer.size_options(score, close_price)
+                if options_rec is None:
+                    bear_no_options += 1
                 if options_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, direction="short",
@@ -655,6 +681,8 @@ def job_generate_recommendations():
                     continue
 
                 short_rec = sizer.size_short(score, close_price)
+                if short_rec is None:
+                    bear_no_short += 1
                 if short_rec:
                     rec = Recommendation(
                         ticker=ticker, date=today, direction="short",
@@ -701,19 +729,25 @@ def job_generate_recommendations():
         pipeline_recommendations_generated_total.labels(direction="bull").inc(bull_recs)
         logger.info(
             "Scheduler: recommendations complete — %d new (%d bear / %d bull), "
-            "%d watchlist, %d candidates evaluated (dual-direction), "
+            "%d watchlist, %d candidates (%d bear / %d bull), "
             "%d skipped (no indicator), %d skipped (no price), "
             "%d skipped (too expensive), "
-            "top_k=%d selected, "
-            "bear sizers: %d spread / %d options / %d short, "
-            "bull sizers: %d bull_spread / %d call / %d long, "
+            "top_k=%d selected (%d bear / %d bull), "
+            "bear sizers: %d spread / %d options / %d short "
+            "[None: %d sp / %d op / %d sh], "
+            "bull sizers: %d bull_spread / %d call / %d long "
+            "[None: %d bsp / %d c / %d lg], "
             "%d no_sizer_match, "
             "capital: $%.0f used / $%.0f avail (open $%.0f, cap $%.0f), "
             "%d capped (%db/%dB)",
-            count, bear_recs, bull_recs, len(watchlist), len(candidates),
-            no_indicator, no_price, too_expensive, len(selected),
+            count, bear_recs, bull_recs, len(watchlist),
+            len(candidates), cand_bear, cand_bull,
+            no_indicator, no_price, too_expensive,
+            len(selected), selected_bear, selected_bull,
             spread_recs, options_recs, short_recs,
+            bear_no_spread, bear_no_options, bear_no_short,
             bull_spread_recs, call_options_recs, long_recs,
+            bull_no_bull_spread, bull_no_call, bull_no_long,
             no_sizer_match,
             capital_used, available_cap, open_capital, capital_cap,
             bear_capped + bull_capped, bear_capped, bull_capped,
@@ -721,11 +755,13 @@ def job_generate_recommendations():
         _record_run(
             "recommendations",
             f"ok ({count} recs [{bear_recs}b/{bull_recs}B], "
-            f"{len(candidates)}/{len(watchlist)*2} candidates, "
+            f"cands {cand_bear}b/{cand_bull}B, sel {selected_bear}b/{selected_bull}B, "
             f"{no_indicator} no_ind, {no_price} no_price, "
             f"{too_expensive} too_exp, "
-            f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh, "
-            f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg, "
+            f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh "
+            f"[None {bear_no_spread}/{bear_no_options}/{bear_no_short}], "
+            f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg "
+            f"[None {bull_no_bull_spread}/{bull_no_call}/{bull_no_long}], "
             f"{no_sizer_match} none, "
             f"cap: ${capital_used:.0f}/${available_cap:.0f} "
             f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
