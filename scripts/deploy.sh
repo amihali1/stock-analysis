@@ -64,7 +64,7 @@ print(\"  Settings OK ({} fields)\".format(len(s.model_dump())))
 
 echo ""
 echo "Health:"
-ssh "${SSH_TARGET}" "curl -s http://localhost:8000/api/health | head -c 400"
+ssh "${SSH_TARGET}" "sleep 3 && curl -s http://localhost:8000/api/health | head -c 400"
 echo ""
 echo ""
 echo "Deployed successfully."
