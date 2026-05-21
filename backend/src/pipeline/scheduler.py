@@ -511,6 +511,12 @@ def job_generate_recommendations():
                 close_price = cand.extras["price_close"]
                 direction = cand.direction
 
+                # Cascade routing: try each tier; on cap-bust, fall through to the
+                # next (cheaper) sizer instead of skipping the ticker. capped is
+                # counted once per ticker only if no later tier landed.
+                persisted = False
+                cap_busted = False
+
                 if direction == "rise":
                     # Bullish routing: defined-risk first, then long-call options,
                     # then long stock. Long-stock is direction-equivalent to a
@@ -518,7 +524,7 @@ def job_generate_recommendations():
                     bull_spread_rec = sizer.size_bull_spread(score, close_price)
                     if bull_spread_rec is None:
                         bull_no_bull_spread += 1
-                    if bull_spread_rec:
+                    else:
                         rec = Recommendation(
                             ticker=ticker, date=today, direction="long",
                             strategy="bull_spread",
@@ -536,90 +542,96 @@ def job_generate_recommendations():
                             notes=bull_spread_rec.strategy_name,
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost > available_cap:
-                            bull_capped += 1
-                            continue
-                        db.add(rec)
-                        capital_used += cost
-                        count += 1
-                        bull_spread_recs += 1
-                        bull_recs += 1
-                        continue
+                        if capital_used + cost <= available_cap:
+                            db.add(rec)
+                            capital_used += cost
+                            count += 1
+                            bull_spread_recs += 1
+                            bull_recs += 1
+                            persisted = True
+                        else:
+                            cap_busted = True
 
-                    call_rec = sizer.size_options(score, close_price, option_type="call")
-                    if call_rec is None:
-                        bull_no_call += 1
-                    if call_rec:
-                        rec = Recommendation(
-                            ticker=ticker, date=today, direction="long",
-                            strategy="call_options",
-                            score=score.score,
-                            directional_signal=score.directional_signal,
-                            volatility_signal=score.volatility_signal,
-                            sentiment_signal=score.sentiment_signal,
-                            entry_price=call_rec.entry_price,
-                            stop_loss=call_rec.entry_price * 0.95,
-                            target_price=call_rec.strike,
-                            position_size=call_rec.position_size,
-                            max_loss=call_rec.max_loss,
-                            contracts=call_rec.contracts,
-                            strike=call_rec.strike,
-                            option_type=call_rec.option_type,
-                            expiry=today + timedelta(days=call_rec.expiry_days),
-                            risk_type="defined",
-                        )
-                        cost = _rec_capital_cost(rec)
-                        if capital_used + cost > available_cap:
-                            bull_capped += 1
-                            continue
-                        db.add(rec)
-                        capital_used += cost
-                        count += 1
-                        call_options_recs += 1
-                        bull_recs += 1
-                        continue
+                    if not persisted:
+                        call_rec = sizer.size_options(score, close_price, option_type="call")
+                        if call_rec is None:
+                            bull_no_call += 1
+                        else:
+                            rec = Recommendation(
+                                ticker=ticker, date=today, direction="long",
+                                strategy="call_options",
+                                score=score.score,
+                                directional_signal=score.directional_signal,
+                                volatility_signal=score.volatility_signal,
+                                sentiment_signal=score.sentiment_signal,
+                                entry_price=call_rec.entry_price,
+                                stop_loss=call_rec.entry_price * 0.95,
+                                target_price=call_rec.strike,
+                                position_size=call_rec.position_size,
+                                max_loss=call_rec.max_loss,
+                                contracts=call_rec.contracts,
+                                strike=call_rec.strike,
+                                option_type=call_rec.option_type,
+                                expiry=today + timedelta(days=call_rec.expiry_days),
+                                risk_type="defined",
+                            )
+                            cost = _rec_capital_cost(rec)
+                            if capital_used + cost <= available_cap:
+                                db.add(rec)
+                                capital_used += cost
+                                count += 1
+                                call_options_recs += 1
+                                bull_recs += 1
+                                persisted = True
+                            else:
+                                cap_busted = True
 
-                    long_rec = sizer.size_long(score, close_price)
-                    if long_rec is None:
-                        bull_no_long += 1
-                    if long_rec:
-                        rec = Recommendation(
-                            ticker=ticker, date=today, direction="long",
-                            strategy="long",
-                            score=score.score,
-                            directional_signal=score.directional_signal,
-                            volatility_signal=score.volatility_signal,
-                            sentiment_signal=score.sentiment_signal,
-                            entry_price=long_rec.entry_price,
-                            stop_loss=long_rec.stop_loss,
-                            target_price=long_rec.target_price,
-                            position_size=long_rec.position_size,
-                            max_loss=long_rec.max_loss,
-                            risk_type=long_rec.risk_type,
-                        )
-                        cost = _rec_capital_cost(rec)
-                        if capital_used + cost > available_cap:
-                            bull_capped += 1
-                            continue
-                        db.add(rec)
-                        capital_used += cost
-                        count += 1
-                        long_recs += 1
-                        bull_recs += 1
-                        continue
+                    if not persisted:
+                        long_rec = sizer.size_long(score, close_price)
+                        if long_rec is None:
+                            bull_no_long += 1
+                        else:
+                            rec = Recommendation(
+                                ticker=ticker, date=today, direction="long",
+                                strategy="long",
+                                score=score.score,
+                                directional_signal=score.directional_signal,
+                                volatility_signal=score.volatility_signal,
+                                sentiment_signal=score.sentiment_signal,
+                                entry_price=long_rec.entry_price,
+                                stop_loss=long_rec.stop_loss,
+                                target_price=long_rec.target_price,
+                                position_size=long_rec.position_size,
+                                max_loss=long_rec.max_loss,
+                                risk_type=long_rec.risk_type,
+                            )
+                            cost = _rec_capital_cost(rec)
+                            if capital_used + cost <= available_cap:
+                                db.add(rec)
+                                capital_used += cost
+                                count += 1
+                                long_recs += 1
+                                bull_recs += 1
+                                persisted = True
+                            else:
+                                cap_busted = True
 
-                    no_sizer_match += 1
-                    logger.debug(
-                        "Scheduler: %s (bull) ranked but no sizer matched "
-                        "(bull_spread/call/long all returned None)", ticker,
-                    )
+                    if not persisted:
+                        if cap_busted:
+                            bull_capped += 1
+                        else:
+                            no_sizer_match += 1
+                            logger.debug(
+                                "Scheduler: %s (bull) ranked but no sizer matched "
+                                "(bull_spread/call/long all returned None)", ticker,
+                            )
                     continue
 
                 # Bearish routing (direction == "drop"): spread → put options → short.
                 spread_rec = sizer.size_spread(score, close_price)
                 if spread_rec is None:
                     bear_no_spread += 1
-                if spread_rec:
+                else:
                     rec = Recommendation(
                         ticker=ticker, date=today, direction="short",
                         strategy="spread",
@@ -637,84 +649,90 @@ def job_generate_recommendations():
                         notes=spread_rec.strategy_name,
                     )
                     cost = _rec_capital_cost(rec)
-                    if capital_used + cost > available_cap:
-                        bear_capped += 1
-                        continue
-                    db.add(rec)
-                    capital_used += cost
-                    count += 1
-                    spread_recs += 1
-                    bear_recs += 1
-                    continue
+                    if capital_used + cost <= available_cap:
+                        db.add(rec)
+                        capital_used += cost
+                        count += 1
+                        spread_recs += 1
+                        bear_recs += 1
+                        persisted = True
+                    else:
+                        cap_busted = True
 
-                options_rec = sizer.size_options(score, close_price)
-                if options_rec is None:
-                    bear_no_options += 1
-                if options_rec:
-                    rec = Recommendation(
-                        ticker=ticker, date=today, direction="short",
-                        strategy="options",
-                        score=score.score,
-                        directional_signal=score.directional_signal,
-                        volatility_signal=score.volatility_signal,
-                        sentiment_signal=score.sentiment_signal,
-                        entry_price=options_rec.entry_price,
-                        stop_loss=options_rec.entry_price * 1.05,
-                        target_price=options_rec.strike,
-                        position_size=options_rec.position_size,
-                        max_loss=options_rec.max_loss,
-                        contracts=options_rec.contracts,
-                        strike=options_rec.strike,
-                        option_type=options_rec.option_type,
-                        expiry=today + timedelta(days=options_rec.expiry_days),
-                        risk_type="defined",
-                    )
-                    cost = _rec_capital_cost(rec)
-                    if capital_used + cost > available_cap:
-                        bear_capped += 1
-                        continue
-                    db.add(rec)
-                    capital_used += cost
-                    count += 1
-                    options_recs += 1
-                    bear_recs += 1
-                    continue
+                if not persisted:
+                    options_rec = sizer.size_options(score, close_price)
+                    if options_rec is None:
+                        bear_no_options += 1
+                    else:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="short",
+                            strategy="options",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=options_rec.entry_price,
+                            stop_loss=options_rec.entry_price * 1.05,
+                            target_price=options_rec.strike,
+                            position_size=options_rec.position_size,
+                            max_loss=options_rec.max_loss,
+                            contracts=options_rec.contracts,
+                            strike=options_rec.strike,
+                            option_type=options_rec.option_type,
+                            expiry=today + timedelta(days=options_rec.expiry_days),
+                            risk_type="defined",
+                        )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost <= available_cap:
+                            db.add(rec)
+                            capital_used += cost
+                            count += 1
+                            options_recs += 1
+                            bear_recs += 1
+                            persisted = True
+                        else:
+                            cap_busted = True
 
-                short_rec = sizer.size_short(score, close_price)
-                if short_rec is None:
-                    bear_no_short += 1
-                if short_rec:
-                    rec = Recommendation(
-                        ticker=ticker, date=today, direction="short",
-                        strategy="short",
-                        score=score.score,
-                        directional_signal=score.directional_signal,
-                        volatility_signal=score.volatility_signal,
-                        sentiment_signal=score.sentiment_signal,
-                        entry_price=short_rec.entry_price,
-                        stop_loss=short_rec.stop_loss,
-                        target_price=short_rec.target_price,
-                        position_size=short_rec.position_size,
-                        max_loss=short_rec.max_loss,
-                        risk_type="undefined",
-                        notes="Naked short — no defined-risk alternative available",
-                    )
-                    cost = _rec_capital_cost(rec)
-                    if capital_used + cost > available_cap:
-                        bear_capped += 1
-                        continue
-                    db.add(rec)
-                    capital_used += cost
-                    count += 1
-                    short_recs += 1
-                    bear_recs += 1
-                    continue
+                if not persisted:
+                    short_rec = sizer.size_short(score, close_price)
+                    if short_rec is None:
+                        bear_no_short += 1
+                    else:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="short",
+                            strategy="short",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=short_rec.entry_price,
+                            stop_loss=short_rec.stop_loss,
+                            target_price=short_rec.target_price,
+                            position_size=short_rec.position_size,
+                            max_loss=short_rec.max_loss,
+                            risk_type="undefined",
+                            notes="Naked short — no defined-risk alternative available",
+                        )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost <= available_cap:
+                            db.add(rec)
+                            capital_used += cost
+                            count += 1
+                            short_recs += 1
+                            bear_recs += 1
+                            persisted = True
+                        else:
+                            cap_busted = True
 
-                no_sizer_match += 1
-                logger.debug(
-                    "Scheduler: %s (bear) ranked but no sizer matched "
-                    "(spread/options/short all returned None)", ticker,
-                )
+                if not persisted:
+                    if cap_busted:
+                        bear_capped += 1
+                    else:
+                        no_sizer_match += 1
+                        logger.debug(
+                            "Scheduler: %s (bear) ranked but no sizer matched "
+                            "(spread/options/short all returned None)", ticker,
+                        )
 
             db.commit()
         finally:
