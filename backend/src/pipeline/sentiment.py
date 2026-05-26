@@ -105,15 +105,29 @@ def _ticker_aliases(ticker: str, stock_name: str | None) -> list[str]:
     in headlines. Short residues (<= 2 chars) are dropped so the filter
     doesn't degenerate to matching every headline.
     """
-    aliases: list[str] = [ticker.upper()]
-    etf_extra = _ETF_SECTOR_ALIASES.get(ticker.upper(), [])
+    sym = ticker.upper()
+    short = len(sym) <= 2
+    etf_extra = _ETF_SECTOR_ALIASES.get(sym, [])
+
     # ETF corporate names ("State Street ...", "Invesco ...", "iShares ...")
     # match unrelated issuer-news headlines and aren't actually about the
     # fund. Skip the stock_name alias path entirely when ETF aliases exist.
+    name_alias: str | None = None
     if stock_name and not etf_extra:
         normalized = _normalize_company_name(stock_name)
-        if len(normalized) >= 3 and normalized.upper() != ticker.upper():
-            aliases.append(normalized)
+        if len(normalized) >= 3 and normalized.upper() != sym:
+            name_alias = normalized
+
+    aliases: list[str] = []
+    # Length-1/2 tickers (T, O, F, GE, HD, ...) word-boundary-match plenty of
+    # common-noun headlines ("T-Mobile", "HD streaming", "GE Healthcare
+    # quarter"). Drop the bare-symbol alias when we have a usable company
+    # name to fall back to. For short tickers with no name (e.g. SQ pre-
+    # rename), keep the bare symbol — partial signal beats zero signal.
+    if not (short and name_alias):
+        aliases.append(sym)
+    if name_alias:
+        aliases.append(name_alias)
     aliases.extend(etf_extra)
     return aliases
 

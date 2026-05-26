@@ -130,6 +130,28 @@ class TestTickerAliases:
         aliases = _ticker_aliases("AAPL", "Apple Inc.")
         assert aliases == ["AAPL", "Apple"]
 
+    def test_length_one_ticker_drops_bare_symbol(self):
+        # Bare "T" matches "T-Mobile", "T. Rowe Price", "T-bills" via \b
+        # word boundary. Drop the symbol; rely on the company name.
+        aliases = _ticker_aliases("T", "AT&T Inc.")
+        assert "T" not in aliases
+        assert "AT&T" in aliases
+
+    def test_length_two_ticker_drops_bare_symbol(self):
+        aliases = _ticker_aliases("HD", "The Home Depot, Inc.")
+        assert "HD" not in aliases
+        assert "Home Depot" in aliases
+
+    def test_short_ticker_keeps_bare_symbol_when_no_name(self):
+        # No name = no name alias → bare symbol is the only signal we have.
+        aliases = _ticker_aliases("SQ", None)
+        assert aliases == ["SQ"]
+
+    def test_short_ticker_drops_bare_symbol_realty_income(self):
+        aliases = _ticker_aliases("O", "Realty Income Corporation")
+        assert "O" not in aliases
+        assert "Realty Income" in aliases
+
 
 class TestIsRelevantToTicker:
     """Real headlines from the 2026-05-26 INTC sentiment pollution audit.
