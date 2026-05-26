@@ -8,8 +8,16 @@ from datetime import date, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Base, SentimentScore
-from src.pipeline.sentiment import SentimentAnalyzer, SentimentResult, _weighted_average, _fallback_parse
+from src.db.models import Base, SentimentScore, Stock
+from src.pipeline.sentiment import (
+    SentimentAnalyzer,
+    SentimentResult,
+    _fallback_parse,
+    _is_relevant_to_ticker,
+    _normalize_company_name,
+    _ticker_aliases,
+    _weighted_average,
+)
 from src.services.headline_fetcher import Headline, YahooRssFetcher, _parse_date
 
 
@@ -49,6 +57,101 @@ class TestWeightedAverage:
         ]
         avg = _weighted_average(scores)
         assert avg > 0.5  # Should lean heavily positive
+
+
+class TestNormalizeCompanyName:
+    def test_strips_inc(self):
+        assert _normalize_company_name("Apple Inc.") == "Apple"
+        assert _normalize_company_name("Amazon.com, Inc.") == "Amazon.com"
+
+    def test_strips_corporate_suffixes(self):
+        assert _normalize_company_name("Intel Corporation") == "Intel"
+        assert _normalize_company_name("Bristol-Myers Squibb Company") == "Bristol-Myers Squibb"
+        assert _normalize_company_name("Citigroup Inc.") == "Citigroup"
+
+    def test_strips_the_prefix(self):
+        assert _normalize_company_name("The Boeing Company") == "Boeing"
+
+    def test_stacked_suffixes(self):
+        assert _normalize_company_name("Bank of America Corporation") == "Bank of America"
+
+    def test_preserves_compound_names(self):
+        assert _normalize_company_name("Advanced Micro Devices, Inc.") == "Advanced Micro Devices"
+
+
+class TestTickerAliases:
+    def test_includes_symbol(self):
+        aliases = _ticker_aliases("INTC", "Intel Corporation")
+        assert "INTC" in aliases
+        assert "Intel" in aliases
+
+    def test_no_name_falls_back_to_symbol_only(self):
+        assert _ticker_aliases("XYZ", None) == ["XYZ"]
+        assert _ticker_aliases("XYZ", "") == ["XYZ"]
+
+    def test_short_residue_dropped(self):
+        # Hypothetical name that normalizes to <3 chars wouldn't be useful
+        assert _ticker_aliases("AA", "AA, Inc.") == ["AA"]
+
+
+class TestIsRelevantToTicker:
+    """Real headlines from the 2026-05-26 INTC sentiment pollution audit.
+    Off-ticker headlines must be filtered; genuine Intel mentions kept."""
+
+    INTC_ALIASES = ["INTC", "Intel"]
+
+    def test_drops_unrelated_viking_therapeutics(self):
+        assert not _is_relevant_to_ticker(
+            "Don't Buy Viking Therapeutics Stock Until You Read This",
+            self.INTC_ALIASES,
+        )
+
+    def test_drops_walmart_costco(self):
+        assert not _is_relevant_to_ticker(
+            "Walmart vs. Costco: Which Is the Better \"Recession-Proof\" Stock to Buy Now?",
+            self.INTC_ALIASES,
+        )
+
+    def test_drops_quantum_stock(self):
+        assert not _is_relevant_to_ticker(
+            "Why D-Wave Quantum Stock Skyrocketed Today",
+            self.INTC_ALIASES,
+        )
+
+    def test_drops_pure_nvidia_earnings(self):
+        assert not _is_relevant_to_ticker(
+            "Nvidia Earnings Are Set to Make or Break the Chip Stock Rally",
+            self.INTC_ALIASES,
+        )
+
+    def test_keeps_direct_intel_mention(self):
+        assert _is_relevant_to_ticker(
+            "Why Are Intel (INTC) Shares Soaring Today",
+            self.INTC_ALIASES,
+        )
+
+    def test_keeps_intel_foundry(self):
+        assert _is_relevant_to_ticker(
+            "Intel Foundry: After A 3x Rally, Time For A Reality Check?",
+            self.INTC_ALIASES,
+        )
+
+    def test_keeps_chip_compare_with_intel(self):
+        # Tangential but mentions Intel directly — let Ollama judge nuance.
+        assert _is_relevant_to_ticker(
+            "Nvidia vs. AMD vs. Intel: Which is the best chip stock to own?",
+            self.INTC_ALIASES,
+        )
+
+    def test_word_boundary_avoids_false_match(self):
+        # 'AMD' is the ticker; must not match inside 'PYRAMID' or 'AMDS'
+        assert not _is_relevant_to_ticker("Pyramid scheme indictment", ["AMD"])
+        # But matches 'AMD shares'
+        assert _is_relevant_to_ticker("AMD shares surge", ["AMD"])
+
+    def test_case_insensitive(self):
+        assert _is_relevant_to_ticker("intel shares up", ["Intel"])
+        assert _is_relevant_to_ticker("APPLE BEATS Q4", ["Apple"])
 
 
 class TestFallbackParse:
@@ -136,6 +239,10 @@ class TestParseDate:
 class TestSentimentAnalyzerIntegration:
     @pytest.mark.asyncio
     async def test_analyze_with_mocked_ollama(self, db_session, monkeypatch):
+        # Pre-seed stock with name so the alias filter accepts "Apple ..." headlines.
+        db_session.add(Stock(ticker="AAPL", name="Apple Inc."))
+        db_session.commit()
+
         analyzer = SentimentAnalyzer(db=db_session)
 
         def mock_finviz_fetch(self, ticker, max_headlines=10):
@@ -176,6 +283,108 @@ class TestSentimentAnalyzerIntegration:
         assert scores[0].raw_response == response_payload
 
 
+class TestRelevanceGate:
+    """End-to-end: off-ticker headlines never reach Ollama and never produce
+    rows. Reproduces the 2026-05-26 INTC sentiment pollution scenario."""
+
+    @pytest.mark.asyncio
+    async def test_off_ticker_headlines_excluded_from_aggregate(
+        self, db_session, monkeypatch
+    ):
+        db_session.add(Stock(ticker="INTC", name="Intel Corporation"))
+        db_session.commit()
+
+        today = date.today()
+        polluted_feed = [
+            # Real off-ticker pollution from 2026-05-26 audit
+            Headline(title="Don't Buy Viking Therapeutics Stock Until You Read This",
+                     source="yahoo_rss", date=today),
+            Headline(title="Why D-Wave Quantum Stock Skyrocketed Today",
+                     source="yahoo_rss", date=today),
+            Headline(title="Walmart vs. Costco: Recession-Proof Stock",
+                     source="yahoo_rss", date=today),
+            # Genuine Intel headlines
+            Headline(title="Why Are Intel (INTC) Shares Soaring Today",
+                     source="yahoo_rss", date=today),
+            Headline(title="Intel Foundry Turnaround Is Gaining Traction",
+                     source="yahoo_rss", date=today),
+        ]
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: polluted_feed,
+        )
+
+        # Track which headlines Ollama actually saw.
+        seen: list[str] = []
+        async def mock_generate(self, prompt, model=None):
+            # Extract the headline that the prompt embedded
+            import re
+            m = re.search(r'Headline: "([^"]+)"', prompt)
+            if m:
+                seen.append(m.group(1))
+            return json.dumps({
+                "sentiment": 0.5,
+                "confidence": 0.9,
+                "reasoning": "stub"
+            })
+
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        analyzer = SentimentAnalyzer(db=db_session)
+        result = await analyzer.analyze_ticker("INTC")
+
+        # Only the 2 Intel-mentioning headlines should be scored
+        assert result["scores_computed"] == 2, f"Got {result['scores_computed']}, seen={seen}"
+        assert all("Intel" in h or "INTC" in h for h in seen), seen
+        assert not any("Viking" in h or "D-Wave" in h or "Walmart" in h for h in seen)
+
+        # And only 2 rows persisted
+        rows = db_session.query(SentimentScore).filter_by(ticker="INTC").all()
+        assert len(rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_all_off_ticker_short_circuits(self, db_session, monkeypatch):
+        db_session.add(Stock(ticker="INTC", name="Intel Corporation"))
+        db_session.commit()
+
+        # 100% pollution scenario
+        polluted = [
+            Headline(title="Tesla earnings preview", source="yahoo_rss", date=date.today()),
+            Headline(title="Bitcoin hits new high", source="yahoo_rss", date=date.today()),
+        ]
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: polluted,
+        )
+
+        ollama_calls = 0
+        async def mock_generate(self, prompt, model=None):
+            nonlocal ollama_calls
+            ollama_calls += 1
+            return json.dumps({"sentiment": 0.0, "confidence": 1.0, "reasoning": ""})
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        analyzer = SentimentAnalyzer(db=db_session)
+        result = await analyzer.analyze_ticker("INTC")
+
+        assert result["scores_computed"] == 0
+        assert result["composite_sentiment"] is None
+        assert ollama_calls == 0  # Filter saved Ollama from any work
+
+
 class TestRecencyGate:
     @pytest.mark.asyncio
     async def test_stale_headlines_filtered(self, db_session, monkeypatch):
@@ -187,8 +396,8 @@ class TestRecencyGate:
 
         def mock_finviz_fetch(self, ticker, max_headlines=10):
             return [
-                Headline(title="OLD: ancient news", source="finviz", date=cutoff_minus_1),
-                Headline(title="FRESH: today's beat", source="finviz", date=recent),
+                Headline(title="OLD AAPL ancient news", source="finviz", date=cutoff_minus_1),
+                Headline(title="FRESH AAPL beat", source="finviz", date=recent),
             ]
 
         monkeypatch.setattr(
@@ -261,7 +470,7 @@ class TestRecencyGate:
         analyzer.max_headline_age_days = 7
 
         def mock_finviz_fetch(self, ticker, max_headlines=10):
-            return [Headline(title="No date", source="finviz", date=None)]
+            return [Headline(title="AAPL no date", source="finviz", date=None)]
 
         monkeypatch.setattr(
             "src.services.headline_fetcher.FinvizFetcher.fetch", mock_finviz_fetch
@@ -294,7 +503,7 @@ class TestAnalyzeTickerHeadlineConcurrency:
         analyzer.headline_concurrency = 4
 
         headlines = [
-            Headline(title=f"H{i}", source="finviz", date=date.today())
+            Headline(title=f"AAPL H{i}", source="finviz", date=date.today())
             for i in range(6)
         ]
 
@@ -343,7 +552,7 @@ class TestAnalyzeTickerHeadlineConcurrency:
 
         def mock_finviz_fetch(self, ticker, max_headlines=10):
             return [
-                Headline(title=f"H{i}", source="finviz", date=date.today())
+                Headline(title=f"AAPL H{i}", source="finviz", date=date.today())
                 for i in range(3)
             ]
 
@@ -378,9 +587,9 @@ class TestAnalyzeTickerHeadlineConcurrency:
 
         def mock_finviz_fetch(self, ticker, max_headlines=10):
             return [
-                Headline(title="GOOD-1", source="finviz", date=date.today()),
-                Headline(title="BOOM",   source="finviz", date=date.today()),
-                Headline(title="GOOD-2", source="finviz", date=date.today()),
+                Headline(title="AAPL GOOD-1", source="finviz", date=date.today()),
+                Headline(title="AAPL BOOM",   source="finviz", date=date.today()),
+                Headline(title="AAPL GOOD-2", source="finviz", date=date.today()),
             ]
 
         monkeypatch.setattr(
@@ -404,7 +613,7 @@ class TestAnalyzeTickerHeadlineConcurrency:
         assert result["scores_computed"] == 2
 
         rows = db_session.query(SentimentScore).filter_by(ticker="AAPL").all()
-        assert {r.headline for r in rows} == {"GOOD-1", "GOOD-2"}
+        assert {r.headline for r in rows} == {"AAPL GOOD-1", "AAPL GOOD-2"}
 
 
 class _NopSession:

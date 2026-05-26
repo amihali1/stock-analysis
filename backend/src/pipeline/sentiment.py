@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import date, timedelta
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,75 @@ from src.services.headline_fetcher import FinvizFetcher, YahooRssFetcher, Headli
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+# Strip these from Stock.name to derive an alias usable for substring matching.
+# Order matters: longer/more-specific suffixes first so " Inc." doesn't shadow
+# ", Inc." and leave a trailing comma. Repeated stripping iterates until stable.
+_COMPANY_SUFFIXES = (
+    ", Incorporated", " Incorporated",
+    ", Inc.", " Inc.", ", Inc", " Inc",
+    ", Corporation", " Corporation", ", Corp.", " Corp.",
+    ", Company", " Company", " Co.",
+    ", Ltd.", " Ltd.", " Limited",
+    " plc", " PLC", " N.V.", " S.A.", " AG", " SE",
+    " Holdings", " Holding", " Group",
+    " Class A", " Class B", " Class C",
+)
+_COMPANY_PREFIXES = ("The ",)
+
+
+def _normalize_company_name(name: str) -> str:
+    """Strip corporate suffixes/prefixes so the residue is a usable alias.
+
+    'Apple Inc.' → 'Apple'. 'The Boeing Company' → 'Boeing'.
+    'Advanced Micro Devices, Inc.' → 'Advanced Micro Devices'.
+    Iterates because some names stack suffixes ('Holdings, Inc.').
+    """
+    out = name.strip()
+    changed = True
+    while changed:
+        changed = False
+        for suf in _COMPANY_SUFFIXES:
+            if out.endswith(suf):
+                out = out[: -len(suf)].rstrip(",").rstrip()
+                changed = True
+                break
+    for prefix in _COMPANY_PREFIXES:
+        if out.startswith(prefix):
+            out = out[len(prefix):].strip()
+    return out
+
+
+def _ticker_aliases(ticker: str, stock_name: str | None) -> list[str]:
+    """Return list of substrings that, if present in a headline, indicate
+    the headline is at least nominally about the ticker.
+
+    Always includes the bare symbol. Adds the corporate name (suffix-stripped)
+    when available. Short residues (<= 2 chars) are dropped so the filter
+    doesn't degenerate to matching every headline.
+    """
+    aliases: list[str] = [ticker.upper()]
+    if stock_name:
+        normalized = _normalize_company_name(stock_name)
+        if len(normalized) >= 3 and normalized.upper() != ticker.upper():
+            aliases.append(normalized)
+    return aliases
+
+
+def _is_relevant_to_ticker(headline: str, aliases: list[str]) -> bool:
+    """True if any alias appears as a whole word in the headline.
+
+    Word-boundary (\\b) match: 'AMD' matches 'AMD shares' but not 'PYRAMID';
+    'Intel' matches 'Intel Foundry' but not 'Intelligence'. Case-insensitive.
+    """
+    if not aliases:
+        return True
+    for alias in aliases:
+        pattern = rf"\b{re.escape(alias)}\b"
+        if re.search(pattern, headline, re.IGNORECASE):
+            return True
+    return False
 
 SENTIMENT_PROMPT = """You are a financial sentiment analyst. Analyze the following news headline about stock ticker {ticker} and return a JSON object with exactly these fields:
 
@@ -92,12 +162,37 @@ class SentimentAnalyzer:
 
         if dropped:
             logger.info(
-                f"{ticker}: analyzing {len(recent)} recent headlines "
+                f"{ticker}: {len(recent)} recent headlines "
                 f"({dropped} dropped as older than {self.max_headline_age_days}d)"
             )
-        else:
-            logger.info(f"{ticker}: analyzing {len(recent)} headlines")
-        headlines = recent
+
+        # Relevance gate: Yahoo RSS / Finviz tag plenty of headlines to a ticker
+        # that are actually about a different company (sector pieces, sibling
+        # names, recession think-pieces). Ollama dutifully scores them anyway
+        # — its own reasoning has been observed saying "this is about a
+        # different company" while still returning a sentiment value. Filter
+        # before the LLM call: cheaper, deterministic, and saves the 5-10s/
+        # headline Ollama latency.
+        aliases = _ticker_aliases(ticker, stock.name if stock else None)
+        relevant = [h for h in recent if _is_relevant_to_ticker(h.title, aliases)]
+        off_ticker = len(recent) - len(relevant)
+        if off_ticker:
+            logger.info(
+                f"{ticker}: dropped {off_ticker} off-ticker headlines "
+                f"(aliases={aliases})"
+            )
+
+        if not relevant:
+            logger.info(f"{ticker}: 0 relevant headlines after alias filter — skipping")
+            return {
+                "ticker": ticker,
+                "headlines": len(headlines),
+                "scores_computed": 0,
+                "composite_sentiment": None,
+            }
+
+        logger.info(f"{ticker}: analyzing {len(relevant)} relevant headlines")
+        headlines = relevant
 
         # Analyze headlines concurrently. Ollama is the per-call bottleneck
         # (5-10s on the homelab GPU), and a serial loop made the sentiment job
