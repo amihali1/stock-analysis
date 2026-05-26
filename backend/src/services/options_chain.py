@@ -5,11 +5,28 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+import math
+
 import yfinance as yf
 from sqlalchemy.orm import Session
 
 from src.db.models import OptionsChain
 from src.db.session import SessionLocal
+
+
+def _safe_float(v) -> float:
+    """yfinance row values are often NaN; coerce to 0.0 cleanly."""
+    if v is None:
+        return 0.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(f) else f
+
+
+def _safe_int(v) -> int:
+    return int(_safe_float(v))
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +78,14 @@ class OptionsChainFetcher:
                 entry = {
                     "ticker": ticker,
                     "expiration": expiration,
-                    "strike": float(row.get("strike", 0)),
+                    "strike": _safe_float(row.get("strike", 0)),
                     "option_type": option_type,
-                    "bid": float(row.get("bid", 0)),
-                    "ask": float(row.get("ask", 0)),
-                    "last": float(row.get("lastPrice", 0)),
-                    "volume": int(row.get("volume", 0) or 0),
-                    "open_interest": int(row.get("openInterest", 0) or 0),
-                    "implied_vol": float(row.get("impliedVolatility", 0) or 0),
+                    "bid": _safe_float(row.get("bid", 0)),
+                    "ask": _safe_float(row.get("ask", 0)),
+                    "last": _safe_float(row.get("lastPrice", 0)),
+                    "volume": _safe_int(row.get("volume", 0)),
+                    "open_interest": _safe_int(row.get("openInterest", 0)),
+                    "implied_vol": _safe_float(row.get("impliedVolatility", 0)),
                 }
                 rows.append(entry)
 
