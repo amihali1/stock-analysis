@@ -31,6 +31,28 @@ from src.features.wikipedia import WIKIPEDIA_FEATURE_COLS, attach_wikipedia_feat
 
 logger = logging.getLogger(__name__)
 
+_VOL_20D_FALLBACK = 0.2
+
+
+def annualized_vol_20d(recent_closes_desc: list[float]) -> float:
+    """Match training: close.pct_change().rolling(20).std() * sqrt(252) at last bar.
+
+    Input is closes sorted newest-first. Returns 0.2 fallback when <21 closes or
+    any prior close is zero. Inference paths (scheduler, backtester) must call
+    this instead of hardcoding 0.2 — that placeholder is a hard train/serve skew.
+    """
+    if len(recent_closes_desc) < 21:
+        return _VOL_20D_FALLBACK
+    asc = list(reversed(recent_closes_desc[:21]))
+    pcts: list[float] = []
+    for i in range(1, len(asc)):
+        prev = asc[i - 1]
+        if not prev:
+            return _VOL_20D_FALLBACK
+        pcts.append((asc[i] - prev) / prev)
+    return float(np.std(pcts, ddof=1) * np.sqrt(252))
+
+
 PER_TICKER_RANK_WINDOW = 120
 # Rolling per-ticker z-score features: (value - rolling_mean) / rolling_std over
 # the last PER_TICKER_RANK_WINDOW trading days of the same ticker. These remove

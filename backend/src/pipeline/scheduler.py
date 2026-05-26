@@ -396,6 +396,9 @@ def job_generate_recommendations():
                         return 0.0
                     return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
 
+                from src.models.directional import annualized_vol_20d
+                vol_20d = annualized_vol_20d(recent_closes)
+
                 # Build features for directional model
                 from src.features.analyst import get_analyst_features
                 from src.features.earnings import get_earnings_features
@@ -423,7 +426,7 @@ def job_generate_recommendations():
                     "return_20d_lag": _return_lag(20),
                     "close_to_sma50_ratio": price.close / (ind.sma_50 or price.close),
                     "close_to_sma200_ratio": price.close / (ind.sma_200 or price.close),
-                    "volatility_20d": 0.2,
+                    "volatility_20d": vol_20d,
                 }
                 features.update(get_options_features(db, ticker, price.date))
                 features.update(get_macro_features(db, price.date))

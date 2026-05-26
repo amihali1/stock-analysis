@@ -11,7 +11,7 @@ import pandas as pd
 
 from src.db.models import PriceHistory, TechnicalIndicator, SentimentScore
 from src.db.session import SessionLocal
-from src.models.directional import DirectionalModel, FEATURE_COLS, build_dataset
+from src.models.directional import DirectionalModel, FEATURE_COLS, annualized_vol_20d, build_dataset
 from src.models.ensemble import Ensemble, SignalInputs
 from src.models.position_sizer import PositionSizer
 
@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 # Default backtest parameters
 DEFAULT_HOLD_DAYS = 5  # Hold period for each trade
 MIN_SCORE_THRESHOLD = 0.5  # Minimum ensemble score to take a trade
-
 
 @dataclass
 class Trade:
@@ -337,6 +336,8 @@ class Backtester:
                     return 0.0
                 return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
 
+            vol_20d = annualized_vol_20d(recent_closes)
+
             # Build directional prediction
             if dir_model is not None:
                 features = {
@@ -356,7 +357,7 @@ class Backtester:
                     "return_20d_lag": _return_lag(20),
                     "close_to_sma50_ratio": current_price / (ind.get("sma_50", current_price) or current_price),
                     "close_to_sma200_ratio": current_price / (ind.get("sma_200", current_price) or current_price),
-                    "volatility_20d": 0.2,
+                    "volatility_20d": vol_20d,
                 }
                 try:
                     dir_prob, dir_conf = dir_model.predict(features)
