@@ -69,19 +69,52 @@ def _normalize_company_name(name: str) -> str:
     return out
 
 
+# Sector / index ETF alias overrides. The normalized State Street name
+# ("State Street Materials Select Sector SPDR ETF" → "State Street Materials
+# Select Sector SPDR") never appears in financial headlines, so the
+# normalized-name path produces a dead alias. Map each ETF to sector-keyword
+# phrases that actually show up in market commentary. Phrases must be
+# specific enough to avoid false positives (e.g. "utilities sector" not
+# "power") since the relevance filter is word-boundary substring, not NER.
+_ETF_SECTOR_ALIASES: dict[str, list[str]] = {
+    "XLB": ["materials sector", "materials stocks"],
+    "XLC": ["communication services", "communications sector"],
+    "XLE": ["energy sector", "energy stocks", "oil stocks"],
+    "XLF": ["financial sector", "financials sector", "bank stocks"],
+    "XLI": ["industrial sector", "industrials sector", "industrial stocks"],
+    "XLK": ["tech sector", "technology sector", "tech stocks"],
+    "XLP": ["consumer staples", "staples sector"],
+    "XLRE": ["real estate sector", "REIT", "REITs"],
+    "XLU": ["utilities sector", "utility sector", "utility stocks"],
+    "XLV": ["health care sector", "healthcare sector"],
+    "XLY": ["consumer discretionary", "discretionary sector"],
+    "SPY": ["S&P 500", "S&P500"],
+    "QQQ": ["Nasdaq 100", "Nasdaq-100"],
+    "IWM": ["Russell 2000", "small caps", "small-cap stocks"],
+    "^VIX": ["VIX", "volatility index", "fear gauge"],
+}
+
+
 def _ticker_aliases(ticker: str, stock_name: str | None) -> list[str]:
     """Return list of substrings that, if present in a headline, indicate
     the headline is at least nominally about the ticker.
 
     Always includes the bare symbol. Adds the corporate name (suffix-stripped)
-    when available. Short residues (<= 2 chars) are dropped so the filter
+    when available. For known sector/index ETFs, also includes
+    sector-keyword phrases since their official corporate name never appears
+    in headlines. Short residues (<= 2 chars) are dropped so the filter
     doesn't degenerate to matching every headline.
     """
     aliases: list[str] = [ticker.upper()]
-    if stock_name:
+    etf_extra = _ETF_SECTOR_ALIASES.get(ticker.upper(), [])
+    # ETF corporate names ("State Street ...", "Invesco ...", "iShares ...")
+    # match unrelated issuer-news headlines and aren't actually about the
+    # fund. Skip the stock_name alias path entirely when ETF aliases exist.
+    if stock_name and not etf_extra:
         normalized = _normalize_company_name(stock_name)
         if len(normalized) >= 3 and normalized.upper() != ticker.upper():
             aliases.append(normalized)
+    aliases.extend(etf_extra)
     return aliases
 
 

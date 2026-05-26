@@ -106,6 +106,30 @@ class TestTickerAliases:
         # Hypothetical name that normalizes to <3 chars wouldn't be useful
         assert _ticker_aliases("AA", "AA, Inc.") == ["AA"]
 
+    def test_etf_sector_aliases_appended(self):
+        aliases = _ticker_aliases(
+            "XLU", "State Street Utilities Select Sector SPDR ETF"
+        )
+        assert "XLU" in aliases
+        assert "utilities sector" in aliases
+        assert "utility sector" in aliases
+        assert not any("State Street" in a for a in aliases)
+
+    def test_etf_skips_issuer_name(self):
+        aliases = _ticker_aliases("QQQ", "Invesco QQQ Trust")
+        assert "QQQ" in aliases
+        assert "Nasdaq 100" in aliases
+        assert not any("Invesco" in a for a in aliases)
+
+    def test_vix_index_aliases(self):
+        aliases = _ticker_aliases("^VIX", "CBOE Volatility Index")
+        assert "VIX" in aliases
+        assert "volatility index" in aliases
+
+    def test_non_etf_ticker_unchanged(self):
+        aliases = _ticker_aliases("AAPL", "Apple Inc.")
+        assert aliases == ["AAPL", "Apple"]
+
 
 class TestIsRelevantToTicker:
     """Real headlines from the 2026-05-26 INTC sentiment pollution audit.
