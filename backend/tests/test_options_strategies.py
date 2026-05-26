@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from src.models.ensemble import EnsembleScore
-from src.models.options_strategies import SpreadBuilder, SpreadRecommendation
+from src.models.options_strategies import SpreadBuilder, SpreadRecommendation, _snap_strike
 
 
 def _make_score(ticker="AAPL", score=0.7, directional=0.7, volatility=0.4, sentiment=0.6):
@@ -271,3 +271,60 @@ class TestSpreadRiskType:
         if result:
             assert result.max_loss > 0
             assert result.max_loss < float("inf")
+
+
+class TestSnapStrike:
+    """Math-derived target strikes must snap to tradeable equity option grid."""
+
+    def test_low_price_half_dollar(self):
+        assert _snap_strike(12.86) == 13.0
+        assert _snap_strike(12.74) == 12.5
+        assert _snap_strike(7.30) == 7.5
+        assert _snap_strike(24.99) == 25.0
+
+    def test_mid_price_whole_dollar(self):
+        assert _snap_strike(122.24) == 122.0
+        assert _snap_strike(128.23) == 128.0
+        assert _snap_strike(107.75) == 108.0
+        assert _snap_strike(62.86) == 63.0
+        assert _snap_strike(25.0) == 25.0
+        assert _snap_strike(199.4) == 199.0
+
+    def test_high_price_five_dollar(self):
+        assert _snap_strike(518.57) == 520.0
+        assert _snap_strike(492.11) == 490.0
+        assert _snap_strike(200.0) == 200.0
+        assert _snap_strike(1234.0) == 1235.0
+
+
+class TestFallbackStrikeSnapping:
+    """Without chain_data, spread legs must carry tradeable (non-fractional) strikes."""
+
+    def test_no_chain_data_bear_call_strikes_snapped(self):
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.8, volatility=0.3)
+        # Price 122.78 → bear_call sell = round(122.78 * 1.02, 2) = 125.24,
+        # buy = round(122.78 * 1.07, 2) = 131.37 — both fractional pre-fix.
+        result = builder.suggest_spread(score, current_price=122.78)
+        assert result is not None
+        for leg in result.legs:
+            assert leg.strike == int(leg.strike), f"fractional strike leaked: {leg.strike}"
+
+    def test_no_chain_data_high_price_snaps_to_five(self):
+        builder = SpreadBuilder(max_position=10000)
+        score = _make_score(directional=0.8, volatility=0.7)
+        # Price 505.0 → bear_put buy = 494.9, sell = 469.65 (fractional).
+        result = builder.suggest_spread(score, current_price=505.0)
+        assert result is not None
+        for leg in result.legs:
+            assert leg.strike % 5 == 0, f"high-price strike not on $5 grid: {leg.strike}"
+
+    def test_no_chain_data_low_price_snaps_to_half(self):
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.8, volatility=0.3)
+        # Price 18.0 → strikes well under $25
+        result = builder.suggest_spread(score, current_price=18.0)
+        if result is not None:
+            for leg in result.legs:
+                # On $0.50 grid: 2 * strike must be integer
+                assert (leg.strike * 2) == int(leg.strike * 2), f"sub-$25 strike not on $0.50: {leg.strike}"

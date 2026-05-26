@@ -14,6 +14,21 @@ from src.models.ensemble import EnsembleScore
 logger = logging.getLogger(__name__)
 
 
+def _snap_strike(target: float) -> float:
+    """Snap a math-derived strike to a tradeable equity option strike.
+
+    Standard equity option chain increments (best-effort default; the
+    actual chain may use $2.50 grids in some price bands, but $0.50 / $1 /
+    $5 captures the common case and — critically — eliminates fractional
+    cents that Alpaca rejects as "asset not found").
+    """
+    if target < 25:
+        return round(target * 2) / 2.0
+    if target < 200:
+        return float(round(target))
+    return float(round(target / 5) * 5)
+
+
 class SpreadLeg(BaseModel):
     """A single leg of an options spread."""
     option_type: str  # "call" or "put"
@@ -151,11 +166,14 @@ class SpreadBuilder:
                     premium = nearest["last"]
                 else:
                     # Real data exists but no usable prices — fall back to BS
-                    return self._estimate_premium(price, target_strike, iv, t, option_type), target_strike, False
+                    snapped = _snap_strike(target_strike)
+                    return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False
                 return premium, nearest["strike"], True
 
-        # Fallback to BS estimate
-        return self._estimate_premium(price, target_strike, iv, t, option_type), target_strike, False
+        # Fallback to BS estimate — snap target to a tradeable strike so the
+        # downstream OCC symbol routes against an asset Alpaca actually lists.
+        snapped = _snap_strike(target_strike)
+        return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False
 
     def _get_iv_from_chain(
         self, chain_data: list[dict] | None, target_strike: float, option_type: str, default_iv: float,
