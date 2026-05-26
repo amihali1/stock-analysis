@@ -56,6 +56,13 @@ class PortfolioSync:
         count = 0
 
         for o in orders:
+            if not o.get("ticker"):
+                logger.warning(
+                    "Skipping order %s with null ticker (likely MLEG parent "
+                    "with no derivable underlying)",
+                    o.get("order_id"),
+                )
+                continue
             existing = (
                 self.db.query(AlpacaOrder)
                 .filter_by(alpaca_order_id=o["order_id"])

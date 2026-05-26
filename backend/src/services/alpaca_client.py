@@ -3,7 +3,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
+
+_OCC_RE = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
+
+
+def _underlying_from_occ(symbol: str | None) -> str | None:
+    """Extract underlying ticker from OCC option symbol (e.g. INTC260626C00122000 -> INTC)."""
+    if not symbol:
+        return None
+    m = _OCC_RE.match(symbol)
+    return m.group(1) if m else None
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
@@ -297,9 +308,20 @@ class AlpacaClient:
                 }
                 for leg in legs
             ]
+        # MLEG parent orders have symbol=None; underlying lives only on legs.
+        # Derive from the first leg's OCC symbol so downstream consumers
+        # (alpaca_orders.ticker NOT NULL, capital-cap queries) get the
+        # underlying ticker.
+        ticker = order.symbol
+        if ticker is None and leg_dicts:
+            for leg in leg_dicts:
+                u = _underlying_from_occ(leg.get("symbol"))
+                if u:
+                    ticker = u
+                    break
         return {
             "order_id": str(order.id),
-            "ticker": order.symbol,
+            "ticker": ticker,
             "side": order.side.value if order.side else None,
             "qty": float(order.qty) if order.qty else 0,
             "type": order.type.value if order.type else None,

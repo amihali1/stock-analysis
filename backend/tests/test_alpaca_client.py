@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from datetime import datetime, timezone
 
-from src.services.alpaca_client import AlpacaClient
+from src.services.alpaca_client import AlpacaClient, _underlying_from_occ
 
 
 def _mock_account(**overrides):
@@ -198,6 +198,52 @@ class TestOrderManagement:
         result = client.cancel_all_orders()
 
         assert result["canceled"] == 2
+
+
+class TestUnderlyingFromOcc:
+    def test_call_option(self):
+        assert _underlying_from_occ("INTC260626C00122000") == "INTC"
+
+    def test_put_option(self):
+        assert _underlying_from_occ("AAPL250117P00150000") == "AAPL"
+
+    def test_six_char_underlying(self):
+        assert _underlying_from_occ("BRKB250117C00400000") == "BRKB"
+
+    def test_non_occ_returns_none(self):
+        assert _underlying_from_occ("AAPL") is None
+        assert _underlying_from_occ("") is None
+        assert _underlying_from_occ(None) is None
+
+
+class TestMlegOrderParentTicker:
+    def test_derives_underlying_from_first_leg(self):
+        leg1 = MagicMock()
+        leg1.id = "leg-1"
+        leg1.symbol = "INTC260626C00122000"
+        leg1.side = MagicMock(value="sell")
+        leg1.qty = "2"
+        leg1.status = MagicMock(value="filled")
+        leg1.filled_avg_price = "11.45"
+        leg1.filled_qty = "2"
+
+        leg2 = MagicMock()
+        leg2.id = "leg-2"
+        leg2.symbol = "INTC260626C00128000"
+        leg2.side = MagicMock(value="buy")
+        leg2.qty = "2"
+        leg2.status = MagicMock(value="filled")
+        leg2.filled_avg_price = "10.20"
+        leg2.filled_qty = "2"
+
+        parent = _mock_order(symbol=None, side=None, legs=[leg1, leg2])
+        parent.side = None
+        client, mock = _make_client()
+        mock.get_order_by_id.return_value = parent
+
+        result = client.get_order("mleg-parent")
+        assert result["ticker"] == "INTC"
+        assert result["legs"][0]["symbol"] == "INTC260626C00122000"
 
 
 class TestMarketClock:
