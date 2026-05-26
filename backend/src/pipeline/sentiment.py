@@ -26,13 +26,18 @@ _COMPANY_SUFFIXES = (
     ", Incorporated", " Incorporated",
     ", Inc.", " Inc.", ", Inc", " Inc",
     ", Corporation", " Corporation", ", Corp.", " Corp.",
-    ", Company", " Company", " Co.",
+    ", Company", " Company", ", Co.", " Co.",
+    ", Companies", " Companies",
     ", Ltd.", " Ltd.", " Limited",
     " plc", " PLC", " N.V.", " S.A.", " AG", " SE",
     " Holdings", " Holding", " Group",
     " Class A", " Class B", " Class C",
 )
 _COMPANY_PREFIXES = ("The ",)
+# Connector words left dangling after suffix removal: "Merck & Co." → "Merck &",
+# "Eli Lilly and Company" → "Eli Lilly and". Trim these so the alias is a clean
+# noun phrase that actually appears in headlines.
+_TRAILING_CONNECTORS = (" &", " and", " or", "&")
 
 
 def _normalize_company_name(name: str) -> str:
@@ -40,7 +45,9 @@ def _normalize_company_name(name: str) -> str:
 
     'Apple Inc.' → 'Apple'. 'The Boeing Company' → 'Boeing'.
     'Advanced Micro Devices, Inc.' → 'Advanced Micro Devices'.
-    Iterates because some names stack suffixes ('Holdings, Inc.').
+    'Merck & Co., Inc.' → 'Merck'. 'Eli Lilly and Company' → 'Eli Lilly'.
+    Iterates because some names stack suffixes ('Holdings, Inc.') and need
+    a second connector-trim pass after the main suffix pass.
     """
     out = name.strip()
     changed = True
@@ -49,6 +56,11 @@ def _normalize_company_name(name: str) -> str:
         for suf in _COMPANY_SUFFIXES:
             if out.endswith(suf):
                 out = out[: -len(suf)].rstrip(",").rstrip()
+                changed = True
+                break
+        for conn in _TRAILING_CONNECTORS:
+            if out.endswith(conn):
+                out = out[: -len(conn)].rstrip(",").rstrip()
                 changed = True
                 break
     for prefix in _COMPANY_PREFIXES:

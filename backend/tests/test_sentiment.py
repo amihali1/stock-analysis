@@ -78,6 +78,19 @@ class TestNormalizeCompanyName:
     def test_preserves_compound_names(self):
         assert _normalize_company_name("Advanced Micro Devices, Inc.") == "Advanced Micro Devices"
 
+    def test_strips_trailing_ampersand_connector(self):
+        # Real cases from the 2026-05-26 dry run that produced dead aliases
+        assert _normalize_company_name("Merck & Co., Inc.") == "Merck"
+        assert _normalize_company_name("JPMorgan Chase & Co.") == "JPMorgan Chase"
+        assert _normalize_company_name("Wells Fargo & Company") == "Wells Fargo"
+        assert _normalize_company_name("Deere & Company") == "Deere"
+
+    def test_strips_trailing_and_connector(self):
+        assert _normalize_company_name("Eli Lilly and Company") == "Eli Lilly"
+
+    def test_strips_companies_suffix(self):
+        assert _normalize_company_name("Lowe's Companies, Inc.") == "Lowe's"
+
 
 class TestTickerAliases:
     def test_includes_symbol(self):
