@@ -194,6 +194,89 @@ class TestPositionSizerOptions:
         rec = sizer.size_options(score, current_price=200.0, strike_offset_pct=0.05)
         assert rec.strike == 190.0  # 200 * 0.95
 
+    def test_chain_data_overrides_bs_estimate(self, sizer):
+        """When chain_data is provided, premium and strike come from chain."""
+        score = EnsembleScore(
+            ticker="AAPL", score=0.8, directional_signal=0.8,
+            volatility_signal=0.5, sentiment_signal=0.7,
+        )
+        chain = [
+            {"strike": 187.5, "option_type": "put", "bid": 2.50, "ask": 2.70, "last": 2.60},
+            {"strike": 190.0, "option_type": "put", "bid": 3.00, "ask": 3.20, "last": 3.10},
+            {"strike": 192.5, "option_type": "put", "bid": 3.60, "ask": 3.80, "last": 3.70},
+            {"strike": 190.0, "option_type": "call", "bid": 1.10, "ask": 1.30, "last": 1.20},
+        ]
+        rec = sizer.size_options(
+            score, current_price=200.0, strike_offset_pct=0.05,
+            chain_data=chain,
+        )
+        assert rec is not None
+        # Target = 190.0; nearest put = 190.0; premium = (3.00+3.20)/2 = 3.10
+        assert rec.strike == 190.0
+        assert rec.premium_per_contract == 310.0  # 3.10 * 100
+
+    def test_chain_data_nearest_strike(self, sizer):
+        """Chain lookup snaps to nearest actual chain strike, not BS-snap."""
+        score = EnsembleScore(
+            ticker="AAPL", score=0.8, directional_signal=0.8,
+            volatility_signal=0.5, sentiment_signal=0.7,
+        )
+        # Target = 200 * 0.95 = 190.0. Chain has 187.5 and 192.5 only.
+        chain = [
+            {"strike": 187.5, "option_type": "put", "bid": 2.50, "ask": 2.70, "last": 0},
+            {"strike": 192.5, "option_type": "put", "bid": 3.60, "ask": 3.80, "last": 0},
+        ]
+        rec = sizer.size_options(
+            score, current_price=200.0, strike_offset_pct=0.05, chain_data=chain,
+        )
+        assert rec is not None
+        # 190 is equidistant; min() picks first in tie. Either 187.5 or 192.5 acceptable.
+        assert rec.strike in (187.5, 192.5)
+
+    def test_chain_data_call_picks_call_contract(self, sizer):
+        score = EnsembleScore(
+            ticker="AAPL", score=0.8, directional_signal=0.8,
+            volatility_signal=0.5, sentiment_signal=0.7,
+        )
+        chain = [
+            {"strike": 210.0, "option_type": "put", "bid": 12.0, "ask": 12.2, "last": 12.1},
+            {"strike": 210.0, "option_type": "call", "bid": 1.40, "ask": 1.60, "last": 1.50},
+        ]
+        rec = sizer.size_options(
+            score, current_price=200.0, strike_offset_pct=0.05,
+            option_type="call", chain_data=chain,
+        )
+        assert rec is not None
+        assert rec.option_type == "call"
+        assert rec.strike == 210.0
+        assert rec.premium_per_contract == 150.0  # mid of call
+
+    def test_chain_data_empty_falls_back_to_bs(self, sizer):
+        score = EnsembleScore(
+            ticker="AAPL", score=0.8, directional_signal=0.8,
+            volatility_signal=0.5, sentiment_signal=0.7,
+        )
+        rec = sizer.size_options(
+            score, current_price=200.0, strike_offset_pct=0.05, chain_data=[],
+        )
+        assert rec is not None
+        assert rec.strike == 190.0  # _snap_strike fallback
+
+    def test_chain_data_no_matching_option_type_falls_back(self, sizer):
+        score = EnsembleScore(
+            ticker="AAPL", score=0.8, directional_signal=0.8,
+            volatility_signal=0.5, sentiment_signal=0.7,
+        )
+        # Chain has only calls; size_options default is put → fallback.
+        chain = [
+            {"strike": 190.0, "option_type": "call", "bid": 1.0, "ask": 1.2, "last": 1.1},
+        ]
+        rec = sizer.size_options(
+            score, current_price=200.0, strike_offset_pct=0.05, chain_data=chain,
+        )
+        assert rec is not None
+        assert rec.strike == 190.0
+
 
 class TestRiskType:
     """Verify risk_type labels on each strategy."""

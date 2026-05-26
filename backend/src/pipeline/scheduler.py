@@ -586,7 +586,10 @@ def job_generate_recommendations():
                             cap_busted = True
 
                     if not persisted:
-                        call_rec = sizer.size_options(score, close_price, option_type="call")
+                        call_rec = sizer.size_options(
+                            score, close_price, option_type="call",
+                            chain_data=chain_data,
+                        )
                         if call_rec is None:
                             bull_no_call += 1
                         else:
@@ -605,7 +608,7 @@ def job_generate_recommendations():
                                 contracts=call_rec.contracts,
                                 strike=call_rec.strike,
                                 option_type=call_rec.option_type,
-                                expiry=today + timedelta(days=call_rec.expiry_days),
+                                expiry=chain_expiry or (today + timedelta(days=call_rec.expiry_days)),
                                 risk_type="defined",
                             )
                             cost = _rec_capital_cost(rec)
@@ -696,7 +699,9 @@ def job_generate_recommendations():
                         cap_busted = True
 
                 if not persisted:
-                    options_rec = sizer.size_options(score, close_price)
+                    options_rec = sizer.size_options(
+                        score, close_price, chain_data=chain_data,
+                    )
                     if options_rec is None:
                         bear_no_options += 1
                     else:
@@ -715,7 +720,7 @@ def job_generate_recommendations():
                             contracts=options_rec.contracts,
                             strike=options_rec.strike,
                             option_type=options_rec.option_type,
-                            expiry=today + timedelta(days=options_rec.expiry_days),
+                            expiry=chain_expiry or (today + timedelta(days=options_rec.expiry_days)),
                             risk_type="defined",
                         )
                         cost = _rec_capital_cost(rec)

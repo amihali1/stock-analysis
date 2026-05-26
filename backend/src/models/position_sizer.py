@@ -18,6 +18,34 @@ DEFAULT_STOP_LOSS_PCT = 0.05  # 5% stop-loss for shorts
 DEFAULT_TARGET_PCT = 0.10  # 10% target for shorts
 
 
+def _lookup_chain_premium(
+    chain_data: list[dict] | None, target_strike: float, option_type: str
+) -> tuple[float | None, float | None]:
+    """Find nearest-strike contract for option_type; return (premium, strike).
+
+    Premium = (bid+ask)/2 when both quoted, else last. Returns (None, None) if
+    chain is empty / has no candidates / has no usable price — caller falls
+    back to BS estimate + integer-snap. Strike returned is the actual chain
+    strike (already a tradeable equity option strike), not the math target.
+    """
+    if not chain_data:
+        return None, None
+    candidates = [r for r in chain_data if r.get("option_type") == option_type]
+    if not candidates:
+        return None, None
+    nearest = min(candidates, key=lambda r: abs(r["strike"] - target_strike))
+    bid = nearest.get("bid") or 0
+    ask = nearest.get("ask") or 0
+    last = nearest.get("last") or 0
+    if bid > 0 and ask > 0:
+        premium = (bid + ask) / 2.0
+    elif last > 0:
+        premium = last
+    else:
+        return None, None
+    return premium, nearest["strike"]
+
+
 class ShortRecommendation(BaseModel):
     """A short-selling recommendation."""
     ticker: str
@@ -192,6 +220,7 @@ class PositionSizer:
         strike_offset_pct: float = 0.05,
         expiry_days: int = 30,
         option_type: str = "put",
+        chain_data: list[dict] | None = None,
     ) -> OptionsRecommendation | None:
         """Size a long-options position (put or call).
 
@@ -200,6 +229,11 @@ class PositionSizer:
 
         option_type="put"  -> bearish (strike below current, direction="short")
         option_type="call" -> bullish (strike above current, direction="long")
+
+        When chain_data is provided, premium and strike are pulled from the
+        actual chain (nearest contract by strike for the target option_type).
+        Falls back to 3%-of-price BS estimate + integer-snap when chain is
+        absent or has no matching contract — same behavior as before.
         """
         if option_type not in ("put", "call"):
             raise ValueError(f"option_type must be 'put' or 'call', got {option_type!r}")
@@ -207,9 +241,23 @@ class PositionSizer:
         if current_price <= 0:
             return None
 
-        # Estimate premium if not provided (~2-5% of stock price for near-ATM options)
-        if premium_per_share is None:
-            premium_per_share = current_price * 0.03
+        if option_type == "call":
+            target = current_price * (1 + strike_offset_pct)
+            direction = "long"
+        else:
+            target = current_price * (1 - strike_offset_pct)
+            direction = "short"
+
+        chain_premium, chain_strike = _lookup_chain_premium(
+            chain_data, target, option_type,
+        )
+        if chain_premium is not None and chain_strike is not None:
+            premium_per_share = chain_premium
+            strike = chain_strike
+        else:
+            if premium_per_share is None:
+                premium_per_share = current_price * 0.03
+            strike = _snap_strike(target)
 
         cost_per_contract = premium_per_share * 100
 
@@ -225,14 +273,6 @@ class PositionSizer:
             return None
 
         total_cost = max_contracts * cost_per_contract
-
-        if option_type == "call":
-            target = current_price * (1 + strike_offset_pct)
-            direction = "long"
-        else:
-            target = current_price * (1 - strike_offset_pct)
-            direction = "short"
-        strike = _snap_strike(target)
 
         return OptionsRecommendation(
             ticker=score.ticker,
