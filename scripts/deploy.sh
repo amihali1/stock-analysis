@@ -50,6 +50,15 @@ sync_tree frontend "${REMOTE_DIR}/frontend" \
 # Build and restart all services.
 ssh "${SSH_TARGET}" "cd ${REMOTE_DIR}/backend && docker compose up -d --build"
 
+# Run alembic migrations. Skipping this drops new columns/widenings on the
+# floor — portfolio_sync crashed on 2026-05-26 because migration
+# q7r9s1t3u5v7 (VARCHAR(10)->VARCHAR(25) for OCC option symbols) shipped
+# but was never applied. Run after `up -d --build` so the new image is
+# what executes alembic.
+echo ""
+echo "Running alembic migrations..."
+ssh "${SSH_TARGET}" "docker exec backend-backend-1 alembic upgrade head"
+
 # Settings smoke test. The pipeline crashes silently 6+ hours later on
 # AttributeError when config/__init__.py drifts from scheduler.py
 # references. See partial_scp_deploy_drift memory. Catch it here.
