@@ -510,24 +510,30 @@ def job_generate_recommendations():
             selected_bear = sum(1 for c in selected if c.direction == "drop")
             selected_bull = len(selected) - selected_bear
 
-            def _fetch_chain(ticker_: str, target_days: int = 30) -> list[dict] | None:
-                """Fetch options chain for a ticker. None on miss; chain list on hit."""
+            def _fetch_chain(ticker_: str, target_days: int = 30) -> tuple[list[dict] | None, date | None]:
+                """Fetch options chain for a ticker. Returns (chain, expiration_date).
+
+                The expiration date is critical: when chain_data is used the leg
+                strikes come from the actual chain expiry, so rec.expiry MUST be
+                set to that same date or the downstream OCC symbol carries the
+                wrong YYMMDD and Alpaca rejects with "asset not found".
+                """
                 nonlocal chain_hits, chain_misses
                 try:
                     exp = chain_fetcher.find_expiration_near_days(ticker_, target_days)
                     if not exp:
                         chain_misses += 1
-                        return None
+                        return None, None
                     chain = chain_fetcher.fetch_chain(ticker_, exp)
                     if chain:
                         chain_hits += 1
-                        return chain
+                        return chain, date.fromisoformat(exp)
                     chain_misses += 1
-                    return None
+                    return None, None
                 except Exception:
                     logger.exception("Scheduler: chain fetch failed for %s", ticker_)
                     chain_misses += 1
-                    return None
+                    return None, None
 
             for cand in selected:
                 ticker = cand.ticker
@@ -545,7 +551,7 @@ def job_generate_recommendations():
                     # Bullish routing: defined-risk first, then long-call options,
                     # then long stock. Long-stock is direction-equivalent to a
                     # short borrow on the bearish side (highest-risk fallback).
-                    chain_data = _fetch_chain(ticker)
+                    chain_data, chain_expiry = _fetch_chain(ticker)
                     bull_spread_rec = sizer.size_bull_spread(score, close_price, chain_data=chain_data)
                     if bull_spread_rec is None:
                         bull_no_bull_spread += 1
@@ -563,7 +569,7 @@ def job_generate_recommendations():
                             position_size=abs(bull_spread_rec.net_credit),
                             max_loss=bull_spread_rec.max_loss,
                             contracts=bull_spread_rec.contracts,
-                            expiry=today + timedelta(days=bull_spread_rec.expiry_days),
+                            expiry=chain_expiry or (today + timedelta(days=bull_spread_rec.expiry_days)),
                             legs_json=json.dumps([leg.model_dump() for leg in bull_spread_rec.legs]),
                             risk_type="defined",
                             notes=bull_spread_rec.strategy_name,
@@ -655,7 +661,7 @@ def job_generate_recommendations():
                     continue
 
                 # Bearish routing (direction == "drop"): spread → put options → short.
-                chain_data = _fetch_chain(ticker)
+                chain_data, chain_expiry = _fetch_chain(ticker)
                 spread_rec = sizer.size_spread(score, close_price, chain_data=chain_data)
                 if spread_rec is None:
                     bear_no_spread += 1
@@ -673,7 +679,7 @@ def job_generate_recommendations():
                         position_size=abs(spread_rec.net_credit),
                         max_loss=spread_rec.max_loss,
                         contracts=spread_rec.contracts,
-                        expiry=today + timedelta(days=spread_rec.expiry_days),
+                        expiry=chain_expiry or (today + timedelta(days=spread_rec.expiry_days)),
                         legs_json=json.dumps([leg.model_dump() for leg in spread_rec.legs]),
                         risk_type="defined",
                         notes=spread_rec.strategy_name,
