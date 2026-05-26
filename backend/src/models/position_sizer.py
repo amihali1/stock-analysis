@@ -8,6 +8,7 @@ import math
 from pydantic import BaseModel, Field
 
 from src.models.ensemble import EnsembleScore
+from src.models.options_strategies import _snap_strike
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -226,11 +227,12 @@ class PositionSizer:
         total_cost = max_contracts * cost_per_contract
 
         if option_type == "call":
-            strike = round(current_price * (1 + strike_offset_pct), 2)
+            target = current_price * (1 + strike_offset_pct)
             direction = "long"
         else:
-            strike = round(current_price * (1 - strike_offset_pct), 2)
+            target = current_price * (1 - strike_offset_pct)
             direction = "short"
+        strike = _snap_strike(target)
 
         return OptionsRecommendation(
             ticker=score.ticker,

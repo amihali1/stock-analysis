@@ -285,6 +285,7 @@ def job_generate_recommendations():
         from src.models.ensemble import Ensemble, SignalInputs
         from src.models.position_sizer import PositionSizer
         from src.pipeline.rec_ranker import Candidate, select_candidates
+        from src.services.options_chain import OptionsChainFetcher
         from datetime import date, timedelta
         from sqlalchemy import func
 
@@ -309,6 +310,9 @@ def job_generate_recommendations():
             vol_model = None
         ensemble = Ensemble()
         sizer = PositionSizer()
+        chain_fetcher = OptionsChainFetcher()
+        chain_hits = 0
+        chain_misses = 0
         today = date.today()
         count = 0
         no_indicator = 0
@@ -506,6 +510,25 @@ def job_generate_recommendations():
             selected_bear = sum(1 for c in selected if c.direction == "drop")
             selected_bull = len(selected) - selected_bear
 
+            def _fetch_chain(ticker_: str, target_days: int = 30) -> list[dict] | None:
+                """Fetch options chain for a ticker. None on miss; chain list on hit."""
+                nonlocal chain_hits, chain_misses
+                try:
+                    exp = chain_fetcher.find_expiration_near_days(ticker_, target_days)
+                    if not exp:
+                        chain_misses += 1
+                        return None
+                    chain = chain_fetcher.fetch_chain(ticker_, exp)
+                    if chain:
+                        chain_hits += 1
+                        return chain
+                    chain_misses += 1
+                    return None
+                except Exception:
+                    logger.exception("Scheduler: chain fetch failed for %s", ticker_)
+                    chain_misses += 1
+                    return None
+
             for cand in selected:
                 ticker = cand.ticker
                 score = cand.score
@@ -522,7 +545,8 @@ def job_generate_recommendations():
                     # Bullish routing: defined-risk first, then long-call options,
                     # then long stock. Long-stock is direction-equivalent to a
                     # short borrow on the bearish side (highest-risk fallback).
-                    bull_spread_rec = sizer.size_bull_spread(score, close_price)
+                    chain_data = _fetch_chain(ticker)
+                    bull_spread_rec = sizer.size_bull_spread(score, close_price, chain_data=chain_data)
                     if bull_spread_rec is None:
                         bull_no_bull_spread += 1
                     else:
@@ -631,7 +655,8 @@ def job_generate_recommendations():
                     continue
 
                 # Bearish routing (direction == "drop"): spread → put options → short.
-                spread_rec = sizer.size_spread(score, close_price)
+                chain_data = _fetch_chain(ticker)
+                spread_rec = sizer.size_spread(score, close_price, chain_data=chain_data)
                 if spread_rec is None:
                     bear_no_spread += 1
                 else:
@@ -742,6 +767,10 @@ def job_generate_recommendations():
             db.commit()
         finally:
             db.close()
+            try:
+                chain_fetcher.close()
+            except Exception:
+                logger.exception("Scheduler: chain_fetcher.close failed")
 
         # Per-direction bumps (drop-side dead-zone visibility, 2026-05-14).
         # Both .inc() calls run unconditionally so each direction emits a
@@ -788,7 +817,8 @@ def job_generate_recommendations():
             f"{no_sizer_match} none, "
             f"cap: ${capital_used:.0f}/${available_cap:.0f} "
             f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
-            f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B])",
+            f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B], "
+            f"chain {chain_hits}h/{chain_misses}m)",
         )
 
     except Exception:
