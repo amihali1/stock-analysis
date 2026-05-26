@@ -212,7 +212,7 @@ class AlpacaPosition(Base):
     __tablename__ = "alpaca_positions"
 
     id = Column(Integer, primary_key=True)
-    ticker = Column(String(10), nullable=False, index=True)
+    ticker = Column(String(25), nullable=False, index=True)
     qty = Column(Float, nullable=False)
     side = Column(String(10), default="long")
     avg_entry_price = Column(Float)
@@ -227,7 +227,7 @@ class AlpacaOrder(Base):
 
     id = Column(Integer, primary_key=True)
     alpaca_order_id = Column(String(100), unique=True, index=True)
-    ticker = Column(String(10), nullable=False)
+    ticker = Column(String(25), nullable=False)
     side = Column(String(10))
     qty = Column(Float)
     order_type = Column(String(20))
