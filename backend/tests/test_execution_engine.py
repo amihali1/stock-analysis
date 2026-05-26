@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Alert, Base, Recommendation, Stock, TradingLog
+from src.db.models import Alert, Base, PaperTrade, Recommendation, Stock, TradingLog
 from src.services.execution_engine import ExecutionEngine
 from src.services.order_mapper import AlpacaOrderParams, OrderMapper
 
@@ -140,6 +140,61 @@ class TestExecuteRecommendations:
         alerts = db.query(Alert).all()
         assert len(alerts) == 1
         assert "SUBMITTED" in alerts[0].message
+
+
+class TestDedup:
+    def test_skips_if_already_submitted_today(self):
+        db = _make_db()
+        rec = _make_rec(db)
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                first = engine.execute_recommendations()
+                second = engine.execute_recommendations()
+
+        assert first[0]["status"] == "submitted"
+        assert second[0]["status"] == "duplicate"
+        assert second[0]["order_id"] == "test-order-001"
+        assert alpaca.submit_bracket_order.call_count == 1
+
+    def test_different_strategy_same_ticker_not_deduped(self):
+        db = _make_db()
+        _make_rec(db, ticker="AAPL", strategy="short")
+        # Pre-existing submit for AAPL options should not block AAPL short
+        db.add(TradingLog(
+            ticker="AAPL", action="submit", strategy="options",
+            order_id="prev-001", passed_safety=1,
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+
+
+class TestPaperTradePersist:
+    def test_paper_trade_row_created_on_submit(self):
+        db = _make_db()
+        rec = _make_rec(db)
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                engine.execute_recommendations()
+
+        trades = db.query(PaperTrade).all()
+        assert len(trades) == 1
+        assert trades[0].ticker == rec.ticker
+        assert trades[0].strategy == rec.strategy
+        assert trades[0].status == "open"
+        assert trades[0].score == rec.score
 
 
 class TestExecuteById:

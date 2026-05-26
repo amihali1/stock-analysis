@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, time
 
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.db.models import Recommendation, TradingLog
+from src.db.models import PaperTrade, Recommendation, TradingLog
 from src.services.alpaca_client import AlpacaClient
 from src.services.order_mapper import OrderMapper
 from src.services.safety_rails import TradingSafetyRails
@@ -86,10 +86,59 @@ class ExecutionEngine:
         rails = TradingSafetyRails(self.db)
         return self._execute_single(rec, rails, market_open)
 
+    def _already_submitted_today(self, rec: Recommendation) -> str | None:
+        """Return existing order_id if this rec's (ticker, strategy) already submitted today."""
+        today_start = datetime.combine(date.today(), time.min)
+        existing = (
+            self.db.query(TradingLog)
+            .filter(
+                TradingLog.ticker == rec.ticker,
+                TradingLog.strategy == rec.strategy,
+                TradingLog.action == "submit",
+                TradingLog.created_at >= today_start,
+            )
+            .order_by(TradingLog.created_at.desc())
+            .first()
+        )
+        return existing.order_id if existing else None
+
+    def _persist_paper_trade(self, rec: Recommendation, order_id: str) -> None:
+        """Create a PaperTrade row mirroring the submitted rec."""
+        try:
+            self.db.add(PaperTrade(
+                ticker=rec.ticker,
+                direction=rec.direction or "short",
+                strategy=rec.strategy,
+                status="open",
+                entry_price=rec.entry_price or 0.0,
+                stop_loss=rec.stop_loss,
+                target_price=rec.target_price,
+                position_size=rec.position_size,
+                max_loss=rec.max_loss,
+                contracts=rec.contracts,
+                strike=rec.strike,
+                option_type=rec.option_type,
+                legs_json=rec.legs_json,
+                score=rec.score,
+            ))
+            self.db.commit()
+        except Exception:
+            logger.exception("PaperTrade persist failed for rec %s (order %s)", rec.id, order_id)
+            self.db.rollback()
+
     def _execute_single(
         self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
     ) -> dict:
         """Execute a single recommendation through the pipeline."""
+        # Dedup: skip if (ticker, strategy) already submitted today
+        dup_order = self._already_submitted_today(rec)
+        if dup_order:
+            reason = f"Already submitted today as {dup_order}"
+            return {
+                "rec_id": rec.id, "ticker": rec.ticker,
+                "status": "duplicate", "order_id": dup_order, "reason": reason,
+            }
+
         # Get buying power
         try:
             account = self.alpaca.get_account()
@@ -164,6 +213,7 @@ class ExecutionEngine:
 
             order_id = result["order_id"]
             rails.log_submission(order_params, order_id)
+            self._persist_paper_trade(rec, order_id)
             self._send_alert(rec.ticker, "submitted", order_id, rec.strategy)
 
             return {
