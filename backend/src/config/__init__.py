@@ -44,10 +44,12 @@ class Settings(BaseSettings):
     # Total daily capital cap across ALL recommendations, direction-blind.
     # Bull and bear share one pool — the long-term aim is max profit-potential,
     # not balanced hedging (bullish_side_build memo, 2026-05-12). At ~$1k/trade
-    # and $5k aggregate, we get up to 5 concurrent positions before the cap
-    # kicks in. Capital consumed per rec is `max(position_size, max_loss)` so
-    # credit spreads count collateral (max_loss), not credit received.
-    daily_capital_cap: float = 5000.0
+    # and $25k aggregate, we get up to 25 concurrent positions before the cap
+    # kicks in. Paper mode uses 25k to give the pipeline headroom over the
+    # accumulated open-position deduction; live $1k mode overrides via env.
+    # Capital consumed per rec is `max(position_size, max_loss)` so credit
+    # spreads count collateral (max_loss), not credit received.
+    daily_capital_cap: float = 25000.0
     # Drop watchlist tickers whose latest close > this threshold BEFORE running
     # ML. Default 0.0 = disabled. At $250/trade, a $500 stock can't fit a long
     # share or short (with 1.5x margin), so its ranked slot is wasted on a
