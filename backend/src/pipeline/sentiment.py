@@ -148,8 +148,9 @@ def _is_relevant_to_ticker(headline: str, aliases: list[str]) -> bool:
 
 SENTIMENT_PROMPT = """You are a financial sentiment analyst. Analyze the following news headline about stock ticker {ticker} and return a JSON object with exactly these fields:
 
+- "is_relevant": true if the headline is materially about {ticker} (the company, its products, executives, earnings, regulation, peers in direct competition, or sector news that names {ticker}). false if the headline merely mentions {ticker} in passing, is about a different company that happens to share a name fragment, or is generic market commentary that doesn't move {ticker} specifically.
 - "sentiment": a float from -1.0 (extremely bearish) to 1.0 (extremely bullish), where 0.0 is neutral
-- "confidence": a float from 0.0 to 1.0 indicating how confident you are in your assessment
+- "confidence": a float from 0.0 to 1.0 indicating how confident you are in your sentiment assessment
 - "reasoning": a brief 1-sentence explanation
 
 Headline: "{headline}"
@@ -158,6 +159,10 @@ Respond with ONLY the JSON object, no other text:"""
 
 
 class SentimentResult(BaseModel):
+    # Defaults True so cached responses + older fixtures parse cleanly. The
+    # LLM gate is additive — when the model omits the field we treat the
+    # headline as relevant (regex alias filter already gated it).
+    is_relevant: bool = True
     sentiment: float = Field(ge=-1.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""
@@ -270,6 +275,7 @@ class SentimentAnalyzer:
 
         scores: list[SentimentResult] = []
         rows: list[SentimentScore] = []
+        llm_off_ticker = 0
         for headline, outcome in zip(headlines, gathered):
             if isinstance(outcome, BaseException):
                 logger.exception(
@@ -279,6 +285,13 @@ class SentimentAnalyzer:
                 continue
             result, raw_response = outcome
             if result is None:
+                continue
+            # Second relevance defense: regex aliases catch substring matches
+            # but miss semantic mismatches (Apple-the-fruit, sibling-company
+            # earnings, passing mentions). LLM gate filters those before the
+            # row poisons the composite.
+            if not result.is_relevant:
+                llm_off_ticker += 1
                 continue
             scores.append(result)
             rows.append(SentimentScore(
@@ -291,6 +304,12 @@ class SentimentAnalyzer:
                 reasoning=result.reasoning,
                 raw_response=raw_response,
             ))
+
+        if llm_off_ticker:
+            logger.info(
+                f"{ticker}: LLM dropped {llm_off_ticker} of {len(headlines)} headlines "
+                f"as off-ticker (regex alias passed but is_relevant=false)"
+            )
 
         if rows:
             db.add_all(rows)

@@ -41,6 +41,16 @@ class TestSentimentResult:
         with pytest.raises(Exception):
             SentimentResult(sentiment=1.5, confidence=0.5)
 
+    def test_is_relevant_default_true(self):
+        # Default must be True so cached responses + older fixtures parse
+        # without LLM-gate breakage.
+        r = SentimentResult(sentiment=0.0, confidence=0.5)
+        assert r.is_relevant is True
+
+    def test_is_relevant_explicit_false(self):
+        r = SentimentResult(sentiment=0.0, confidence=0.5, is_relevant=False)
+        assert r.is_relevant is False
+
 
 class TestWeightedAverage:
     def test_simple(self):
@@ -442,6 +452,146 @@ class TestRelevanceGate:
         assert result["scores_computed"] == 0
         assert result["composite_sentiment"] is None
         assert ollama_calls == 0  # Filter saved Ollama from any work
+
+
+class TestLLMRelevanceGate:
+    """Phase 2 of relevance filtering: LLM marks headlines that pass the
+    regex alias filter but are still semantically off-ticker (passing
+    mentions, sibling-company news, generic market commentary).
+    """
+
+    @pytest.mark.asyncio
+    async def test_is_relevant_false_drops_row(self, db_session, monkeypatch):
+        db_session.add(Stock(ticker="AAPL", name="Apple Inc."))
+        db_session.commit()
+
+        # Headline mentions "Apple" so alias filter passes — but the topic
+        # is about a different Apple (the orchard, in this constructed case).
+        headlines = [
+            Headline(title="Apple harvest season begins in Washington",
+                     source="yahoo_rss", date=date.today()),
+            Headline(title="Apple beats Q4 earnings",
+                     source="yahoo_rss", date=date.today()),
+        ]
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: headlines,
+        )
+
+        # LLM marks harvest headline irrelevant, earnings headline relevant.
+        async def mock_generate(self, prompt, model=None):
+            import re
+            m = re.search(r'Headline: "([^"]+)"', prompt)
+            title = m.group(1) if m else ""
+            if "harvest" in title.lower():
+                return json.dumps({
+                    "is_relevant": False,
+                    "sentiment": 0.0,
+                    "confidence": 1.0,
+                    "reasoning": "about fruit, not the company",
+                })
+            return json.dumps({
+                "is_relevant": True,
+                "sentiment": 0.8,
+                "confidence": 0.9,
+                "reasoning": "earnings beat",
+            })
+
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        analyzer = SentimentAnalyzer(db=db_session)
+        result = await analyzer.analyze_ticker("AAPL")
+
+        # Only the relevant headline contributes to score + composite + DB.
+        assert result["scores_computed"] == 1
+        assert result["composite_sentiment"] == pytest.approx(0.8, abs=0.01)
+        rows = db_session.query(SentimentScore).filter_by(ticker="AAPL").all()
+        assert len(rows) == 1
+        assert "harvest" not in rows[0].headline.lower()
+
+    @pytest.mark.asyncio
+    async def test_missing_is_relevant_field_defaults_to_kept(
+        self, db_session, monkeypatch
+    ):
+        # Back-compat: if a cached / older response has no is_relevant field,
+        # pydantic default (True) keeps the row. The regex alias filter has
+        # already gated it as nominally relevant — don't drop on missing key.
+        db_session.add(Stock(ticker="NVDA", name="NVIDIA Corporation"))
+        db_session.commit()
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [
+                Headline(title="NVIDIA tops estimates", source="finviz", date=date.today()),
+            ],
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+
+        async def mock_generate(self, prompt, model=None):
+            # No is_relevant key — simulates older / partial response.
+            return json.dumps({
+                "sentiment": 0.7,
+                "confidence": 0.8,
+                "reasoning": "beat",
+            })
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        analyzer = SentimentAnalyzer(db=db_session)
+        result = await analyzer.analyze_ticker("NVDA")
+
+        assert result["scores_computed"] == 1
+        rows = db_session.query(SentimentScore).filter_by(ticker="NVDA").all()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_all_irrelevant_yields_no_composite(self, db_session, monkeypatch):
+        db_session.add(Stock(ticker="INTC", name="Intel Corporation"))
+        db_session.commit()
+
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.FinvizFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [],
+        )
+        monkeypatch.setattr(
+            "src.services.headline_fetcher.YahooRssFetcher.fetch",
+            lambda self, ticker, max_headlines=10: [
+                # Both pass alias filter (mention "Intel") but LLM marks irrelevant.
+                Headline(title="Intel Corporation alumni network event",
+                         source="yahoo_rss", date=date.today()),
+                Headline(title="Intel reportedly mentioned at unrelated conference",
+                         source="yahoo_rss", date=date.today()),
+            ],
+        )
+
+        async def mock_generate(self, prompt, model=None):
+            return json.dumps({
+                "is_relevant": False,
+                "sentiment": 0.0,
+                "confidence": 1.0,
+                "reasoning": "off-ticker",
+            })
+        monkeypatch.setattr(
+            "src.services.ollama_client.OllamaClient.generate", mock_generate
+        )
+
+        analyzer = SentimentAnalyzer(db=db_session)
+        result = await analyzer.analyze_ticker("INTC")
+
+        assert result["scores_computed"] == 0
+        assert result["composite_sentiment"] is None
+        rows = db_session.query(SentimentScore).filter_by(ticker="INTC").all()
+        assert len(rows) == 0
 
 
 class TestRecencyGate:
