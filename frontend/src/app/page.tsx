@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import type {
   Recommendation,
+  SpreadLeg,
   Strategy,
   TradingMode,
 } from "@/lib/types";
@@ -55,6 +56,67 @@ function formatDollars(val: number | null): string {
 }
 
 type SortKey = "score" | "ticker" | "max_loss" | "position_size";
+
+function formatLeg(leg: SpreadLeg, expiry: string | null): string {
+  const action = leg.action.toUpperCase();
+  const qty = leg.contracts ?? "?";
+  const exp = expiry ? ` ${expiry}` : "";
+  const strike = `$${leg.strike}`;
+  const type = leg.option_type.toUpperCase();
+  const premium =
+    leg.premium !== null && leg.premium !== undefined
+      ? ` @ $${leg.premium.toFixed(2)}`
+      : "";
+  return `${action} ${qty}×${exp} ${strike} ${type}${premium}`;
+}
+
+function hasOptionDetail(rec: Recommendation): boolean {
+  if (rec.legs && rec.legs.length > 0) return true;
+  if (rec.strike !== null && rec.option_type !== null) return true;
+  return false;
+}
+
+function OptionDetailRow({
+  rec,
+  colSpan,
+}: {
+  rec: Recommendation;
+  colSpan: number;
+}) {
+  // Multi-leg spread: render each leg on its own line.
+  if (rec.legs && rec.legs.length > 0) {
+    return (
+      <tr className="border-b border-gray-800/50 bg-gray-950/40">
+        <td colSpan={colSpan} className="py-2 px-3">
+          <div className="pl-6 text-xs font-mono text-gray-400 space-y-0.5">
+            {rec.legs.map((leg, j) => (
+              <div key={j}>
+                <span className="text-gray-500">↳ </span>
+                {formatLeg(leg, rec.expiry)}
+              </div>
+            ))}
+          </div>
+        </td>
+      </tr>
+    );
+  }
+  // Single-leg option: derive a one-line summary from rec fields directly.
+  const action = rec.strategy === "short" ? "SELL" : "BUY";
+  const qty = rec.contracts ?? "?";
+  const exp = rec.expiry ? ` ${rec.expiry}` : "";
+  const strike = rec.strike !== null ? `$${rec.strike}` : "?";
+  const type = (rec.option_type || "").toUpperCase();
+  return (
+    <tr className="border-b border-gray-800/50 bg-gray-950/40">
+      <td colSpan={colSpan} className="py-2 px-3">
+        <div className="pl-6 text-xs font-mono text-gray-400">
+          <span className="text-gray-500">↳ </span>
+          {action} {qty}×{exp} {strike} {type}
+        </div>
+      </td>
+    </tr>
+  );
+}
 
 export default function DashboardPage() {
   return (
@@ -242,9 +304,12 @@ function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((rec, i) => (
+              {sorted.map((rec, i) => {
+                const baseCols = 9; // ticker, strategy, risk, score, sent, entry, stop, pos, max_loss
+                const colSpan = baseCols + (tradingEnabled ? 1 : 0);
+                return (
+                  <React.Fragment key={`${rec.ticker}-${rec.strategy}-${i}`}>
                 <tr
-                  key={`${rec.ticker}-${rec.strategy}-${i}`}
                   className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors"
                 >
                   <td className="py-3 px-3 font-mono font-bold">
@@ -294,7 +359,12 @@ function Dashboard() {
                     </td>
                   )}
                 </tr>
-              ))}
+                {hasOptionDetail(rec) && (
+                  <OptionDetailRow rec={rec} colSpan={colSpan} />
+                )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

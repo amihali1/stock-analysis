@@ -32,6 +32,14 @@ export interface PortfolioRiskReport {
   correlation: PortfolioRiskCorrelation | null;
 }
 
+export interface SpreadLeg {
+  option_type: string; // "call" | "put"
+  action: string; // "buy" | "sell"
+  strike: number;
+  premium: number | null;
+  contracts: number | null;
+}
+
 export interface Recommendation {
   id: number | null;
   ticker: string;
@@ -50,6 +58,7 @@ export interface Recommendation {
   strike: number | null;
   expiry: string | null;
   option_type: string | null;
+  legs: SpreadLeg[] | null;
   risk_type: RiskType;
   notes: string | null;
 }
