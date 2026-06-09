@@ -394,13 +394,20 @@ class OrderMapper:
             )
             return None
 
-        per_contract = cost / contracts
+        # Alpaca options limit_price is quoted PER SHARE (1 contract = 100
+        # shares). cost is total dollars, contracts is the spread count, so
+        # cost/contracts is dollars-per-contract; divide by 100 to get
+        # per-share. Without the /100 the limit_price is 100x inflated:
+        # Alpaca computed cost_basis = limit_price * 100 * qty and rejected
+        # the INTC spread on 2026-06-09 with $92,000 vs $20,856 buying power
+        # when intended cost was $920.
+        per_share = (cost / contracts) / 100
         return AlpacaOrderParams(
             ticker=ticker,
             qty=contracts,
             side="buy",
             order_type="limit",
-            limit_price=round(per_contract, 2),
+            limit_price=round(per_share, 2),
             strategy=strategy_label,
             dry_run=dry_run,
             legs=legs,

@@ -328,8 +328,9 @@ class TestBullSpreadMapping:
         assert result is not None
         assert result.strategy == "bull_spread"
         assert result.qty == 2
-        # per-contract limit = position_size / contracts
-        assert result.limit_price == 200.0
+        # Alpaca options limit_price is PER SHARE. position_size=400, contracts=2
+        # → per_contract=200 dollars → per_share=2.00 dollars (÷100 multiplier).
+        assert result.limit_price == 2.0
         # Per-leg OCC symbols built. Leg shape: occ_symbol, side, ratio_qty.
         assert result.legs is not None
         assert len(result.legs) == 2
@@ -356,7 +357,8 @@ class TestBullSpreadMapping:
             contracts=4, expiry=_EXPIRY, legs_json=_BULL_LEGS,
         )
         assert result is not None
-        assert result.qty * result.limit_price <= 1000
+        # Total dollar cost = qty (spreads) * limit_price (per share) * 100 (multiplier)
+        assert result.qty * result.limit_price * 100 <= 1000
 
     def test_bull_spread_insufficient_buying_power(self):
         mapper = OrderMapper(max_position=1000)
@@ -394,6 +396,26 @@ class TestBullSpreadMapping:
             contracts=2, expiry=_EXPIRY, legs_json="not-json",
         )
         assert result is None
+
+    def test_bull_spread_limit_price_is_per_share_not_per_contract(self):
+        """Regression: 2026-06-09 INTC submit was rejected for $92,000 cost_basis
+        vs $20,856 buying power. Root cause: limit_price was passed as
+        dollars-per-contract (e.g. $230) when Alpaca expects dollars-per-share
+        (e.g. $2.30). Alpaca then computed cost = limit_price × 100 × qty,
+        inflating by 100x. Guard against regression.
+        """
+        mapper = OrderMapper(max_position=10000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=920.0,
+            contracts=4, expiry=_EXPIRY, legs_json=_BULL_LEGS,
+        )
+        assert result is not None
+        # Per-share = 920 / 4 / 100 = 2.30. NOT 230.
+        assert result.limit_price == 2.30
+        # Alpaca-equivalent cost = limit * multiplier * qty should match
+        # position_size, not be 100x over.
+        assert result.limit_price * 100 * result.qty == 920.0
 
     def test_bull_spread_single_leg_rejected(self):
         single_leg = json.dumps([{"option_type": "call", "action": "buy", "strike": 150.0}])
