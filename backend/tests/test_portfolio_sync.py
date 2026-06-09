@@ -131,6 +131,101 @@ class TestSyncPositions:
         assert db.query(AlpacaPosition).count() == 0
 
 
+class TestCloseOrphanPaperTrades:
+    def _seed_stock(self, db, ticker):
+        db.add(Stock(ticker=ticker))
+        db.commit()
+
+    def test_closes_orphan_paper_trade_with_no_live_position_or_order(self):
+        db = _make_db()
+        self._seed_stock(db, "GOOG")
+        db.add(PaperTrade(ticker="GOOG", strategy="short", status="open", entry_price=100))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+
+        pt = db.query(PaperTrade).filter_by(ticker="GOOG").one()
+        assert pt.status == "closed"
+        assert pt.closed_at is not None
+
+    def test_keeps_open_when_alpaca_position_matches(self):
+        db = _make_db()
+        self._seed_stock(db, "AAPL")
+        db.add(PaperTrade(ticker="AAPL", strategy="long", status="open", entry_price=150))
+        db.commit()
+
+        client = _mock_client(positions=SAMPLE_POSITIONS[:1])  # AAPL
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+
+        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
+        assert pt.status == "open"
+
+    def test_keeps_open_when_in_flight_order_matches(self):
+        db = _make_db()
+        self._seed_stock(db, "AAPL")
+        db.add(PaperTrade(ticker="AAPL", strategy="long", status="open", entry_price=150))
+        db.add(AlpacaOrder(
+            alpaca_order_id="ord-pending", ticker="AAPL", side="buy",
+            qty=10.0, order_type="limit", status="new",
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+
+        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
+        assert pt.status == "open"
+
+    def test_occ_option_symbol_maps_to_underlying(self):
+        """PaperTrade.ticker='AAPL' should match an AlpacaPosition with an OCC
+        option symbol like 'AAPL260619C00200000' (underlying = AAPL)."""
+        db = _make_db()
+        self._seed_stock(db, "AAPL")
+        db.add(PaperTrade(ticker="AAPL", strategy="call_options", status="open", entry_price=2.5))
+        db.commit()
+
+        occ_position = {
+            "ticker": "AAPL260619C00200000",
+            "qty": 1.0,
+            "side": "long",
+            "avg_entry_price": 2.5,
+            "current_price": 3.0,
+            "market_value": 300.0,
+            "unrealized_pl": 50.0,
+            "unrealized_plpc": 0.2,
+            "change_today": 0.05,
+        }
+        client = _mock_client(positions=[occ_position])
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+
+        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
+        assert pt.status == "open"
+
+    def test_filled_order_does_not_keep_orphan_open(self):
+        """A 'filled' order is not in-flight — it should not protect an
+        orphan PaperTrade from being closed."""
+        db = _make_db()
+        self._seed_stock(db, "TSLA")
+        db.add(PaperTrade(ticker="TSLA", strategy="short", status="open", entry_price=200))
+        db.add(AlpacaOrder(
+            alpaca_order_id="ord-filled", ticker="TSLA", side="sell",
+            qty=5.0, order_type="market", status="filled",
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+
+        pt = db.query(PaperTrade).filter_by(ticker="TSLA").one()
+        assert pt.status == "closed"
+
+
 class TestSyncOrders:
     def test_inserts_new_orders(self):
         db = _make_db()

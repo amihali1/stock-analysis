@@ -68,14 +68,12 @@ class TradingSafetyRails:
         return True, ""
 
     def _check_position_limit(self) -> tuple[bool, str]:
-        # Count open positions (paper trades + alpaca positions)
+        # PaperTrade is source of truth — PortfolioSync.sync_positions auto-closes
+        # rows whose underlying is no longer live, so this count stays honest.
+        # Do NOT add AlpacaPosition.count(): a single PaperTrade can produce
+        # multiple AlpacaPosition rows (e.g. a vertical spread = 2 option legs),
+        # which previously double/triple-counted and tripped the cap prematurely.
         open_count = self.db.query(PaperTrade).filter_by(status="open").count()
-        try:
-            from src.db.models import AlpacaPosition
-            open_count += self.db.query(AlpacaPosition).count()
-        except Exception:
-            pass
-
         if open_count >= self.max_open_positions:
             return False, f"At position limit: {open_count}/{self.max_open_positions}"
         return True, ""
