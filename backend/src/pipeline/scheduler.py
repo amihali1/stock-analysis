@@ -841,7 +841,12 @@ def job_generate_recommendations():
 
 
 def job_execute_recommendations():
-    """8:00 AM ET — Auto-execute eligible recommendations (if enabled)."""
+    """10:00 AM ET — Auto-execute eligible recommendations (if enabled).
+
+    Runs 30 min after the 09:30 ET regular session open so the execution_engine
+    `allowed_hours_only` safety gate accepts submits (the prior 08:00 ET
+    trigger blocked 100% of orders because the market was not yet open).
+    """
     logger.info("Scheduler: starting recommendation execution")
     try:
         from src.db.session import SessionLocal
@@ -961,8 +966,10 @@ def init_scheduler():
     scheduler.add_job(job_sentiment, CronTrigger(hour=4, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="sentiment", replace_existing=True)
     scheduler.add_job(job_generate_recommendations, CronTrigger(hour=7, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="recommendations", replace_existing=True)
 
-    # Auto-execute: 8:00 AM ET (after 7:30 AM recommendation generation)
-    scheduler.add_job(job_execute_recommendations, CronTrigger(hour=8, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="execute_recommendations", replace_existing=True)
+    # Auto-execute: 10:00 AM ET — 30 min after regular session open so the
+    # `allowed_hours_only` safety gate in execution_engine accepts orders.
+    # Prior 08:00 ET trigger blocked 100% of submits (market not yet open).
+    scheduler.add_job(job_execute_recommendations, CronTrigger(hour=10, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="execute_recommendations", replace_existing=True)
 
     # Portfolio sync: every 5 minutes, weekdays 9:30 AM - 4:00 PM ET
     scheduler.add_job(job_sync_portfolio, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync", replace_existing=True)
