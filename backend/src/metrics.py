@@ -41,3 +41,20 @@ pipeline_job_errors_total = Counter(
     "Total scheduler job invocations that ended in error",
     ["job"],
 )
+
+# Paper-trading validation scoreboard (weekly job_paper_validation).
+# These are THE live-readiness numbers — Grafana panels read them directly.
+paper_validation_win_rate = Gauge(
+    "paper_validation_win_rate",
+    "Win rate of closed paper trades in the last validation window",
+)
+
+paper_validation_total_pnl = Gauge(
+    "paper_validation_total_pnl",
+    "Total realized P&L (dollars) of closed paper trades in the last validation window",
+)
+
+paper_validation_num_trades = Gauge(
+    "paper_validation_num_trades",
+    "Number of closed paper trades in the last validation window",
+)

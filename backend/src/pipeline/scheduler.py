@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -940,6 +940,89 @@ def job_monitor_fractional_exits():
         _record_run("monitor_exits", "error")
 
 
+def job_evaluate_paper_exits():
+    """6:15 AM ET weekdays — close open paper trades on stop/target/expiry.
+
+    Runs after fetch_prices (6:00) so "latest close" is the prior trading
+    day. Without this job PaperTrade rows stay open forever and the
+    paper-vs-backtest validation has no realized P&L to measure.
+    """
+    logger.info("Scheduler: starting paper exit evaluation")
+    try:
+        from src.db.session import SessionLocal
+        from src.services.paper_exits import evaluate_paper_exits
+
+        db = SessionLocal()
+        try:
+            results = evaluate_paper_exits(db)
+            closed = sum(1 for r in results if r["status"] == "closed")
+            held = sum(1 for r in results if r["status"] == "held")
+            errors = sum(1 for r in results if r["status"] == "error")
+            logger.info(
+                f"Scheduler: paper exits — {closed} closed, {held} held, "
+                f"{errors} errors, {len(results)} evaluated"
+            )
+            _record_run("paper_exits", f"ok ({closed} closed / {held} held / {len(results)} evaluated)")
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Scheduler: paper exit evaluation failed")
+        _record_run("paper_exits", "error")
+
+
+def job_paper_validation():
+    """Sunday 3:00 AM ET — persist the weekly paper-vs-backtest scoreboard.
+
+    Trailing 30-day window. Writes a ValidationReport row and updates the
+    paper_validation_* Prometheus gauges. This is the go/no-go time series
+    for flipping paper trading to live.
+    """
+    logger.info("Scheduler: starting paper validation")
+    try:
+        import json as _json
+        from datetime import timedelta
+
+        from src.db.session import SessionLocal
+        from src.db.models import ValidationReport
+        from src.metrics import (
+            paper_validation_num_trades,
+            paper_validation_total_pnl,
+            paper_validation_win_rate,
+        )
+        from src.services.paper_validation import PaperValidator, format_report
+
+        end = date.today()
+        start = end - timedelta(days=30)
+        db = SessionLocal()
+        try:
+            report = PaperValidator(db).validate(start, end)
+            paper = report["paper"]
+            db.add(ValidationReport(
+                window_start=start,
+                window_end=end,
+                num_paper_trades=paper["num_trades"],
+                paper_win_rate=paper["win_rate"],
+                paper_total_pnl=paper["total_pnl"],
+                ok=report["ok"],
+                report_json=_json.dumps(report),
+            ))
+            db.commit()
+            paper_validation_win_rate.set(paper["win_rate"])
+            paper_validation_total_pnl.set(paper["total_pnl"])
+            paper_validation_num_trades.set(paper["num_trades"])
+            logger.info("Scheduler: paper validation report\n%s", format_report(report))
+            _record_run(
+                "paper_validation",
+                f"ok ({paper['num_trades']} trades, wr {paper['win_rate']:.0%}, "
+                f"pnl ${paper['total_pnl']:.0f}, {'ok' if report['ok'] else 'DIVERGENT'})",
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Scheduler: paper validation failed")
+        _record_run("paper_validation", "error")
+
+
 def job_retrain_models():
     """First Sunday of each month — Retrain ML models with latest data."""
     logger.info("Scheduler: starting model retraining")
@@ -962,6 +1045,7 @@ def init_scheduler():
     """Initialize and start the scheduler with market-hours cron jobs (Eastern Time)."""
     # Weekdays only (mon-fri)
     scheduler.add_job(job_fetch_prices, CronTrigger(hour=6, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_prices", replace_existing=True)
+    scheduler.add_job(job_evaluate_paper_exits, CronTrigger(hour=6, minute=15, timezone="US/Eastern", day_of_week="mon-fri"), id="paper_exits", replace_existing=True)
     scheduler.add_job(job_compute_indicators, CronTrigger(hour=6, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="compute_indicators", replace_existing=True)
     scheduler.add_job(job_fetch_options, CronTrigger(hour=6, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_options", replace_existing=True)
     scheduler.add_job(job_fetch_insider_transactions, CronTrigger(hour=6, minute=50, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_insider_transactions", replace_existing=True)
@@ -992,6 +1076,7 @@ def init_scheduler():
     scheduler.add_job(job_monitor_fractional_exits, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="monitor_exits", replace_existing=True)
 
     # Monthly model retraining: first Sunday of each month at 2:00 AM ET
+    scheduler.add_job(job_paper_validation, CronTrigger(hour=3, minute=0, timezone="US/Eastern", day_of_week="sun"), id="paper_validation", replace_existing=True)
     scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)
 
     # Weekly earnings calendar refresh — Sunday 6:00 AM ET (P9-005)

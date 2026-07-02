@@ -29,6 +29,8 @@ EXPECTED_JOB_IDS = {
     "portfolio_sync",
     "portfolio_sync_close",
     "monitor_exits",
+    "paper_exits",
+    "paper_validation",
     "retrain_models",
     "fetch_earnings",
 }

@@ -119,6 +119,7 @@ class ExecutionEngine:
                 strike=rec.strike,
                 option_type=rec.option_type,
                 legs_json=rec.legs_json,
+                expiry=rec.expiry,
                 score=rec.score,
             ))
             self.db.commit()
@@ -130,6 +131,19 @@ class ExecutionEngine:
         self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
     ) -> dict:
         """Execute a single recommendation through the pipeline."""
+        # Hard kill-switch: ALPACA_TRADING_ENABLED is the env-level capability
+        # gate — it must be explicitly true for ANY order submission, no matter
+        # what the DB auto_execute_enabled runtime toggle says. Two-key design:
+        # env = capability (deploy-time, protects against accidental live keys),
+        # DB = intent (runtime on/off). Closing existing positions is NOT gated.
+        if not self.settings.alpaca_trading_enabled:
+            reason = "Blocked by ALPACA_TRADING_ENABLED=false (env kill-switch)"
+            self._log(rec.ticker, "block", rec.strategy, reason=reason)
+            return {
+                "rec_id": rec.id, "ticker": rec.ticker,
+                "status": "blocked", "reason": reason,
+            }
+
         # Dedup: skip if (ticker, strategy) already submitted today
         dup_order = self._already_submitted_today(rec)
         if dup_order:

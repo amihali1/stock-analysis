@@ -163,6 +163,7 @@ class PaperTrade(Base):
     strike = Column(Float)
     option_type = Column(String(4))
     legs_json = Column(Text)  # JSON-encoded list[SpreadLeg] for multi-leg spreads
+    expiry = Column(Date)  # Option/spread expiration (mirrored from the rec)
     exit_price = Column(Float)
     pnl = Column(Float)  # Realized P&L in dollars
     opened_at = Column(DateTime, default=datetime.utcnow)
@@ -170,6 +171,22 @@ class PaperTrade(Base):
     score = Column(Float)  # Ensemble score at time of trade
 
     stock = relationship("Stock")
+
+
+class ValidationReport(Base):
+    """Weekly paper-vs-backtest validation scoreboard (see paper_validation.py)."""
+
+    __tablename__ = "validation_reports"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    window_start = Column(Date, nullable=False)
+    window_end = Column(Date, nullable=False)
+    num_paper_trades = Column(Integer, nullable=False)
+    paper_win_rate = Column(Float, nullable=False)
+    paper_total_pnl = Column(Float, nullable=False)
+    ok = Column(Boolean, nullable=False)
+    report_json = Column(Text, nullable=False)
 
 
 class Alert(Base):

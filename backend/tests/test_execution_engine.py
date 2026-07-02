@@ -50,6 +50,7 @@ def _mock_alpaca(market_open=True):
 
 def _settings(**overrides):
     s = MagicMock()
+    s.alpaca_trading_enabled = overrides.get("alpaca_trading_enabled", True)
     s.auto_execute_enabled = overrides.get("auto_execute_enabled", True)
     s.min_score_threshold = overrides.get("min_score_threshold", 0.7)
     s.trading_mode = overrides.get("trading_mode", "paper")
@@ -88,6 +89,40 @@ class TestExecuteRecommendations:
             results = engine.execute_recommendations()
 
         assert results == []
+
+    def test_env_kill_switch_blocks_all_submission(self):
+        """ALPACA_TRADING_ENABLED=false must block orders even when the DB
+        auto_execute_enabled runtime toggle is on (two-key design). Regression:
+        the env flag was dead code until 2026-07-02 — read by nothing."""
+        db = _make_db()
+        _make_rec(db)
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings(alpaca_trading_enabled=False)):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "blocked"
+        assert "ALPACA_TRADING_ENABLED" in results[0]["reason"]
+        alpaca.submit_bracket_order.assert_not_called()
+        alpaca.submit_order.assert_not_called()
+        # Block is auditable in the trading log
+        log = db.query(TradingLog).filter_by(action="block").one()
+        assert "kill-switch" in log.reason
+
+    def test_kill_switch_does_not_gate_position_close(self):
+        """Closing existing positions must stay possible with the switch off."""
+        db = _make_db()
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings(alpaca_trading_enabled=False)):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            result = engine.close_position("AAPL")
+
+        assert result.get("status") == "closing"
+        alpaca.close_position.assert_called_once_with("AAPL")
 
     def test_blocks_below_threshold(self):
         db = _make_db()
