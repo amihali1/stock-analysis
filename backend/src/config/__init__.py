@@ -159,7 +159,9 @@ class Settings(BaseSettings):
         "ADBE", "ORCL", "IBM", "CSCO", "NOW", "PANW",
         # --- Software / internet (expansion) ---
         "NFLX", "PYPL", "SHOP", "SNAP", "PINS", "ROKU", "SPOT", "UBER", "LYFT",
-        "ZM", "DOCU", "SQ",
+        # SQ removed 2026-07-02: Block renamed its ticker to XYZ in Jan 2025,
+        # Yahoo stopped serving SQ ("possibly delisted" on every fetch).
+        "ZM", "DOCU",
         # --- Communication services (expansion) ---
         "T", "VZ", "CMCSA", "TMUS", "CHTR",
         # --- Consumer discretionary (expansion) ---
