@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e .[dev] || pip install -e .
-      - run: pytest -q || echo "No tests yet"
+      - run: pytest -q
 
   test-frontend:
     runs-on: ubuntu-latest

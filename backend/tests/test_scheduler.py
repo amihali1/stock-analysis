@@ -218,19 +218,28 @@ def test_open_position_capital_handles_null_fields():
     assert scheduler_module._open_position_capital(db) == 100.0
 
 
-def test_daily_capital_cap_default_is_5000():
-    """User decision (bullish_side_build memo, 2026-05-12): $5k direction-blind
-    pool. Lock the default so a config drift doesn't silently re-open the gate."""
-    from src.config import get_settings
-    assert get_settings().daily_capital_cap == 5000.0
+def test_daily_capital_cap_default_locked():
+    """Lock the default so config drift is a deliberate, test-visible act.
+    History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),
+    deliberately raised to $25k for paper mode in 9b1a39f (2026-05-27). If
+    this fails, someone changed the cap — update this test only alongside a
+    conscious sizing decision. Revisit before live trading.
+
+    Asserts the field DEFAULT, not get_settings() — the resolved value picks up
+    .env / environment overrides, which made this test fail on any machine with
+    a local override (and would let a prod override mask a default drift)."""
+    from src.config import Settings
+    assert Settings.model_fields["daily_capital_cap"].default == 25000.0
 
 
 def test_max_ticker_price_default_off():
     """Default disables the watchlist price filter — paper mode at $5k/$1k
     per-trade can afford most names, and the filter sacrifices spread setups
-    on expensive tickers. Live $1k mode opts in by setting it explicitly."""
-    from src.config import get_settings
-    assert get_settings().max_ticker_price == 0.0
+    on expensive tickers. Live $1k mode opts in by setting it explicitly.
+
+    Field default, not get_settings() — see test_daily_capital_cap_default_is_5000."""
+    from src.config import Settings
+    assert Settings.model_fields["max_ticker_price"].default == 0.0
 
 
 def test_sentiment_upsert_failure_does_not_drop_batch(clean_scheduler, monkeypatch):

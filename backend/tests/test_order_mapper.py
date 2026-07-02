@@ -414,8 +414,9 @@ class TestBullSpreadMapping:
         # Per-share = 920 / 4 / 100 = 2.30. NOT 230.
         assert result.limit_price == 2.30
         # Alpaca-equivalent cost = limit * multiplier * qty should match
-        # position_size, not be 100x over.
-        assert result.limit_price * 100 * result.qty == 920.0
+        # position_size, not be 100x over. approx: 2.3 * 100 * 4 is
+        # 919.999... in binary floating point.
+        assert result.limit_price * 100 * result.qty == pytest.approx(920.0)
 
     def test_bull_spread_single_leg_rejected(self):
         single_leg = json.dumps([{"option_type": "call", "action": "buy", "strike": 150.0}])
