@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Nightly Postgres backup for stock-analysis.
 # Installed as a cron job on the gpu-ai VM (see crontab -l for user proxmox):
-#   0 8 * * * /opt/stock-analysis/scripts/backup_db.sh >> /var/log/stock-analysis-backup.log 2>&1
+#   0 8 * * * /opt/stock-analysis/scripts/backup_db.sh >> /home/proxmox/backups/stock-analysis-backup.log 2>&1
 #
 # Dumps in pg_dump custom format (compressed, pg_restore-able) with 14-day
-# retention. NOTE: backups live on the same VM disk — this protects against
-# DB corruption, bad migrations, and accidental deletes, NOT disk loss.
-# Off-VM replication is a follow-up (needs SSH key to Proxmox host or NAS).
+# retention. Paths live under /home/proxmox because the proxmox user has no
+# passwordless sudo (/opt and /var/log are root-owned). NOTE: backups live on
+# the same VM disk — this protects against DB corruption, bad migrations, and
+# accidental deletes, NOT disk loss. Off-VM replication is a follow-up (needs
+# SSH key to Proxmox host or NAS).
 set -euo pipefail
 
-BACKUP_DIR=/opt/backups/stock-analysis
+BACKUP_DIR=/home/proxmox/backups/stock-analysis
 CONTAINER=backend-postgres-1
 DB_NAME=stock_analysis
 DB_USER=stockuser
