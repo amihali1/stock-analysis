@@ -38,12 +38,17 @@ def annualized_vol_20d(recent_closes_desc: list[float]) -> float:
     """Match training: close.pct_change().rolling(20).std() * sqrt(252) at last bar.
 
     Input is closes sorted newest-first. Returns 0.2 fallback when <21 closes or
-    any prior close is zero. Inference paths (scheduler, backtester) must call
-    this instead of hardcoding 0.2 — that placeholder is a hard train/serve skew.
+    any close in the window is missing (None/NaN) or zero. Inference paths
+    (scheduler, backtester) must call this instead of hardcoding 0.2 — that
+    placeholder is a hard train/serve skew.
     """
     if len(recent_closes_desc) < 21:
         return _VOL_20D_FALLBACK
     asc = list(reversed(recent_closes_desc[:21]))
+    # DB rows can carry NULL closes (partial-day fetches); any hole in the
+    # window makes the pct-change series meaningless, so fall back.
+    if any(c is None or np.isnan(c) for c in asc):
+        return _VOL_20D_FALLBACK
     pcts: list[float] = []
     for i in range(1, len(asc)):
         prev = asc[i - 1]

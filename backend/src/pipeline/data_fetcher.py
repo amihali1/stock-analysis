@@ -78,9 +78,19 @@ class DataFetcher:
         )
 
         rows_inserted = 0
+        skipped_null_close = 0
         for idx, row in df.iterrows():
             row_date = idx.date() if hasattr(idx, "date") else idx
             if row_date in existing_dates:
+                continue
+
+            # Yahoo sometimes returns partial-day rows with NaN close (OHLV present,
+            # close missing). Persisting them poisons every downstream consumer and
+            # the existing_dates dedup means they never get re-fetched — skip instead,
+            # so a later fetch can fill the date with complete data.
+            close = _safe_float(row.get("Close"))
+            if close is None:
+                skipped_null_close += 1
                 continue
 
             price = PriceHistory(
@@ -89,12 +99,17 @@ class DataFetcher:
                 open=_safe_float(row.get("Open")),
                 high=_safe_float(row.get("High")),
                 low=_safe_float(row.get("Low")),
-                close=_safe_float(row.get("Close")),
+                close=close,
                 volume=_safe_float(row.get("Volume")),
                 adj_close=_safe_float(row.get("Adj Close")),
             )
             self.db.add(price)
             rows_inserted += 1
+
+        if skipped_null_close:
+            logger.warning(
+                f"{ticker}: skipped {skipped_null_close} rows with NaN close from yfinance"
+            )
 
         if rows_inserted > 0:
             self.db.commit()

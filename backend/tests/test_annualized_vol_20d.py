@@ -55,3 +55,20 @@ def test_zero_prior_close_returns_fallback():
 def test_flat_prices_give_zero_vol():
     closes_desc = [100.0] * 21
     assert annualized_vol_20d(closes_desc) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_none_close_in_window_returns_fallback():
+    # Regression: DB rows can carry NULL closes (partial-day yfinance data,
+    # 2026-06-09 poisoned 157 tickers). Must fall back, not TypeError.
+    closes_desc = [100.0] * 10 + [None] + [100.0] * 10
+    assert annualized_vol_20d(closes_desc) == 0.2
+
+
+def test_nan_close_in_window_returns_fallback():
+    closes_desc = [100.0] * 10 + [float("nan")] + [100.0] * 10
+    assert annualized_vol_20d(closes_desc) == 0.2
+
+
+def test_none_newest_close_returns_fallback():
+    closes_desc = [None] + [100.0] * 20
+    assert annualized_vol_20d(closes_desc) == 0.2

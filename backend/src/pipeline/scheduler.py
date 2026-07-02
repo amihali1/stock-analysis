@@ -330,6 +330,7 @@ def job_generate_recommendations():
         bear_capped = 0
         bull_capped = 0
         too_expensive = 0
+        ticker_errors = 0
         # Per-stage sizer-rejection telemetry. Diagnoses bear-shutout root cause
         # (2026-05-19+: 0 bear / N bull across multiple runs). Each counter is
         # bumped when the corresponding sizer returns None for a selected
@@ -351,153 +352,161 @@ def job_generate_recommendations():
             from src.db.watchlist import get_watchlist_tickers
             watchlist = get_watchlist_tickers(db)
             for ticker in watchlist:
-                # Get latest indicator row
-                ind = (
-                    db.query(TechnicalIndicator)
-                    .filter_by(ticker=ticker)
-                    .order_by(TechnicalIndicator.date.desc())
-                    .first()
-                )
-                if not ind:
-                    no_indicator += 1
-                    continue
-
-                # Get latest price
-                price = (
-                    db.query(PriceHistory)
-                    .filter_by(ticker=ticker)
-                    .order_by(PriceHistory.date.desc())
-                    .first()
-                )
-                if not price or not price.close:
-                    no_price += 1
-                    continue
-
-                # Drop unaffordable tickers before ML (saves top-K slots).
-                # See config.max_ticker_price for trade-off rationale.
-                if settings.max_ticker_price > 0 and price.close > settings.max_ticker_price:
-                    too_expensive += 1
-                    continue
-
-                # Lagged returns mirror training (directional.py: close.pct_change(N)).
-                # Inference previously hardcoded these to 0, silently masking a strong
-                # signal class on every prediction.
-                recent_closes = [
-                    r.close
-                    for r in db.query(PriceHistory.close)
-                    .filter(PriceHistory.ticker == ticker, PriceHistory.date <= price.date)
-                    .order_by(PriceHistory.date.desc())
-                    .limit(21)
-                    .all()
-                ]
-
-                def _return_lag(n: int) -> float:
-                    if len(recent_closes) <= n or not recent_closes[n]:
-                        return 0.0
-                    return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
-
-                from src.models.directional import annualized_vol_20d
-                vol_20d = annualized_vol_20d(recent_closes)
-
-                # Build features for directional model
-                from src.features.analyst import get_analyst_features
-                from src.features.earnings import get_earnings_features
-                from src.features.insider import get_insider_features
-                from src.features.macro import get_macro_features
-                from src.features.options import get_options_features
-                from src.features.sector import get_sector_features
-                from src.features.sentiment import get_sentiment_features
-                from src.features.short_interest import get_short_interest_features
-                from src.features.wikipedia import get_wikipedia_features
-                features = {
-                    "rsi_14": ind.rsi_14 or 50,
-                    "macd": ind.macd or 0,
-                    "macd_signal": ind.macd_signal or 0,
-                    "macd_histogram": ind.macd_histogram or 0,
-                    "bb_percent_b": ind.bb_percent_b or 0.5,
-                    "bb_upper": ind.bb_upper or price.close,
-                    "bb_lower": ind.bb_lower or price.close,
-                    "sma_50": ind.sma_50 or price.close,
-                    "sma_200": ind.sma_200 or price.close,
-                    "sma_crossover": ind.sma_crossover or 0,
-                    "volume_zscore": ind.volume_zscore or 0,
-                    "return_5d_lag": _return_lag(5),
-                    "return_10d_lag": _return_lag(10),
-                    "return_20d_lag": _return_lag(20),
-                    "close_to_sma50_ratio": price.close / (ind.sma_50 or price.close),
-                    "close_to_sma200_ratio": price.close / (ind.sma_200 or price.close),
-                    "volatility_20d": vol_20d,
-                }
-                features.update(get_options_features(db, ticker, price.date))
-                features.update(get_macro_features(db, price.date))
-                features.update(get_sector_features(db, ticker, price.date))
-                features.update(get_sentiment_features(db, ticker, price.date))
-                earnings_feats = get_earnings_features(db, ticker, price.date)
-                features.update(earnings_feats)
-                features.update(get_analyst_features(db, ticker, price.date))
-                features.update(get_short_interest_features(db, ticker, price.date))
-                features.update(get_wikipedia_features(db, ticker, price.date))
-                features.update(get_insider_features(db, ticker, price.date))
-
-                # Optional: skip recommendations within 3 days of earnings (P9-005)
-                if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
-                    logger.debug("Scheduler: %s skipped — earnings within 3 days", ticker)
-                    continue
-
+                # One bad ticker must not kill the whole run (2026-07-02:
+                # NULL closes crashed annualized_vol_20d and zeroed recs for
+                # three weeks). Log, count, move on.
                 try:
-                    drop_prob, _ = drop_model.predict(features)
-                except Exception:
-                    drop_prob = 0.5
-
-                if rise_model is not None:
-                    try:
-                        rise_prob, _ = rise_model.predict(features)
-                    except Exception:
-                        rise_prob = 0.0
-                else:
-                    rise_prob = 0.0
-
-                # Get latest sentiment
-                sent = (
-                    db.query(func.avg(SentimentScore.sentiment), func.avg(SentimentScore.confidence))
-                    .filter_by(ticker=ticker)
-                    .first()
-                )
-                sent_score = float(sent[0]) if sent and sent[0] is not None else 0.0
-                sent_conf = float(sent[1]) if sent and sent[1] is not None else 0.0
-
-                predicted_vol = 0.25
-                if vol_model is not None:
-                    try:
-                        pv = vol_model.predict_latest(ticker, db=db)
-                        if pv is not None:
-                            predicted_vol = pv
-                    except Exception:
-                        logger.exception(f"Scheduler: vol prediction failed for {ticker}")
-
-                inputs = SignalInputs(
-                    ticker=ticker,
-                    drop_prob=drop_prob,
-                    rise_prob=rise_prob,
-                    predicted_vol=predicted_vol,
-                    sentiment_score=sent_score,
-                    sentiment_confidence=sent_conf,
-                    current_price=price.close,
-                )
-
-                # Two scores per ticker: one bearish, one bullish.
-                for s in ensemble.score(inputs):
-                    # Skip the bullish branch entirely if the rise model is unavailable —
-                    # rise_prob=0 collapses the directional component to 0 but vol+sent
-                    # could still surface noise. Better to suppress than to emit.
-                    if s.direction == "rise" and rise_model is None:
+                    # Get latest indicator row
+                    ind = (
+                        db.query(TechnicalIndicator)
+                        .filter_by(ticker=ticker)
+                        .order_by(TechnicalIndicator.date.desc())
+                        .first()
+                    )
+                    if not ind:
+                        no_indicator += 1
                         continue
-                    candidates.append(Candidate(
+
+                    # Get latest price
+                    price = (
+                        db.query(PriceHistory)
+                        .filter_by(ticker=ticker)
+                        .order_by(PriceHistory.date.desc())
+                        .first()
+                    )
+                    if not price or not price.close:
+                        no_price += 1
+                        continue
+
+                    # Drop unaffordable tickers before ML (saves top-K slots).
+                    # See config.max_ticker_price for trade-off rationale.
+                    if settings.max_ticker_price > 0 and price.close > settings.max_ticker_price:
+                        too_expensive += 1
+                        continue
+
+                    # Lagged returns mirror training (directional.py: close.pct_change(N)).
+                    # Inference previously hardcoded these to 0, silently masking a strong
+                    # signal class on every prediction.
+                    recent_closes = [
+                        r.close
+                        for r in db.query(PriceHistory.close)
+                        .filter(PriceHistory.ticker == ticker, PriceHistory.date <= price.date)
+                        .order_by(PriceHistory.date.desc())
+                        .limit(21)
+                        .all()
+                    ]
+
+                    def _return_lag(n: int) -> float:
+                        if len(recent_closes) <= n or not recent_closes[n]:
+                            return 0.0
+                        return (recent_closes[0] - recent_closes[n]) / recent_closes[n]
+
+                    from src.models.directional import annualized_vol_20d
+                    vol_20d = annualized_vol_20d(recent_closes)
+
+                    # Build features for directional model
+                    from src.features.analyst import get_analyst_features
+                    from src.features.earnings import get_earnings_features
+                    from src.features.insider import get_insider_features
+                    from src.features.macro import get_macro_features
+                    from src.features.options import get_options_features
+                    from src.features.sector import get_sector_features
+                    from src.features.sentiment import get_sentiment_features
+                    from src.features.short_interest import get_short_interest_features
+                    from src.features.wikipedia import get_wikipedia_features
+                    features = {
+                        "rsi_14": ind.rsi_14 or 50,
+                        "macd": ind.macd or 0,
+                        "macd_signal": ind.macd_signal or 0,
+                        "macd_histogram": ind.macd_histogram or 0,
+                        "bb_percent_b": ind.bb_percent_b or 0.5,
+                        "bb_upper": ind.bb_upper or price.close,
+                        "bb_lower": ind.bb_lower or price.close,
+                        "sma_50": ind.sma_50 or price.close,
+                        "sma_200": ind.sma_200 or price.close,
+                        "sma_crossover": ind.sma_crossover or 0,
+                        "volume_zscore": ind.volume_zscore or 0,
+                        "return_5d_lag": _return_lag(5),
+                        "return_10d_lag": _return_lag(10),
+                        "return_20d_lag": _return_lag(20),
+                        "close_to_sma50_ratio": price.close / (ind.sma_50 or price.close),
+                        "close_to_sma200_ratio": price.close / (ind.sma_200 or price.close),
+                        "volatility_20d": vol_20d,
+                    }
+                    features.update(get_options_features(db, ticker, price.date))
+                    features.update(get_macro_features(db, price.date))
+                    features.update(get_sector_features(db, ticker, price.date))
+                    features.update(get_sentiment_features(db, ticker, price.date))
+                    earnings_feats = get_earnings_features(db, ticker, price.date)
+                    features.update(earnings_feats)
+                    features.update(get_analyst_features(db, ticker, price.date))
+                    features.update(get_short_interest_features(db, ticker, price.date))
+                    features.update(get_wikipedia_features(db, ticker, price.date))
+                    features.update(get_insider_features(db, ticker, price.date))
+
+                    # Optional: skip recommendations within 3 days of earnings (P9-005)
+                    if settings.skip_near_earnings and earnings_feats["earnings_within_3d"] == 1.0:
+                        logger.debug("Scheduler: %s skipped — earnings within 3 days", ticker)
+                        continue
+
+                    try:
+                        drop_prob, _ = drop_model.predict(features)
+                    except Exception:
+                        drop_prob = 0.5
+
+                    if rise_model is not None:
+                        try:
+                            rise_prob, _ = rise_model.predict(features)
+                        except Exception:
+                            rise_prob = 0.0
+                    else:
+                        rise_prob = 0.0
+
+                    # Get latest sentiment
+                    sent = (
+                        db.query(func.avg(SentimentScore.sentiment), func.avg(SentimentScore.confidence))
+                        .filter_by(ticker=ticker)
+                        .first()
+                    )
+                    sent_score = float(sent[0]) if sent and sent[0] is not None else 0.0
+                    sent_conf = float(sent[1]) if sent and sent[1] is not None else 0.0
+
+                    predicted_vol = 0.25
+                    if vol_model is not None:
+                        try:
+                            pv = vol_model.predict_latest(ticker, db=db)
+                            if pv is not None:
+                                predicted_vol = pv
+                        except Exception:
+                            logger.exception(f"Scheduler: vol prediction failed for {ticker}")
+
+                    inputs = SignalInputs(
                         ticker=ticker,
-                        score=s,
-                        direction=s.direction,
-                        extras={"price_close": price.close},
-                    ))
+                        drop_prob=drop_prob,
+                        rise_prob=rise_prob,
+                        predicted_vol=predicted_vol,
+                        sentiment_score=sent_score,
+                        sentiment_confidence=sent_conf,
+                        current_price=price.close,
+                    )
+
+                    # Two scores per ticker: one bearish, one bullish.
+                    for s in ensemble.score(inputs):
+                        # Skip the bullish branch entirely if the rise model is unavailable —
+                        # rise_prob=0 collapses the directional component to 0 but vol+sent
+                        # could still surface noise. Better to suppress than to emit.
+                        if s.direction == "rise" and rise_model is None:
+                            continue
+                        candidates.append(Candidate(
+                            ticker=ticker,
+                            score=s,
+                            direction=s.direction,
+                            extras={"price_close": price.close},
+                        ))
+                except Exception:
+                    ticker_errors += 1
+                    logger.exception(f"Scheduler: candidate build failed for {ticker}")
+                    continue
 
             # Pure top-K by composite score. The legacy dir_prob floor was a
             # knife-edge on v3's isotonic calibration plateaus; under sigmoid
@@ -823,7 +832,7 @@ def job_generate_recommendations():
             f"ok ({count} recs [{bear_recs}b/{bull_recs}B], "
             f"cands {cand_bear}b/{cand_bull}B, sel {selected_bear}b/{selected_bull}B, "
             f"{no_indicator} no_ind, {no_price} no_price, "
-            f"{too_expensive} too_exp, "
+            f"{too_expensive} too_exp, {ticker_errors} tkr_err, "
             f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh "
             f"[None {bear_no_spread}/{bear_no_options}/{bear_no_short}], "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg "
