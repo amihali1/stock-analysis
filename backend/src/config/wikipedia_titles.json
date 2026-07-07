@@ -10,7 +10,8 @@
     "O": "Realty Income REIT — disambiguates against the letter O.",
     "M": "Not in watchlist (Macy's). If added: 'Macy%27s'.",
     "A": "Not in watchlist. If Agilent added: 'Agilent_Technologies'.",
-    "SQ": "Block, Inc. — Square renamed in 2021.",
+    "SQ": "Block, Inc. — Square renamed in 2021. Delisted ticker; kept for historical rows.",
+    "XYZ": "Block, Inc. — ticker renamed SQ → XYZ in Jan 2025; same Wikipedia page.",
     "SLB": "Schlumberger renamed to SLB in 2022; SLB is the canonical page.",
     "TSM": "Page is TSMC, not the long company name.",
     "ZM": "Zoom_Communications — renamed from Zoom_Video_Communications in 2025.",
@@ -181,6 +182,7 @@
     "XLV": "Select_Sector_SPDRs",
     "XLY": "Select_Sector_SPDRs",
     "XOM": "ExxonMobil",
+    "XYZ": "Block,_Inc.",
     "ZM": "Zoom_Communications"
   }
 }

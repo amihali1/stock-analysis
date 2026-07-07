@@ -32,6 +32,12 @@ class FinvizFetcher:
     """Fetch news headlines from Finviz for a given ticker."""
 
     def fetch(self, ticker: str, max_headlines: int = 10) -> list[Headline]:
+        # Finviz has no quote pages for index symbols (^VIX 404'd with a full
+        # stack trace every sentiment run). Yahoo RSS remains the source for
+        # index headlines.
+        if ticker.startswith("^"):
+            logger.debug(f"{ticker}: index symbol, skipping Finviz")
+            return []
         try:
             stock = finvizfinance(ticker)
             news_df = stock.ticker_news()

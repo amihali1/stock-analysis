@@ -69,8 +69,14 @@ class EarningsFetcher:
             from src.db.watchlist import get_watchlist_tickers
             tickers = get_watchlist_tickers(self.db)
 
+        from src.config import ETF_TICKERS
+
         results: dict[str, str] = {}
         for ticker in tickers:
+            # ETFs/indexes have no earnings; yfinance 404s on every one.
+            if ticker in ETF_TICKERS:
+                results[ticker] = "skipped_etf"
+                continue
             try:
                 results[ticker] = self.fetch_one(ticker)
             except Exception:

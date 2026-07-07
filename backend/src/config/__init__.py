@@ -161,7 +161,8 @@ class Settings(BaseSettings):
         "NFLX", "PYPL", "SHOP", "SNAP", "PINS", "ROKU", "SPOT", "UBER", "LYFT",
         # SQ removed 2026-07-02: Block renamed its ticker to XYZ in Jan 2025,
         # Yahoo stopped serving SQ ("possibly delisted" on every fetch).
-        "ZM", "DOCU",
+        # XYZ (Block) added 2026-07-07 to restore fintech coverage.
+        "ZM", "DOCU", "XYZ",
         # --- Communication services (expansion) ---
         "T", "VZ", "CMCSA", "TMUS", "CHTR",
         # --- Consumer discretionary (expansion) ---
@@ -207,6 +208,16 @@ class Settings(BaseSettings):
         return self.max_position_size
 
 
+# Non-equity tickers on the watchlist (macro context + sector ETFs + indexes).
+# They have no earnings, no fundamentals, no insider filings — data fetchers
+# that only make sense for operating companies should skip them instead of
+# burning a 404 per ticker per run (earnings fetch logged 11 ETF 404s every
+# Sunday before this existed).
+ETF_TICKERS: frozenset[str] = frozenset({
+    "SPY", "QQQ", "IWM", "^VIX",
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLC", "XLRE",
+})
+
 # Static ticker → sector-ETF map (P9-003). Tickers not listed default to SPY.
 SECTOR_ETF_MAP: dict[str, str] = {
     # Tech → XLK
@@ -231,8 +242,8 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "WFC": "XLF", "C": "XLF",
     "BLK": "XLF", "SCHW": "XLF", "BRK-B": "XLF", "USB": "XLF", "PNC": "XLF", "TFC": "XLF",
     "HBAN": "XLF", "AIG": "XLF", "PRU": "XLF", "MET": "XLF", "ALL": "XLF", "V": "XLF",
-    "MA": "XLF", "PYPL": "XLF", "SQ": "XLF", "SHOP": "XLF", "COIN": "XLF", "HOOD": "XLF",
-    "SOFI": "XLF",
+    "MA": "XLF", "PYPL": "XLF", "SQ": "XLF", "XYZ": "XLF", "SHOP": "XLF", "COIN": "XLF",
+    "HOOD": "XLF", "SOFI": "XLF",
     # Healthcare → XLV
     "JNJ": "XLV", "UNH": "XLV", "PFE": "XLV", "ABBV": "XLV", "MRK": "XLV",
     "LLY": "XLV", "BMY": "XLV", "ABT": "XLV", "TMO": "XLV", "DHR": "XLV", "MRNA": "XLV",
