@@ -49,6 +49,17 @@ def _open_position_capital(db) -> float:
     return total
 
 
+def _latest_close(db, ticker: str) -> float | None:
+    """Most recent non-null close for a ticker, or None."""
+    row = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.ticker == ticker, PriceHistory.close.isnot(None))
+        .order_by(PriceHistory.date.desc())
+        .first()
+    )
+    return float(row.close) if row else None
+
+
 def _rec_capital_cost(rec) -> float:
     """Capital deployed by a Recommendation, for the direction-blind daily cap.
 
@@ -331,6 +342,8 @@ def job_generate_recommendations():
         bull_capped = 0
         too_expensive = 0
         ticker_errors = 0
+        pair_recs = 0
+        bear_no_pair = 0
         # Per-stage sizer-rejection telemetry. Diagnoses bear-shutout root cause
         # (2026-05-19+: 0 bear / N bull across multiple runs). Each counter is
         # bumped when the corresponding sizer returns None for a selected
@@ -675,7 +688,71 @@ def job_generate_recommendations():
                             )
                     continue
 
-                # Bearish routing (direction == "drop"): spread → put options → short.
+                # Bearish routing (direction == "drop").
+                #
+                # 2026-07-07 bear_monetization sweep: bear picks carry relative
+                # alpha but every absolute-decline structure loses in a rising
+                # tape — naked short -0.14%/10d, credit spreads -4..-7.5% on
+                # collateral DESPITE 69-89% win rates (tail blow-throughs eat
+                # the credits). Short pick + equal-$ long SPY = +0.47%/10d
+                # market-neutral. Pair is the only bear route when enabled;
+                # legacy spread/options/short cascade below is the fallback
+                # for enable_pair_short=False.
+                if settings.enable_pair_short:
+                    hedge_price = _latest_close(db, settings.pair_hedge_symbol)
+                    pair_rec = None
+                    if hedge_price is not None:
+                        pair_rec = sizer.size_pair_short(
+                            score, close_price, hedge_price,
+                            hedge_symbol=settings.pair_hedge_symbol,
+                        )
+                    if pair_rec is None:
+                        bear_no_pair += 1
+                    else:
+                        rec = Recommendation(
+                            ticker=ticker, date=today, direction="short",
+                            strategy="pair_short",
+                            score=score.score,
+                            directional_signal=score.directional_signal,
+                            volatility_signal=score.volatility_signal,
+                            sentiment_signal=score.sentiment_signal,
+                            entry_price=pair_rec.entry_price,
+                            stop_loss=pair_rec.stop_loss,
+                            target_price=pair_rec.target_price,
+                            position_size=pair_rec.position_size,
+                            max_loss=pair_rec.max_loss,
+                            legs_json=json.dumps([
+                                {"leg": "short", "ticker": ticker,
+                                 "qty": pair_rec.shares, "entry": pair_rec.entry_price},
+                                {"leg": "hedge", "ticker": pair_rec.hedge_symbol,
+                                 "qty": pair_rec.hedge_shares, "entry": pair_rec.hedge_entry},
+                            ]),
+                            risk_type="defined",
+                            notes="Market-neutral pair: short pick + equal-$ long hedge",
+                        )
+                        cost = _rec_capital_cost(rec)
+                        if capital_used + cost <= available_cap:
+                            db.add(rec)
+                            capital_used += cost
+                            count += 1
+                            pair_recs += 1
+                            bear_recs += 1
+                            persisted = True
+                        else:
+                            cap_busted = True
+
+                    if not persisted:
+                        if cap_busted:
+                            bear_capped += 1
+                        else:
+                            no_sizer_match += 1
+                            logger.debug(
+                                "Scheduler: %s (bear) ranked but pair sizer "
+                                "returned None", ticker,
+                            )
+                    continue
+
+                # Legacy bear cascade: spread → put options → short.
                 chain_data, chain_expiry = _fetch_chain(ticker)
                 spread_rec = sizer.size_spread(score, close_price, chain_data=chain_data)
                 if spread_rec is None:
@@ -808,8 +885,8 @@ def job_generate_recommendations():
             "%d skipped (no indicator), %d skipped (no price), "
             "%d skipped (too expensive), "
             "top_k=%d selected (%d bear / %d bull), "
-            "bear sizers: %d spread / %d options / %d short "
-            "[None: %d sp / %d op / %d sh], "
+            "bear sizers: %d pair / %d spread / %d options / %d short "
+            "[None: %d pr / %d sp / %d op / %d sh], "
             "bull sizers: %d bull_spread / %d call / %d long "
             "[None: %d bsp / %d c / %d lg], "
             "%d no_sizer_match, "
@@ -819,8 +896,8 @@ def job_generate_recommendations():
             len(candidates), cand_bear, cand_bull,
             no_indicator, no_price, too_expensive,
             len(selected), selected_bear, selected_bull,
-            spread_recs, options_recs, short_recs,
-            bear_no_spread, bear_no_options, bear_no_short,
+            pair_recs, spread_recs, options_recs, short_recs,
+            bear_no_pair, bear_no_spread, bear_no_options, bear_no_short,
             bull_spread_recs, call_options_recs, long_recs,
             bull_no_bull_spread, bull_no_call, bull_no_long,
             no_sizer_match,
@@ -833,8 +910,8 @@ def job_generate_recommendations():
             f"cands {cand_bear}b/{cand_bull}B, sel {selected_bear}b/{selected_bull}B, "
             f"{no_indicator} no_ind, {no_price} no_price, "
             f"{too_expensive} too_exp, {ticker_errors} tkr_err, "
-            f"bear: {spread_recs}sp/{options_recs}op/{short_recs}sh "
-            f"[None {bear_no_spread}/{bear_no_options}/{bear_no_short}], "
+            f"bear: {pair_recs}pr/{spread_recs}sp/{options_recs}op/{short_recs}sh "
+            f"[None pr:{bear_no_pair} {bear_no_spread}/{bear_no_options}/{bear_no_short}], "
             f"bull: {bull_spread_recs}sp/{call_options_recs}op/{long_recs}lg "
             f"[None {bull_no_bull_spread}/{bull_no_call}/{bull_no_long}], "
             f"{no_sizer_match} none, "
@@ -964,11 +1041,37 @@ def job_evaluate_paper_exits():
             closed = sum(1 for r in results if r["status"] == "closed")
             held = sum(1 for r in results if r["status"] == "held")
             errors = sum(1 for r in results if r["status"] == "error")
+
+            # Mirror stock-strategy closes at the broker — a closed PaperTrade
+            # with a live Alpaca position would desync the capital cap and
+            # trigger the orphan sweep's inverse problem.
+            unwound = 0
+            stock_closed_ids = [
+                r["id"] for r in results
+                if r["status"] == "closed" and r.get("strategy") in ("long", "short", "pair_short")
+            ]
+            if stock_closed_ids:
+                try:
+                    from src.db.models import PaperTrade
+                    from src.services.execution_engine import ExecutionEngine
+                    engine = ExecutionEngine(db)
+                    for tid in stock_closed_ids:
+                        trade = db.get(PaperTrade, tid)
+                        if trade is not None:
+                            outcome = engine.unwind_stock_trade(trade)
+                            if outcome.get("status") in ("closed", "partial"):
+                                unwound += 1
+                except ValueError:
+                    logger.info("paper exits: no Alpaca credentials, skipping broker unwind")
+
             logger.info(
-                f"Scheduler: paper exits — {closed} closed, {held} held, "
-                f"{errors} errors, {len(results)} evaluated"
+                f"Scheduler: paper exits — {closed} closed ({unwound} unwound at broker), "
+                f"{held} held, {errors} errors, {len(results)} evaluated"
             )
-            _record_run("paper_exits", f"ok ({closed} closed / {held} held / {len(results)} evaluated)")
+            _record_run(
+                "paper_exits",
+                f"ok ({closed} closed / {unwound} unwound / {held} held / {len(results)} evaluated)",
+            )
         finally:
             db.close()
     except Exception:

@@ -82,6 +82,33 @@ class LongRecommendation(BaseModel):
     risk_type: str = "defined"  # Long stock max loss = entry - stop
 
 
+class PairShortRecommendation(BaseModel):
+    """Market-neutral pair: short the pick + equal-dollar long hedge (SPY).
+
+    Monetizes the drop model's RELATIVE alpha (picks underperform the market
+    by ~0.54%/10d) without fighting market drift — bear_monetization sweep
+    2026-07-07: +0.47%/10d per dollar deployed, win 58%, vs naked short
+    -0.14% and credit spreads -4..-7.5%.
+    """
+    ticker: str
+    strategy: str = "pair_short"
+    direction: str = "short"
+    score: float
+    directional_signal: float
+    volatility_signal: float
+    sentiment_signal: float
+    entry_price: float  # short-leg entry (the pick)
+    stop_loss: float    # on the short leg
+    target_price: float
+    shares: int         # short-leg shares
+    hedge_symbol: str
+    hedge_shares: float # long hedge shares (fractional allowed when enabled)
+    hedge_entry: float
+    position_size: float = Field(description="Total capital: short margin + hedge notional")
+    max_loss: float = Field(description="Short-leg stop distance in dollars (hedge gain ignored, conservative)")
+    risk_type: str = "defined"  # hedged pair; stop on short leg bounds practical loss
+
+
 class OptionsRecommendation(BaseModel):
     """An options recommendation (long puts or calls)."""
     ticker: str
@@ -167,6 +194,63 @@ class PositionSizer:
             target_price=round(target_price, 2),
             shares=max_shares,
             position_size=round(margin_required, 2),
+            max_loss=round(max_loss, 2),
+        )
+
+    def size_pair_short(
+        self,
+        score: EnsembleScore,
+        current_price: float,
+        hedge_price: float,
+        hedge_symbol: str = "SPY",
+        stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+        target_pct: float = DEFAULT_TARGET_PCT,
+    ) -> PairShortRecommendation | None:
+        """Size a market-neutral pair: short the pick, long equal dollars of hedge.
+
+        Capital = short margin (1.5x notional) + hedge notional, so
+        short_notional * 2.5 <= effective budget. The hedge leg is ALWAYS
+        fractional (independent of enable_fractional_shares): a whole-share
+        SPY hedge at ~$600/share leaves a $1k short only ~60% hedged, and
+        fractional is safe here — the hedge is a simple market DAY buy, which
+        is exactly what Alpaca's fractional support covers.
+        """
+        if current_price <= 0 or hedge_price <= 0:
+            return None
+
+        confidence_scale = min(score.score * 2, 1.0)
+        effective_max = self.max_position * confidence_scale
+
+        # short_notional * 1.5 (margin) + short_notional (hedge) <= effective_max
+        max_short_notional = effective_max / 2.5
+        shares = int(max_short_notional / current_price)
+        if shares < 1:
+            return None
+        short_notional = shares * current_price
+
+        hedge_shares = round(short_notional / hedge_price, 4)
+        if hedge_shares <= 0:
+            return None
+        hedge_notional = hedge_shares * hedge_price
+
+        stop_loss_price = current_price * (1 + stop_loss_pct)
+        target_price = current_price * (1 - target_pct)
+        max_loss = shares * (stop_loss_price - current_price)
+
+        return PairShortRecommendation(
+            ticker=score.ticker,
+            score=score.score,
+            directional_signal=score.directional_signal,
+            volatility_signal=score.volatility_signal,
+            sentiment_signal=score.sentiment_signal,
+            entry_price=round(current_price, 2),
+            stop_loss=round(stop_loss_price, 2),
+            target_price=round(target_price, 2),
+            shares=shares,
+            hedge_symbol=hedge_symbol,
+            hedge_shares=hedge_shares,
+            hedge_entry=round(hedge_price, 2),
+            position_size=round(short_notional * 1.5 + hedge_notional, 2),
             max_loss=round(max_loss, 2),
         )
 

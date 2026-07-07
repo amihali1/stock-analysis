@@ -177,6 +177,91 @@ class TestExecuteRecommendations:
         assert "SUBMITTED" in alerts[0].message
 
 
+class TestPairShortExecution:
+    def _make_pair_rec(self, db):
+        import json
+        db.add(Stock(ticker="NVDA"))
+        db.commit()
+        rec = Recommendation(
+            ticker="NVDA", date=date.today(), strategy="pair_short",
+            direction="short", score=0.85, entry_price=100.0, stop_loss=105.0,
+            target_price=90.0, position_size=2500.0, max_loss=50.0,
+            legs_json=json.dumps([
+                {"leg": "short", "ticker": "NVDA", "qty": 10, "entry": 100.0},
+                {"leg": "hedge", "ticker": "SPY", "qty": 2, "entry": 500.0},
+            ]),
+        )
+        db.add(rec)
+        db.commit()
+        return rec
+
+    def test_pair_submits_both_legs(self):
+        db = _make_db()
+        self._make_pair_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.submit_order.side_effect = [
+            {"order_id": "short-leg-1"}, {"order_id": "hedge-leg-1"},
+        ]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+        assert results[0]["order_id"] == "short-leg-1"
+        assert results[0]["hedge_order_id"] == "hedge-leg-1"
+        calls = alpaca.submit_order.call_args_list
+        assert calls[0].kwargs["ticker"] == "NVDA" and calls[0].kwargs["side"] == "sell"
+        assert calls[1].kwargs["ticker"] == "SPY" and calls[1].kwargs["side"] == "buy"
+        # PaperTrade persisted with legs
+        pt = db.query(PaperTrade).one()
+        assert pt.strategy == "pair_short"
+        assert "hedge" in pt.legs_json
+
+    def test_pair_hedge_failure_unwinds_short(self):
+        """Never leave a naked short: hedge leg fails -> short bought back."""
+        db = _make_db()
+        self._make_pair_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.submit_order.side_effect = [
+            {"order_id": "short-leg-1"},          # short sell ok
+            RuntimeError("hedge rejected"),        # hedge buy fails
+            {"order_id": "unwind-1"},              # short buyback
+        ]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "error"
+        calls = alpaca.submit_order.call_args_list
+        assert len(calls) == 3
+        assert calls[2].kwargs["ticker"] == "NVDA" and calls[2].kwargs["side"] == "buy"
+        assert db.query(PaperTrade).count() == 0
+
+    def test_pair_malformed_legs_skipped(self):
+        db = _make_db()
+        db.add(Stock(ticker="NVDA"))
+        db.commit()
+        db.add(Recommendation(
+            ticker="NVDA", date=date.today(), strategy="pair_short",
+            direction="short", score=0.85, entry_price=100.0,
+            position_size=2500.0, legs_json="not json",
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "skipped"
+        alpaca.submit_order.assert_not_called()
+
+
 class TestDedup:
     def test_skips_if_already_submitted_today(self):
         db = _make_db()

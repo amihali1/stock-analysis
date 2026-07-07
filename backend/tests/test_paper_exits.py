@@ -63,8 +63,10 @@ def test_long_stock_stop_hit(db):
 
 def test_short_stock_target_hit(db):
     _seed_price(db, "TEST", 80.0)
+    # size_short persists position_size as MARGIN (1.5x notional):
+    # 10 shares @ 100 -> notional 1000, margin 1500.
     db.add(_trade(strategy="short", direction="short", entry_price=100.0,
-                  stop_loss=110.0, target_price=85.0, position_size=1000.0))
+                  stop_loss=110.0, target_price=85.0, position_size=1500.0))
     db.commit()
 
     results = evaluate_paper_exits(db, today=TODAY)
@@ -189,3 +191,111 @@ def test_spread_without_expiry_stays_open(db):
     results = evaluate_paper_exits(db, today=TODAY)
 
     assert results[0]["status"] == "held"
+
+
+def _seed_sessions(db, ticker: str, closes: list[float], start: date):
+    """Seed consecutive daily price rows; last close = current price."""
+    db.add(Stock(ticker=ticker))
+    for i, c in enumerate(closes):
+        db.add(PriceHistory(ticker=ticker, date=start + timedelta(days=i), close=c))
+    db.commit()
+
+
+def test_long_time_exit_after_10_sessions(db):
+    """In-band long must close on the time exit once 10 sessions elapse."""
+    _seed_sessions(db, "TEST", [100.0] * 11, date(2026, 6, 20))  # 10 rows after open date
+    db.add(_trade(strategy="long", entry_price=100.0, stop_loss=90.0,
+                  target_price=120.0, position_size=1000.0,
+                  opened_at=datetime(2026, 6, 20)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "closed"
+    t = db.query(PaperTrade).one()
+    assert t.pnl == pytest.approx(0.0)
+
+
+def test_long_before_time_exit_stays_open(db):
+    _seed_sessions(db, "TEST", [100.0] * 4, date(2026, 6, 28))  # 3 sessions after open
+    db.add(_trade(strategy="long", entry_price=100.0, stop_loss=90.0,
+                  target_price=120.0, position_size=1000.0,
+                  opened_at=datetime(2026, 6, 28)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "held"
+
+
+def test_short_share_count_backs_out_margin(db):
+    """size_short persists position_size as 1.5x margin — pnl must use real
+    shares (notional/entry), not margin/entry."""
+    _seed_price(db, "TEST", 90.0)
+    # 10 shares at $100 -> notional 1000, margin 1500
+    db.add(_trade(strategy="short", direction="short", entry_price=100.0,
+                  stop_loss=110.0, target_price=92.0, position_size=1500.0))
+    db.commit()
+
+    evaluate_paper_exits(db, today=TODAY)
+
+    t = db.query(PaperTrade).one()
+    # target hit: 10 shares * (100 - 90) = +100, NOT 15 shares * 10 = 150
+    assert t.pnl == pytest.approx(100.0)
+
+
+def _pair_legs(short_qty=10, short_entry=100.0, hedge_qty=2, hedge_entry=500.0):
+    return json.dumps([
+        {"leg": "short", "ticker": "TEST", "qty": short_qty, "entry": short_entry},
+        {"leg": "hedge", "ticker": "SPY", "qty": hedge_qty, "entry": hedge_entry},
+    ])
+
+
+def test_pair_short_time_exit_pnl_sums_both_legs(db):
+    """Pick fell 100->95 (+50 on 10 short shares), SPY rose 500->510
+    (+20 on 2 hedge shares) -> pnl +70 at the 10-session time exit."""
+    _seed_sessions(db, "TEST", [95.0] * 11, date(2026, 6, 20))
+    _seed_sessions(db, "SPY", [510.0] * 11, date(2026, 6, 20))
+    db.add(_trade(strategy="pair_short", direction="short", entry_price=100.0,
+                  stop_loss=105.0, target_price=90.0, position_size=2500.0,
+                  legs_json=_pair_legs(), opened_at=datetime(2026, 6, 20)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    closed = [r for r in results if r.get("ticker") == "TEST"]
+    assert closed[0]["status"] == "closed"
+    t = db.query(PaperTrade).filter_by(ticker="TEST").one()
+    assert t.pnl == pytest.approx(70.0)
+
+
+def test_pair_short_stop_exit_before_time(db):
+    """Short-leg stop breach closes the pair immediately, hedge pnl included."""
+    _seed_sessions(db, "TEST", [106.0] * 3, date(2026, 6, 29))  # above 105 stop
+    _seed_sessions(db, "SPY", [505.0] * 3, date(2026, 6, 29))
+    db.add(_trade(strategy="pair_short", direction="short", entry_price=100.0,
+                  stop_loss=105.0, target_price=90.0, position_size=2500.0,
+                  legs_json=_pair_legs(), opened_at=datetime(2026, 6, 29)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    closed = [r for r in results if r.get("ticker") == "TEST"]
+    assert closed[0]["status"] == "closed"
+    t = db.query(PaperTrade).filter_by(ticker="TEST").one()
+    # short: 10 * (100 - 106) = -60; hedge: 2 * (505 - 500) = +10
+    assert t.pnl == pytest.approx(-50.0)
+
+
+def test_pair_short_in_band_stays_open(db):
+    _seed_sessions(db, "TEST", [100.0] * 3, date(2026, 6, 29))
+    _seed_sessions(db, "SPY", [500.0] * 3, date(2026, 6, 29))
+    db.add(_trade(strategy="pair_short", direction="short", entry_price=100.0,
+                  stop_loss=105.0, target_price=90.0, position_size=2500.0,
+                  legs_json=_pair_legs(), opened_at=datetime(2026, 6, 29)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    closed = [r for r in results if r.get("ticker") == "TEST"]
+    assert closed[0]["status"] == "held"

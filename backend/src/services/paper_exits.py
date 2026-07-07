@@ -31,6 +31,7 @@ from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
+from src.config import get_settings
 from src.db.models import PaperTrade, PriceHistory
 
 logger = logging.getLogger(__name__)
@@ -67,12 +68,67 @@ def _close(trade: PaperTrade, exit_price: float, pnl: float, reason: str) -> dic
     }
 
 
-def _evaluate_stock(trade: PaperTrade, current: float) -> dict | None:
-    """Stop/target exit for plain long/short stock trades."""
+def _sessions_open(db: Session, trade: PaperTrade) -> int:
+    """Trading sessions elapsed since the trade opened (price rows after open date)."""
+    if trade.opened_at is None:
+        return 0
+    return (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.ticker == trade.ticker,
+            PriceHistory.date > trade.opened_at.date(),
+            PriceHistory.close.isnot(None),
+        )
+        .count()
+    )
+
+
+def _evaluate_pair(trade: PaperTrade, db: Session, current: float, time_up: bool) -> dict | None:
+    """pair_short: close on short-leg stop/target cross or time expiry.
+
+    P&L sums both legs from legs_json: short leg gains as the pick falls,
+    hedge leg gains as the hedge rises.
+    """
+    breach: str | None = None
+    if trade.stop_loss is not None and current >= trade.stop_loss:
+        breach = f"stop hit ({current:.2f} >= {trade.stop_loss:.2f})"
+    elif trade.target_price is not None and current <= trade.target_price:
+        breach = f"target hit ({current:.2f} <= {trade.target_price:.2f})"
+    elif time_up:
+        breach = "time exit"
+    if breach is None:
+        return None
+
+    try:
+        legs = json.loads(trade.legs_json or "[]")
+        short_leg = next(l for l in legs if l["leg"] == "short")
+        hedge_leg = next(l for l in legs if l["leg"] == "hedge")
+    except (ValueError, KeyError, StopIteration):
+        logger.warning("paper_exit: pair %s has malformed legs_json, skipping", trade.id)
+        return None
+
+    hedge_cur = _latest_close(db, hedge_leg["ticker"])
+    if hedge_cur is None:
+        logger.warning("paper_exit: pair %s hedge %s has no price, skipping",
+                       trade.id, hedge_leg["ticker"])
+        return None
+
+    pnl = (
+        float(short_leg["qty"]) * (float(short_leg["entry"]) - current)
+        + float(hedge_leg["qty"]) * (hedge_cur - float(hedge_leg["entry"]))
+    )
+    return _close(trade, current, pnl, breach)
+
+
+def _evaluate_stock(trade: PaperTrade, current: float, time_up: bool = False) -> dict | None:
+    """Stop/target/time exit for plain long/short stock trades."""
     entry = trade.entry_price or 0.0
     if entry <= 0 or not trade.position_size:
         return None
-    shares = trade.position_size / entry
+    # size_short persists position_size as MARGIN (1.5x notional); size_long
+    # persists plain notional. Back out actual shares accordingly.
+    notional = trade.position_size / (1.5 if trade.strategy == "short" else 1.0)
+    shares = notional / entry
     is_long = trade.strategy == "long"
 
     breach: str | None = None
@@ -87,6 +143,8 @@ def _evaluate_stock(trade: PaperTrade, current: float) -> dict | None:
         elif trade.target_price is not None and current <= trade.target_price:
             breach = f"target hit ({current:.2f} <= {trade.target_price:.2f})"
 
+    if breach is None and time_up:
+        breach = "time exit"
     if breach is None:
         return None
     pnl = shares * (current - entry) if is_long else shares * (entry - current)
@@ -160,8 +218,12 @@ def evaluate_paper_exits(db: Session, today: date | None = None) -> list[dict]:
                 })
                 continue
 
-            if trade.strategy in ("long", "short"):
-                outcome = _evaluate_stock(trade, current)
+            if trade.strategy in ("long", "short", "pair_short"):
+                time_up = _sessions_open(db, trade) >= get_settings().time_exit_sessions
+                if trade.strategy == "pair_short":
+                    outcome = _evaluate_pair(trade, db, current, time_up)
+                else:
+                    outcome = _evaluate_stock(trade, current, time_up)
             elif trade.strategy in ("options", "call_options"):
                 outcome = _evaluate_single_leg(trade, current, today)
             elif trade.strategy in ("spread", "bull_spread"):

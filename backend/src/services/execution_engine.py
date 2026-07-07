@@ -153,6 +153,11 @@ class ExecutionEngine:
                 "status": "duplicate", "order_id": dup_order, "reason": reason,
             }
 
+        # Market-neutral pair (short pick + long hedge) is a two-order strategy
+        # the single-order mapper can't express — dedicated path.
+        if rec.strategy == "pair_short":
+            return self._execute_pair(rec, rails, market_open)
+
         # Get buying power
         try:
             account = self.alpaca.get_account()
@@ -240,6 +245,83 @@ class ExecutionEngine:
             self._log(rec.ticker, "error", rec.strategy, reason=reason)
             return {"rec_id": rec.id, "ticker": rec.ticker, "status": "error", "reason": reason}
 
+    def _execute_pair(
+        self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
+    ) -> dict:
+        """Submit a pair_short rec: short the pick + long the hedge (legs_json).
+
+        The short leg carries the risk and goes through the safety rails; the
+        hedge leg is risk-reducing and submits alongside it. If the hedge
+        submission fails after the short filled/accepted, the short is
+        immediately unwound — a naked short is NOT an acceptable fallback
+        (bear_monetization sweep: naked shorts lose).
+        """
+        import json as _json
+
+        try:
+            legs = _json.loads(rec.legs_json or "[]")
+            short_leg = next(l for l in legs if l["leg"] == "short")
+            hedge_leg = next(l for l in legs if l["leg"] == "hedge")
+        except (ValueError, KeyError, StopIteration):
+            reason = f"pair_short rec {rec.id} has malformed legs_json"
+            self._log(rec.ticker, "skip", rec.strategy, reason=reason)
+            return {"rec_id": rec.id, "ticker": rec.ticker, "status": "skipped", "reason": reason}
+
+        from src.services.order_mapper import AlpacaOrderParams
+        short_params = AlpacaOrderParams(
+            ticker=short_leg["ticker"], qty=float(short_leg["qty"]), side="sell",
+            order_type="market", strategy="pair_short",
+        )
+        allowed, rail_reason = rails.check_order(short_params, market_open=market_open)
+        if not allowed:
+            return {
+                "rec_id": rec.id, "ticker": rec.ticker,
+                "status": "blocked", "reason": rail_reason,
+            }
+
+        try:
+            short_result = self.alpaca.submit_order(
+                ticker=short_leg["ticker"], qty=float(short_leg["qty"]),
+                side="sell", order_type="market", time_in_force="day",
+            )
+        except Exception as e:
+            reason = f"pair short leg failed: {e}"
+            self._log(rec.ticker, "error", rec.strategy, reason=reason)
+            return {"rec_id": rec.id, "ticker": rec.ticker, "status": "error", "reason": reason}
+
+        try:
+            hedge_result = self.alpaca.submit_order(
+                ticker=hedge_leg["ticker"], qty=float(hedge_leg["qty"]),
+                side="buy", order_type="market", time_in_force="day",
+            )
+        except Exception as e:
+            # Unwind the short — never leave a naked short standing.
+            reason = f"pair hedge leg failed, unwinding short: {e}"
+            logger.error(reason)
+            try:
+                self.alpaca.submit_order(
+                    ticker=short_leg["ticker"], qty=float(short_leg["qty"]),
+                    side="buy", order_type="market", time_in_force="day",
+                )
+            except Exception:
+                logger.exception("pair unwind ALSO failed for %s — naked short at broker!", rec.ticker)
+                self._send_alert(rec.ticker, "pair_unwind_failed", "", rec.strategy)
+            self._log(rec.ticker, "error", rec.strategy, reason=reason)
+            return {"rec_id": rec.id, "ticker": rec.ticker, "status": "error", "reason": reason}
+
+        order_id = short_result["order_id"]
+        hedge_order_id = hedge_result["order_id"]
+        rails.log_submission(short_params, order_id)
+        self._log(hedge_leg["ticker"], "submit", rec.strategy,
+                  reason=f"hedge leg of {rec.ticker} pair ({hedge_order_id})")
+        self._persist_paper_trade(rec, order_id)
+        self._send_alert(rec.ticker, "submitted", order_id, rec.strategy)
+
+        return {
+            "rec_id": rec.id, "ticker": rec.ticker, "status": "submitted",
+            "order_id": order_id, "hedge_order_id": hedge_order_id,
+        }
+
     def monitor_fractional_exits(self) -> list[dict]:
         """Poll fractional long positions and close on stop/target breach.
 
@@ -324,6 +406,59 @@ class ExecutionEngine:
                 results.append({"ticker": ticker, "status": "error", "reason": str(e)})
 
         return results
+
+    def unwind_stock_trade(self, trade) -> dict:
+        """Unwind the broker position for a paper-exit-closed stock trade.
+
+        long/short: close the whole position (Alpaca handles side).
+        pair_short: buy back the short-leg qty and sell the hedge-leg qty from
+        legs_json — the hedge symbol (SPY) may be shared across pairs, so only
+        this pair's quantity is sold, never close_position on the hedge.
+        """
+        import json as _json
+
+        if trade.strategy in ("long", "short"):
+            try:
+                result = self.alpaca.close_position(trade.ticker)
+                self._log(trade.ticker, "time_exit", trade.strategy,
+                          reason=f"paper exit closed trade {trade.id}")
+                return {"ticker": trade.ticker, "status": "closed",
+                        "order_id": result.get("order_id") if isinstance(result, dict) else None}
+            except Exception as e:
+                logger.exception("unwind: close_position failed for %s", trade.ticker)
+                return {"ticker": trade.ticker, "status": "error", "reason": str(e)}
+
+        if trade.strategy == "pair_short":
+            try:
+                legs = _json.loads(trade.legs_json or "[]")
+                short_leg = next(l for l in legs if l["leg"] == "short")
+                hedge_leg = next(l for l in legs if l["leg"] == "hedge")
+            except (ValueError, KeyError, StopIteration):
+                return {"ticker": trade.ticker, "status": "error", "reason": "malformed legs_json"}
+            results = {}
+            try:
+                results["short_close"] = self.alpaca.submit_order(
+                    ticker=short_leg["ticker"], qty=float(short_leg["qty"]),
+                    side="buy", order_type="market", time_in_force="day",
+                )["order_id"]
+            except Exception as e:
+                logger.exception("unwind: pair short-leg buyback failed for %s", trade.ticker)
+                results["short_close_error"] = str(e)
+            try:
+                results["hedge_close"] = self.alpaca.submit_order(
+                    ticker=hedge_leg["ticker"], qty=float(hedge_leg["qty"]),
+                    side="sell", order_type="market", time_in_force="day",
+                )["order_id"]
+            except Exception as e:
+                logger.exception("unwind: pair hedge-leg sell failed for %s", trade.ticker)
+                results["hedge_close_error"] = str(e)
+            status = "closed" if "short_close" in results and "hedge_close" in results else "partial"
+            self._log(trade.ticker, "time_exit", trade.strategy,
+                      reason=f"pair unwind trade {trade.id}: {results}")
+            return {"ticker": trade.ticker, "status": status, **results}
+
+        return {"ticker": trade.ticker, "status": "skipped",
+                "reason": f"no unwind path for strategy {trade.strategy}"}
 
     def close_position(self, ticker: str) -> dict:
         """Close a specific position."""

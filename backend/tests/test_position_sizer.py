@@ -455,3 +455,53 @@ class TestDirectionFields:
         rec = sizer.size_spread(score, current_price=150.0)
         assert rec is not None
         assert rec.direction == "short"
+
+
+class TestSizePairShort:
+    """Market-neutral pair sizing (bear_monetization sweep, 2026-07-07)."""
+
+    def _score(self, s=0.8):
+        return EnsembleScore(ticker="X", score=s, directional_signal=s,
+                             volatility_signal=0.3, sentiment_signal=0.5)
+
+    def test_budget_covers_margin_plus_hedge(self):
+        sizer = PositionSizer(max_position=2500.0)
+        rec = sizer.size_pair_short(self._score(), current_price=100.0,
+                                    hedge_price=500.0)
+        assert rec is not None
+        # short_notional*2.5 <= 2500 -> notional <= 1000 -> 10 shares @ 100
+        assert rec.shares == 10
+        # hedge: 1000/500 = 2.0 shares (fractional, equal-dollar)
+        assert rec.hedge_shares == pytest.approx(2.0)
+        assert rec.position_size == pytest.approx(10 * 100 * 1.5 + 2 * 500)
+
+    def test_stop_and_target_on_short_leg(self):
+        sizer = PositionSizer(max_position=2500.0)
+        rec = sizer.size_pair_short(self._score(), current_price=100.0,
+                                    hedge_price=500.0)
+        assert rec.stop_loss == pytest.approx(105.0)
+        assert rec.target_price == pytest.approx(90.0)
+        assert rec.max_loss == pytest.approx(10 * 5.0)
+
+    def test_hedge_is_fractional_below_one_share(self):
+        """Hedge leg is always fractional — short notional below one hedge
+        share still gets a proportional hedge, never a None or a 60%-hedged
+        lumpy whole-share approximation."""
+        sizer = PositionSizer(max_position=1000.0)
+        rec = sizer.size_pair_short(self._score(), current_price=40.0,
+                                    hedge_price=600.0)
+        # notional cap 400 -> 10 shares @ 40 = 400 -> hedge 400/600 = 0.6667
+        assert rec is not None
+        assert rec.hedge_shares == pytest.approx(0.6667, abs=1e-4)
+
+    def test_zero_prices_return_none(self):
+        sizer = PositionSizer(max_position=2500.0)
+        assert sizer.size_pair_short(self._score(), 0.0, 500.0) is None
+        assert sizer.size_pair_short(self._score(), 100.0, 0.0) is None
+
+    def test_strategy_and_risk_type(self):
+        sizer = PositionSizer(max_position=2500.0)
+        rec = sizer.size_pair_short(self._score(), 100.0, 500.0)
+        assert rec.strategy == "pair_short"
+        assert rec.risk_type == "defined"
+        assert rec.hedge_symbol == "SPY"

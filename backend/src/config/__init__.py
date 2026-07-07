@@ -100,7 +100,23 @@ class Settings(BaseSettings):
     # top 2-4 most-bearish picks per day. Bump to 1.5 (0.2625) for stricter quality
     # at the cost of zero recs on flat markets; drop to 1.0 for any-above-baseline.
     min_dir_prob_lift: float = 1.3
-    recommendations_top_k: int = 10  # max recs emitted PER DIRECTION (drop/rise); 10 → up to 20 total
+    # Max recs emitted PER DIRECTION (drop/rise); 5 → up to 10 total.
+    # Lowered 10 → 5 on 2026-07-07: money-layer sweep showed K=3-5 carries the
+    # best per-trade expectancy (rise +1.59%/1.50% at K=3/5 vs +1.44% at K=10).
+    recommendations_top_k: int = 5
+
+    # Bear-side pair trading (money_layer + bear_monetization sweeps, 2026-07-07):
+    # bear picks carry relative alpha (-0.54%/10d vs universe) but naked shorts
+    # and credit spreads lose absolutely in a rising tape. Short pick + equal-$
+    # long hedge = +0.47%/10d market-neutral. When enabled, bear recs route to
+    # strategy "pair_short" instead of the spread/options/short cascade.
+    enable_pair_short: bool = True
+    pair_hedge_symbol: str = "SPY"
+
+    # Time-based exit for stock strategies (long/short/pair_short): close after
+    # N trading sessions. Hold=10 dominated every shorter hold in the sweep
+    # (rise +1.59% at H=10 vs +0.43% at H=5).
+    time_exit_sessions: int = 10
     # Spread-vs-options routing in SpreadBuilder. The legacy gates
     # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
     # directional model emitted uncalibrated probs and dir_prob could swing
