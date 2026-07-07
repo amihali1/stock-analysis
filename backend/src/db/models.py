@@ -164,6 +164,7 @@ class PaperTrade(Base):
     option_type = Column(String(4))
     legs_json = Column(Text)  # JSON-encoded list[SpreadLeg] for multi-leg spreads
     expiry = Column(Date)  # Option/spread expiration (mirrored from the rec)
+    orphan_seen_at = Column(DateTime)  # First sync that saw this trade orphaned (grace window)
     exit_price = Column(Float)
     pnl = Column(Float)  # Realized P&L in dollars
     opened_at = Column(DateTime, default=datetime.utcnow)

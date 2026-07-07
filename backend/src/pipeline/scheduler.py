@@ -890,8 +890,14 @@ def job_sync_portfolio():
             sync = PortfolioSync(db)
             pos = sync.sync_positions()
             orders = sync.sync_orders()
-            logger.info(f"Scheduler: portfolio sync complete — {pos} positions, {orders} new orders")
-            _record_run("portfolio_sync", f"ok ({pos} pos, {orders} orders)")
+            # Orphan sweep MUST run after sync_orders so just-submitted orders
+            # are visible as in-flight (MU/LRCX premature closes, 2026-07-06/07).
+            orphans = sync.close_orphan_paper_trades()
+            logger.info(
+                f"Scheduler: portfolio sync complete — {pos} positions, "
+                f"{orders} new orders, {orphans} orphans closed"
+            )
+            _record_run("portfolio_sync", f"ok ({pos} pos, {orders} orders, {orphans} orphaned)")
         finally:
             db.close()
     except ValueError:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -42,13 +42,10 @@ class PortfolioSync:
     def sync_positions(self) -> int:
         """Pull all open positions from Alpaca and upsert into alpaca_positions.
 
-        Also auto-closes any PaperTrade(status='open') whose underlying is no
-        longer represented in live Alpaca positions or in-flight orders. This
-        keeps the position-limit safety rail honest: without it, PaperTrade
-        rows accumulate forever and the cap is reached after a fixed number of
-        lifetime submits regardless of which positions are actually live.
-
-        Returns count of synced positions.
+        Returns count of synced positions. The orphan PaperTrade sweep is a
+        separate step (`close_orphan_paper_trades`) that the scheduler job runs
+        AFTER sync_orders — running it here closed just-submitted trades whose
+        in-flight orders had never been synced (MU/LRCX, 2026-07-06/07).
         """
         positions = self.client.get_positions()
         now = datetime.utcnow()
@@ -70,14 +67,26 @@ class PortfolioSync:
 
         self.db.commit()
         logger.info(f"Synced {len(positions)} Alpaca positions")
-
-        self._close_orphan_paper_trades(now)
         return len(positions)
 
-    def _close_orphan_paper_trades(self, now: datetime) -> int:
-        """Close PaperTrade(status='open') rows with no matching live position
-        or in-flight order. Underlying ticker comparison handles OCC option
-        symbols by mapping them back to the underlying."""
+    # A trade must be continuously orphaned for this long before the sweep
+    # closes it. Covers both submit-to-fill latency and transient Alpaca API
+    # responses (2026-07-07: one get_positions call returned 1 of 6 positions
+    # and all 4 live option trades were mass-closed with NULL pnl).
+    ORPHAN_GRACE_MINUTES = 30
+
+    def close_orphan_paper_trades(self, now: datetime | None = None) -> int:
+        """Close PaperTrade(status='open') rows whose underlying has had no
+        live position or in-flight order for ORPHAN_GRACE_MINUTES.
+
+        First orphan sighting stamps `orphan_seen_at`; the trade only closes
+        once the condition persists past the grace window. Any reappearance
+        of the position/order clears the stamp. Underlying ticker comparison
+        handles OCC option symbols by mapping them back to the underlying.
+        This keeps the position-limit safety rail honest without letting a
+        single flaky sync destroy live trades.
+        """
+        now = now or datetime.utcnow()
         active: set[str] = set()
         for pos in self.db.query(AlpacaPosition).all():
             u = _to_underlying(pos.ticker)
@@ -94,13 +103,31 @@ class PortfolioSync:
                 active.add(u)
 
         closed = 0
+        grace = timedelta(minutes=self.ORPHAN_GRACE_MINUTES)
         for pt in self.db.query(PaperTrade).filter_by(status="open").all():
-            if pt.ticker not in active:
+            if pt.ticker in active:
+                if pt.orphan_seen_at is not None:
+                    pt.orphan_seen_at = None
+                continue
+            if pt.orphan_seen_at is None:
+                pt.orphan_seen_at = now
+                logger.info(
+                    "PaperTrade %s (%s) orphan candidate — closing after %d min "
+                    "unless position/order reappears",
+                    pt.id, pt.ticker, self.ORPHAN_GRACE_MINUTES,
+                )
+                continue
+            if now - pt.orphan_seen_at >= grace:
                 pt.status = "closed"
                 pt.closed_at = now
                 closed += 1
+                logger.warning(
+                    "Auto-closed orphan PaperTrade %s (%s %s) — no position/order "
+                    "since %s. pnl left NULL; reconcile from broker fills if needed.",
+                    pt.id, pt.ticker, pt.strategy, pt.orphan_seen_at.isoformat(),
+                )
+        self.db.commit()
         if closed:
-            self.db.commit()
             logger.info(f"Auto-closed {closed} orphan PaperTrade row(s)")
         return closed
 

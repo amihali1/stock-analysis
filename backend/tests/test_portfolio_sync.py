@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
@@ -132,23 +133,66 @@ class TestSyncPositions:
 
 
 class TestCloseOrphanPaperTrades:
+    """Orphan sweep with grace window (2026-07-07 incidents: submit-to-fill
+    race closed MU/LRCX 5 min after submission; a transient get_positions
+    response of 1/6 positions mass-closed 4 live trades)."""
+
+    T0 = datetime(2026, 7, 7, 14, 0, 0)
+    PAST_GRACE = T0 + timedelta(minutes=PortfolioSync.ORPHAN_GRACE_MINUTES)
+
     def _seed_stock(self, db, ticker):
         db.add(Stock(ticker=ticker))
         db.commit()
 
-    def test_closes_orphan_paper_trade_with_no_live_position_or_order(self):
+    def _sweep(self, db, client, at):
+        sync = PortfolioSync(db, client=client)
+        sync.sync_positions()
+        return sync.close_orphan_paper_trades(now=at)
+
+    def test_first_orphan_sighting_only_stamps_not_closes(self):
+        db = _make_db()
+        self._seed_stock(db, "GOOG")
+        db.add(PaperTrade(ticker="GOOG", strategy="short", status="open", entry_price=100))
+        db.commit()
+
+        closed = self._sweep(db, _mock_client(positions=[], orders=[]), self.T0)
+
+        assert closed == 0
+        pt = db.query(PaperTrade).filter_by(ticker="GOOG").one()
+        assert pt.status == "open"
+        assert pt.orphan_seen_at == self.T0
+
+    def test_closes_after_grace_window_persists(self):
         db = _make_db()
         self._seed_stock(db, "GOOG")
         db.add(PaperTrade(ticker="GOOG", strategy="short", status="open", entry_price=100))
         db.commit()
 
         client = _mock_client(positions=[], orders=[])
-        sync = PortfolioSync(db, client=client)
-        sync.sync_positions()
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
 
+        assert closed == 1
         pt = db.query(PaperTrade).filter_by(ticker="GOOG").one()
         assert pt.status == "closed"
         assert pt.closed_at is not None
+
+    def test_transient_api_blip_does_not_close(self):
+        """Position disappears for one sync, reappears — stamp must clear and
+        the trade must survive even past the grace window."""
+        db = _make_db()
+        self._seed_stock(db, "AAPL")
+        db.add(PaperTrade(ticker="AAPL", strategy="long", status="open", entry_price=150))
+        db.commit()
+
+        self._sweep(db, _mock_client(positions=[], orders=[]), self.T0)  # blip
+        self._sweep(db, _mock_client(positions=SAMPLE_POSITIONS[:1]), self.T0 + timedelta(minutes=5))
+        closed = self._sweep(db, _mock_client(positions=SAMPLE_POSITIONS[:1]), self.PAST_GRACE)
+
+        assert closed == 0
+        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
+        assert pt.status == "open"
+        assert pt.orphan_seen_at is None
 
     def test_keeps_open_when_alpaca_position_matches(self):
         db = _make_db()
@@ -157,11 +201,11 @@ class TestCloseOrphanPaperTrades:
         db.commit()
 
         client = _mock_client(positions=SAMPLE_POSITIONS[:1])  # AAPL
-        sync = PortfolioSync(db, client=client)
-        sync.sync_positions()
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
 
-        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
-        assert pt.status == "open"
+        assert closed == 0
+        assert db.query(PaperTrade).filter_by(ticker="AAPL").one().status == "open"
 
     def test_keeps_open_when_in_flight_order_matches(self):
         db = _make_db()
@@ -174,11 +218,11 @@ class TestCloseOrphanPaperTrades:
         db.commit()
 
         client = _mock_client(positions=[], orders=[])
-        sync = PortfolioSync(db, client=client)
-        sync.sync_positions()
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
 
-        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
-        assert pt.status == "open"
+        assert closed == 0
+        assert db.query(PaperTrade).filter_by(ticker="AAPL").one().status == "open"
 
     def test_occ_option_symbol_maps_to_underlying(self):
         """PaperTrade.ticker='AAPL' should match an AlpacaPosition with an OCC
@@ -200,15 +244,15 @@ class TestCloseOrphanPaperTrades:
             "change_today": 0.05,
         }
         client = _mock_client(positions=[occ_position])
-        sync = PortfolioSync(db, client=client)
-        sync.sync_positions()
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
 
-        pt = db.query(PaperTrade).filter_by(ticker="AAPL").one()
-        assert pt.status == "open"
+        assert closed == 0
+        assert db.query(PaperTrade).filter_by(ticker="AAPL").one().status == "open"
 
     def test_filled_order_does_not_keep_orphan_open(self):
         """A 'filled' order is not in-flight — it should not protect an
-        orphan PaperTrade from being closed."""
+        orphan PaperTrade from closing after the grace window."""
         db = _make_db()
         self._seed_stock(db, "TSLA")
         db.add(PaperTrade(ticker="TSLA", strategy="short", status="open", entry_price=200))
@@ -219,11 +263,11 @@ class TestCloseOrphanPaperTrades:
         db.commit()
 
         client = _mock_client(positions=[], orders=[])
-        sync = PortfolioSync(db, client=client)
-        sync.sync_positions()
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
 
-        pt = db.query(PaperTrade).filter_by(ticker="TSLA").one()
-        assert pt.status == "closed"
+        assert closed == 1
+        assert db.query(PaperTrade).filter_by(ticker="TSLA").one().status == "closed"
 
 
 class TestSyncOrders:
