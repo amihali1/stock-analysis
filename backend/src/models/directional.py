@@ -89,6 +89,27 @@ PER_TICKER_RANK_SOURCE_COLS = [
     "rsi_14",
 ]
 
+# Per-ticker EVENT features (research, 2026-07-07). Discrete price/volume
+# shocks rather than continuous levels — the hypothesis (see
+# directional_model_information_ceiling memo) is that drops cluster around
+# catalysts, and the three failed additive-column experiments (SI/insider/8-K)
+# were sparse external LEVELS, while these are dense event-shaped signals
+# derivable from price history alone. Computed unconditionally in
+# build_dataset (like the z120 cols); production FEATURE_COLS opts out until
+# the seed sweep + walk-forward gates pass.
+EVENT_SHOCK_SIGMA = 2.0  # |1d return| > 2 daily sigmas = a shock event
+EVENT_SHOCK_LOOKBACK = 10
+EVENT_DAYS_SINCE_CAP = 30.0
+EVENT_FEATURE_COLS = [
+    "gap_open_z",        # overnight gap / daily vol — catalyst proxy at the open
+    "ret_1d_z",          # yesterday's move / daily vol — shock magnitude
+    "vol_spike_5d",      # max volume_zscore over last 5 sessions
+    "shock_count_10d",   # number of >2-sigma daily moves in last 10 sessions
+    "days_since_shock",  # sessions since last >2-sigma move (capped at 30)
+    "dist_20d_high",     # close / rolling 20d max - 1 (breakdown distance)
+    "dist_20d_low",      # close / rolling 20d min - 1 (breakout distance)
+]
+
 FEATURE_COLS = [
     "rsi_14",
     "macd",
@@ -546,6 +567,7 @@ def build_dataset(
             TechnicalIndicator.sma_crossover,
             TechnicalIndicator.volume_zscore,
             PriceHistory.close,
+            PriceHistory.open,
         ).join(
             PriceHistory,
             (TechnicalIndicator.ticker == PriceHistory.ticker)
@@ -562,7 +584,7 @@ def build_dataset(
         df = pd.DataFrame(rows, columns=[
             "ticker", "date", "rsi_14", "macd", "macd_signal", "macd_histogram",
             "bb_percent_b", "bb_upper", "bb_lower", "sma_50", "sma_200",
-            "sma_crossover", "volume_zscore", "close",
+            "sma_crossover", "volume_zscore", "close", "open",
         ])
 
         # For excess-mode, pull SPY closes so we can compute SPY forward return
@@ -610,6 +632,26 @@ def build_dataset(
             mean = roll.mean()
             std = roll.std().replace(0, np.nan)
             g[f"{src_col}_z120"] = (g[src_col] - mean) / std
+
+        # Per-ticker EVENT features (see EVENT_FEATURE_COLS). daily_vol is the
+        # one-day sigma implied by volatility_20d; guard zero/NaN.
+        daily_vol = (g["volatility_20d"] / np.sqrt(252.0)).replace(0, np.nan)
+        ret_1d = g["close"].pct_change()
+        g["ret_1d_z"] = ret_1d / daily_vol
+        g["gap_open_z"] = (g["open"] / g["close"].shift(1) - 1) / daily_vol
+        g["vol_spike_5d"] = g["volume_zscore"].rolling(5, min_periods=1).max()
+        shock = (ret_1d.abs() > EVENT_SHOCK_SIGMA * daily_vol).fillna(False)
+        g["shock_count_10d"] = shock.rolling(EVENT_SHOCK_LOOKBACK, min_periods=1).sum()
+        # Sessions since the last shock, capped. NaN (no shock yet) -> cap, so
+        # "never shocked in window" and "long ago" look the same to the model.
+        idx = np.arange(len(g), dtype=float)
+        last_shock_idx = pd.Series(np.where(shock.to_numpy(), idx, np.nan), index=g.index).ffill()
+        g["days_since_shock"] = (
+            pd.Series(idx, index=g.index) - last_shock_idx
+        ).fillna(EVENT_DAYS_SINCE_CAP).clip(0, EVENT_DAYS_SINCE_CAP)
+        roll20 = g["close"].rolling(20, min_periods=5)
+        g["dist_20d_high"] = g["close"] / roll20.max() - 1
+        g["dist_20d_low"] = g["close"] / roll20.min() - 1
 
         # Forward return for label.
         g["forward_return"] = g["close"].shift(-FORWARD_DAYS) / g["close"] - 1
