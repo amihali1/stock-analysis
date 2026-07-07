@@ -13,6 +13,14 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      # Durable model storage. Models used to be baked into the image, so
+      # every rebuild reverted the container to whatever the host dir held —
+      # the 5/18 v7 promotion (docker cp, container-only) was silently lost
+      # this way, and the 7/5 scheduled retrain would have been too. The bind
+      # mount makes promotions and retrains persist across rebuilds; the
+      # image's baked copy is shadowed and serves only as a first-boot seed.
+      - ./trained_models:/app/trained_models
     deploy:
       resources:
         reservations:

@@ -52,7 +52,32 @@ class Retrainer:
         new_score = new_metrics.get(primary_metric, 0)
         old_score = champion_metrics.get(primary_metric, 0) if champion_metrics else 0
 
-        if champion_metrics is None or new_score > old_score + self.improvement_threshold:
+        # Fail closed when the champion's metrics are unknown. The 2026-07-05
+        # run auto-deployed against "auc_roc 0.0000" because no metrics file
+        # existed (manual promotions never wrote one) — an unmeasured champion
+        # is not a beaten champion. Seed {model}_metrics.json deliberately to
+        # enable gated retraining.
+        if champion_metrics is None:
+            logger.warning(
+                "No champion metrics for directional model — keeping current "
+                "model (fail-closed). Seed directional_metrics.json to enable "
+                "gated retraining."
+            )
+            if challenger_path.exists():
+                challenger_path.unlink()
+            return {
+                "status": "kept_current (no champion metrics)",
+                "model": "directional",
+                "old_metrics": None,
+                "new_metrics": new_metrics,
+                "primary_metric": primary_metric,
+                "old_score": None,
+                "new_score": new_score,
+                "deployed": False,
+                "timestamp": timestamp,
+            }
+
+        if new_score > old_score + self.improvement_threshold:
             # Deploy new model
             logger.info(
                 f"Deploying new directional model: {primary_metric} "
@@ -119,8 +144,30 @@ class Retrainer:
         new_score = new_metrics.get(primary_metric, float("inf"))
         old_score = champion_metrics.get(primary_metric, float("inf")) if champion_metrics else float("inf")
 
+        # Fail closed on unknown champion — see retrain_directional. The 7/5
+        # run deployed against "test_mae inf" for the same reason.
+        if champion_metrics is None:
+            logger.warning(
+                "No champion metrics for volatility model — keeping current "
+                "model (fail-closed). Seed volatility_metrics.json to enable "
+                "gated retraining."
+            )
+            if challenger_path.exists():
+                challenger_path.unlink()
+            return {
+                "status": "kept_current (no champion metrics)",
+                "model": "volatility",
+                "old_metrics": None,
+                "new_metrics": new_metrics,
+                "primary_metric": primary_metric,
+                "old_score": None,
+                "new_score": new_score,
+                "deployed": False,
+                "timestamp": timestamp,
+            }
+
         # For MAE, lower is better — deploy if new < old - threshold
-        if champion_metrics is None or new_score < old_score - self.improvement_threshold:
+        if new_score < old_score - self.improvement_threshold:
             logger.info(
                 f"Deploying new volatility model: {primary_metric} "
                 f"{old_score:.4f} -> {new_score:.4f}"
