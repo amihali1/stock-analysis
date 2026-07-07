@@ -220,6 +220,28 @@ def test_open_position_capital_handles_null_fields():
     assert scheduler_module._open_position_capital(db) == 100.0
 
 
+def test_latest_close_helper_works_against_real_session():
+    """Regression: _latest_close referenced PriceHistory without importing it
+    (scheduler imports models inside job bodies) — NameError on first bear
+    pair-routing call, caught only by a prod dry-run on 2026-07-07."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from datetime import date as _date
+    from src.db.models import Base, PriceHistory, Stock
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add(Stock(ticker="SPY"))
+    db.add(PriceHistory(ticker="SPY", date=_date(2026, 7, 6), close=500.0))
+    db.add(PriceHistory(ticker="SPY", date=_date(2026, 7, 7), close=505.0))
+    db.commit()
+
+    assert scheduler_module._latest_close(db, "SPY") == 505.0
+    assert scheduler_module._latest_close(db, "MISSING") is None
+    db.close()
+
+
 def test_daily_capital_cap_default_locked():
     """Lock the default so config drift is a deliberate, test-visible act.
     History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),

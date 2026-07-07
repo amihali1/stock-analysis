@@ -51,6 +51,8 @@ def _open_position_capital(db) -> float:
 
 def _latest_close(db, ticker: str) -> float | None:
     """Most recent non-null close for a ticker, or None."""
+    from src.db.models import PriceHistory  # deferred, matches module convention
+
     row = (
         db.query(PriceHistory)
         .filter(PriceHistory.ticker == ticker, PriceHistory.close.isnot(None))
