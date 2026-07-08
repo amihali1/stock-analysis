@@ -57,9 +57,15 @@ def select_candidates(
     higher-base-rate rise probabilities (see module docstring).
 
     Within a direction, same-ticker duplicates collapse to the higher score.
-    No cross-direction dedup — a ticker can appear on both sides if both
-    sides produce a meaningful composite. Downstream sizing decides what to
-    do with a both-sides ticker.
+
+    Cross-direction CONFLICTS are excluded on both sides (2026-07-08): when a
+    ticker lands in BOTH directions' top-K, the model is disagreeing with
+    itself — the first pair_short morning emitted long INTC (bull_spread) and
+    short INTC (pair) simultaneously, a self-hedged book. Per the project's
+    "models must agree / skip marginal setups" rule the conflicted ticker is
+    dropped from BOTH selections and each side backfills from its own ranked
+    list. This is NOT the pre-2026-05-18 joint ranking (which starved drops
+    via base-rate scale mismatch); each side still ranks independently.
 
     `min_score` (optional, in [0, 1]) is an absolute composite-score floor
     applied per candidate *before* the top-K cap so the ranker never returns
@@ -83,11 +89,32 @@ def select_candidates(
     by_direction: dict[str, list[Candidate]] = {}
     for c in best_by_dir_ticker.values():
         by_direction.setdefault(c.direction, []).append(c)
+    for cands in by_direction.values():
+        cands.sort(key=lambda c: c.score.score, reverse=True)
+
+    # Per-direction top-K with iterative cross-direction conflict exclusion:
+    # banned tickers are removed from both sides and each side backfills from
+    # its own ranked list; refills can create new conflicts, so loop until
+    # stable. Terminates because `banned` strictly grows.
+    banned: set[str] = set()
+    while True:
+        selections: dict[str, list[Candidate]] = {}
+        for direction, cands in by_direction.items():
+            selections[direction] = [c for c in cands if c.ticker not in banned][:top_k]
+
+        if len(selections) < 2:
+            break
+        ticker_sides: dict[str, int] = {}
+        for sel in selections.values():
+            for c in sel:
+                ticker_sides[c.ticker] = ticker_sides.get(c.ticker, 0) + 1
+        conflicts = {t for t, n in ticker_sides.items() if n > 1}
+        if not conflicts:
+            break
+        banned |= conflicts
 
     selected: list[Candidate] = []
-    for direction, cands in by_direction.items():
-        cands.sort(key=lambda c: c.score.score, reverse=True)
-        selected.extend(cands[:top_k])
-
+    for sel in selections.values():
+        selected.extend(sel)
     selected.sort(key=lambda c: c.score.score, reverse=True)
     return selected

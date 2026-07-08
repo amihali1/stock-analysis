@@ -87,17 +87,45 @@ def test_meets_confidence_does_not_filter():
     assert {c.ticker for c in out} == {"UNCONF", "CONF"}
 
 
-def test_same_ticker_both_directions_emits_both():
-    # Phase 4 revision: cross-direction dedup removed. The two sides are scored
-    # against different label bases (drop ~5%, rise ~17%) so they should not
-    # compete. If both clear their direction's top-K, both emit.
+def test_same_ticker_both_directions_conflict_drops_both():
+    """2026-07-08 revision: a ticker in BOTH directions' top-K is the model
+    disagreeing with itself (first pair_short morning emitted long INTC +
+    short INTC simultaneously). Conflicts are excluded from both sides."""
     cands = [
         _cand("AAPL", 0.30, 0.45, direction="drop"),
         _cand("AAPL", 0.30, 0.65, direction="rise"),
     ]
     out = select_candidates(cands, top_k=10)
-    assert len(out) == 2
-    assert {c.direction for c in out} == {"drop", "rise"}
+    assert out == []
+
+
+def test_conflict_backfills_from_ranked_list():
+    """Dropping a conflicted ticker frees the slot for the next-ranked pick."""
+    cands = [
+        _cand("AAPL", 0.30, 0.60, direction="drop"),
+        _cand("AAPL", 0.30, 0.65, direction="rise"),
+        _cand("MSFT", 0.30, 0.50, direction="drop"),
+        _cand("NVDA", 0.30, 0.55, direction="rise"),
+    ]
+    out = select_candidates(cands, top_k=1)
+    tickers = {(c.direction, c.ticker) for c in out}
+    assert tickers == {("drop", "MSFT"), ("rise", "NVDA")}
+
+
+def test_backfill_conflict_cascades():
+    """A refill that itself conflicts must also be excluded (iterative ban)."""
+    cands = [
+        _cand("AAPL", 0.30, 0.60, direction="drop"),
+        _cand("AAPL", 0.30, 0.65, direction="rise"),
+        _cand("MSFT", 0.30, 0.50, direction="drop"),
+        # MSFT also ranks on the rise side just below AAPL — refilling rise
+        # with MSFT creates a NEW conflict with drop's MSFT.
+        _cand("MSFT", 0.30, 0.55, direction="rise"),
+        _cand("NVDA", 0.30, 0.40, direction="rise"),
+    ]
+    out = select_candidates(cands, top_k=1)
+    tickers = {(c.direction, c.ticker) for c in out}
+    assert tickers == {("rise", "NVDA")}
 
 
 def test_same_direction_same_ticker_collapses_to_higher_score():
