@@ -53,6 +53,7 @@ def _settings(**overrides):
     s.alpaca_trading_enabled = overrides.get("alpaca_trading_enabled", True)
     s.auto_execute_enabled = overrides.get("auto_execute_enabled", True)
     s.min_score_threshold = overrides.get("min_score_threshold", 0.7)
+    s.min_score_threshold_bear = overrides.get("min_score_threshold_bear", 0.30)
     s.trading_mode = overrides.get("trading_mode", "paper")
     s.max_daily_loss = overrides.get("max_daily_loss", 200.0)
     s.max_open_positions = overrides.get("max_open_positions", 5)
@@ -125,11 +126,14 @@ class TestExecuteRecommendations:
         alpaca.close_position.assert_called_once_with("AAPL")
 
     def test_blocks_below_threshold(self):
+        # _make_rec defaults direction="short", so the bear floor applies
+        # (per-direction floors since 2026-07-10).
         db = _make_db()
         _make_rec(db, score=0.5)
         alpaca = _mock_alpaca()
 
-        with patch("src.services.execution_engine.get_settings", return_value=_settings(min_score_threshold=0.7)):
+        cfg = _settings(min_score_threshold=0.7, min_score_threshold_bear=0.7)
+        with patch("src.services.execution_engine.get_settings", return_value=cfg):
             engine = ExecutionEngine(db, alpaca=alpaca)
             results = engine.execute_recommendations()
 
@@ -175,6 +179,75 @@ class TestExecuteRecommendations:
         alerts = db.query(Alert).all()
         assert len(alerts) == 1
         assert "SUBMITTED" in alerts[0].message
+
+
+class TestPerDirectionScoreFloor:
+    """2026-07-10: direction-blind exec floor excluded every pair_short rec
+    (bear composites 0.31-0.35 vs the 0.45 bull floor — structural base-rate
+    gap, not a conviction gap). Bear recs get their own lower floor."""
+
+    def test_bear_rec_passes_bear_floor_below_bull_floor(self):
+        import json
+        db = _make_db()
+        db.add(Stock(ticker="SNAP"))
+        db.commit()
+        db.add(Recommendation(
+            ticker="SNAP", date=date.today(), strategy="pair_short",
+            direction="short", score=0.33, entry_price=10.0,
+            position_size=900.0, max_loss=20.0,
+            legs_json=json.dumps([
+                {"leg": "short", "ticker": "SNAP", "qty": 30, "entry": 10.0},
+                {"leg": "hedge", "ticker": "SPY", "qty": 0.4, "entry": 750.0},
+            ]),
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+        alpaca.submit_order.side_effect = [
+            {"order_id": "s1"}, {"order_id": "h1"},
+        ]
+        cfg = _settings(min_score_threshold=0.45, min_score_threshold_bear=0.30)
+
+        with patch("src.services.execution_engine.get_settings", return_value=cfg):
+            with patch("src.services.safety_rails.get_settings", return_value=cfg):
+                results = ExecutionEngine(db, alpaca=alpaca).execute_recommendations()
+
+        assert len(results) == 1
+        assert results[0]["status"] == "submitted"
+
+    def test_bull_rec_below_bull_floor_still_filtered(self):
+        db = _make_db()
+        db.add(Stock(ticker="AAPL"))
+        db.commit()
+        db.add(Recommendation(
+            ticker="AAPL", date=date.today(), strategy="long",
+            direction="long", score=0.40, entry_price=150.0,  # bull, below 0.45
+            position_size=900.0,
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+        cfg = _settings(min_score_threshold=0.45, min_score_threshold_bear=0.30)
+
+        with patch("src.services.execution_engine.get_settings", return_value=cfg):
+            results = ExecutionEngine(db, alpaca=alpaca).execute_recommendations()
+
+        assert results == []
+
+    def test_bear_rec_below_bear_floor_filtered(self):
+        db = _make_db()
+        db.add(Stock(ticker="SNAP"))
+        db.commit()
+        db.add(Recommendation(
+            ticker="SNAP", date=date.today(), strategy="pair_short",
+            direction="short", score=0.25, entry_price=10.0, position_size=900.0,
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+        cfg = _settings(min_score_threshold=0.45, min_score_threshold_bear=0.30)
+
+        with patch("src.services.execution_engine.get_settings", return_value=cfg):
+            results = ExecutionEngine(db, alpaca=alpaca).execute_recommendations()
+
+        assert results == []
 
 
 class TestPairShortExecution:

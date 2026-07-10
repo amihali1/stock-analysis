@@ -76,12 +76,21 @@ class Settings(BaseSettings):
     # Trading safety rails
     trading_mode: str = "disabled"  # disabled, paper, live
     max_daily_loss: float = 200.0
-    max_open_positions: int = 5
+    # Raised 5 → 20 on 2026-07-10: with ~9 recs/day and 10-session holds, 5
+    # slots saturate on day one (capacity 0.5 trades/day). $25k cap / ~$1k avg
+    # position supports ~20 concurrent. DB system_settings can still override.
+    max_open_positions: int = 20
     max_daily_orders: int = 20
     allowed_hours_only: bool = True
     blocked_tickers: list[str] = []
     auto_execute_enabled: bool = False
     min_score_threshold: float = 0.7
+    # Bear-side exec floor (2026-07-10): drop composites are structurally lower
+    # than rise composites (5% vs 17% label base rate), so a direction-blind
+    # threshold silently excluded every pair_short rec (pairs score 0.31-0.35
+    # vs the 0.45 bull floor). Same scale-mismatch class as the 5/18 ranker
+    # fix, one layer down.
+    min_score_threshold_bear: float = 0.30
 
     # Auth
     jwt_secret: str = "change-me-in-production"

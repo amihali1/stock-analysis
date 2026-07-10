@@ -48,15 +48,21 @@ class ExecutionEngine:
             return []
 
         today = date.today()
-        recs = (
-            self.db.query(Recommendation)
-            .filter(
-                Recommendation.date == today,
-                Recommendation.score >= overrides["min_score_threshold"],
+        # Per-direction score floors: drop composites run structurally lower
+        # than rise composites (5% vs 17% label base rate) — a direction-blind
+        # floor silently excluded every bear rec (2026-07-10: 4 pair_shorts at
+        # 0.31-0.35 vs the 0.45 floor, 0 bear trades ever executed).
+        bull_floor = overrides["min_score_threshold"]
+        bear_floor = overrides["min_score_threshold_bear"]
+        recs = [
+            r for r in (
+                self.db.query(Recommendation)
+                .filter(Recommendation.date == today)
+                .order_by(Recommendation.score.desc())
+                .all()
             )
-            .order_by(Recommendation.score.desc())
-            .all()
-        )
+            if r.score >= (bear_floor if r.direction == "short" else bull_floor)
+        ]
 
         if not recs:
             logger.info("No eligible recommendations for execution")

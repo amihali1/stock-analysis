@@ -18,7 +18,8 @@ from src.db.models import SystemSetting
 TRADING_KEYS: dict[str, type] = {
     "trading_mode": str,           # disabled | paper | live
     "auto_execute_enabled": bool,
-    "min_score_threshold": float,
+    "min_score_threshold": float,       # bull-side exec floor
+    "min_score_threshold_bear": float,  # bear-side exec floor (lower base rate)
     "max_daily_loss": float,
     "max_open_positions": int,
 }
