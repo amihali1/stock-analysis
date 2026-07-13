@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     # rise_base_rate reuses `directional_base_rate` above (0.175).
     spread_directional_lift: float = 1.3  # multiplier on direction base-rate
     spread_min_score: float = 0.30  # composite-score fallback, calibrated to today's range
+    # Marketable-limit pricing for multi-leg spread orders. MLEG DAY limits
+    # priced at chain mid filled ~17% (1/6 over 2026-07-09/10) — mid has no
+    # urgency premium, so debit spreads sat unfilled until DAY expiry and the
+    # orphan sweep closed their PaperTrades with NULL pnl. Fix: price the
+    # limit `fraction` of the way from the net mid toward the net natural
+    # price (sum of buy-leg asks minus sell-leg bids). 0.0 = mid (old
+    # behavior), 1.0 = pay the full natural. Requires per-leg bid/ask in
+    # legs_json; falls back to mid pricing when quotes are missing.
+    spread_marketable_fraction: float = 0.35
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

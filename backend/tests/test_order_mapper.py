@@ -418,6 +418,80 @@ class TestBullSpreadMapping:
         # 919.999... in binary floating point.
         assert result.limit_price * 100 * result.qty == pytest.approx(920.0)
 
+    def test_marketable_limit_walks_toward_natural(self):
+        # Buy leg quoted 2.90/3.10 (mid 3.00), sell leg 0.90/1.10 (mid 1.00).
+        # Net mid debit = 2.00; natural = 3.10 - 0.90 = 2.20. With the default
+        # fraction 0.35 the limit lands at 2.00 + 0.35 * 0.20 = 2.07.
+        legs = json.dumps([
+            {"option_type": "call", "action": "buy", "strike": 150.0,
+             "premium": 3.0, "contracts": 2, "bid": 2.90, "ask": 3.10},
+            {"option_type": "call", "action": "sell", "strike": 155.0,
+             "premium": 1.0, "contracts": 2, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is not None
+        assert result.limit_price == pytest.approx(2.07)
+
+    def test_marketable_limit_caps_at_max_position(self):
+        # Marketable price would be 5.07/share x 100 x 3 = $1,521 — above the
+        # $1,000 per-trade cap, so the limit clamps to 1000 / 300 = 3.33.
+        legs = json.dumps([
+            {"option_type": "call", "action": "buy", "strike": 150.0,
+             "premium": 6.0, "contracts": 3, "bid": 5.90, "ask": 6.10},
+            {"option_type": "call", "action": "sell", "strike": 155.0,
+             "premium": 1.0, "contracts": 3, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=1000.0,
+            contracts=3, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is not None
+        assert result.limit_price * 100 * result.qty <= 1000
+        assert result.limit_price == pytest.approx(1000 / 300, abs=0.01)
+
+    def test_marketable_limit_skips_net_credit_spread(self):
+        # Sell-leg mid exceeds buy-leg mid → net credit; marketable debit
+        # pricing doesn't apply and the cost-derived mid limit is kept.
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 150.0,
+             "premium": 3.0, "contracts": 2, "bid": 2.90, "ask": 3.10},
+            {"option_type": "put", "action": "buy", "strike": 145.0,
+             "premium": 1.0, "contracts": 2, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is not None
+        # position_size=400, contracts=2 → 200/contract → 2.00/share
+        assert result.limit_price == 2.0
+
+    def test_marketable_limit_requires_two_sided_quotes(self):
+        # One leg missing its ask → fall back to cost-derived mid pricing.
+        legs = json.dumps([
+            {"option_type": "call", "action": "buy", "strike": 150.0,
+             "premium": 3.0, "contracts": 2, "bid": 2.90, "ask": None},
+            {"option_type": "call", "action": "sell", "strike": 155.0,
+             "premium": 1.0, "contracts": 2, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is not None
+        assert result.limit_price == 2.0
+
     def test_bull_spread_single_leg_rejected(self):
         single_leg = json.dumps([{"option_type": "call", "action": "buy", "strike": 150.0}])
         mapper = OrderMapper(max_position=1000)

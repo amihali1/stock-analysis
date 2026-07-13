@@ -36,6 +36,11 @@ class SpreadLeg(BaseModel):
     strike: float
     premium: float  # Per-share premium
     contracts: int
+    # Per-share quote at rec-generation time. None when the premium came from
+    # a Black-Scholes estimate (no chain data) — order_mapper needs these to
+    # price marketable MLEG limits, and falls back to mid pricing without them.
+    bid: float | None = None
+    ask: float | None = None
 
 
 class SpreadRecommendation(BaseModel):
@@ -145,10 +150,11 @@ class SpreadBuilder:
     def _get_premium(
         self, chain_data: list[dict] | None, target_strike: float,
         option_type: str, price: float, iv: float, t: float,
-    ) -> tuple[float, float, bool]:
+    ) -> tuple[float, float, bool, float | None, float | None]:
         """Get premium and actual strike, using real data if available.
 
-        Returns (premium, actual_strike, used_real_data).
+        Returns (premium, actual_strike, used_real_data, bid, ask). bid/ask
+        are None unless both sides of the quote were present and positive.
         """
         if chain_data:
             candidates = [
@@ -162,18 +168,19 @@ class SpreadBuilder:
                 ask = nearest.get("ask", 0) or 0
                 if bid > 0 and ask > 0:
                     premium = (bid + ask) / 2.0
+                    return premium, nearest["strike"], True, bid, ask
                 elif nearest.get("last", 0) > 0:
                     premium = nearest["last"]
                 else:
                     # Real data exists but no usable prices — fall back to BS
                     snapped = _snap_strike(target_strike)
-                    return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False
-                return premium, nearest["strike"], True
+                    return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False, None, None
+                return premium, nearest["strike"], True, None, None
 
         # Fallback to BS estimate — snap target to a tradeable strike so the
         # downstream OCC symbol routes against an asset Alpaca actually lists.
         snapped = _snap_strike(target_strike)
-        return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False
+        return self._estimate_premium(price, snapped, iv, t, option_type), snapped, False, None, None
 
     def _get_iv_from_chain(
         self, chain_data: list[dict] | None, target_strike: float, option_type: str, default_iv: float,
@@ -199,8 +206,8 @@ class SpreadBuilder:
         target_sell_strike = round(price * 1.02, 2)
         target_buy_strike = round(price * 1.07, 2)
 
-        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
-        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
+        sell_premium, sell_strike, sell_real, sell_bid, sell_ask = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
+        buy_premium, buy_strike, buy_real, buy_bid, buy_ask = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
         uses_real = sell_real and buy_real
 
         spread_width = buy_strike - sell_strike
@@ -245,8 +252,8 @@ class SpreadBuilder:
             sentiment_signal=score.sentiment_signal,
             current_price=price,
             legs=[
-                SpreadLeg(option_type="call", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="call", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="call", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts, bid=sell_bid, ask=sell_ask),
+                SpreadLeg(option_type="call", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts, bid=buy_bid, ask=buy_ask),
             ],
             max_profit=round(max_profit, 2),
             max_loss=round(max_loss, 2),
@@ -272,8 +279,8 @@ class SpreadBuilder:
         target_buy_strike = round(price * 0.98, 2)
         target_sell_strike = round(price * 0.93, 2)
 
-        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
-        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
+        buy_premium, buy_strike, buy_real, buy_bid, buy_ask = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
+        sell_premium, sell_strike, sell_real, sell_bid, sell_ask = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
         uses_real = buy_real and sell_real
 
         spread_width = buy_strike - sell_strike
@@ -316,8 +323,8 @@ class SpreadBuilder:
             sentiment_signal=score.sentiment_signal,
             current_price=price,
             legs=[
-                SpreadLeg(option_type="put", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="put", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="put", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts, bid=buy_bid, ask=buy_ask),
+                SpreadLeg(option_type="put", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts, bid=sell_bid, ask=sell_ask),
             ],
             max_profit=round(max_profit, 2),
             max_loss=round(max_loss, 2),
@@ -346,10 +353,10 @@ class SpreadBuilder:
         target_sell_call = round(price * 1.05, 2)
         target_buy_call = round(price * 1.10, 2)
 
-        sell_put_premium, sell_put_strike, sp_real = self._get_premium(chain_data, target_sell_put, "put", price, iv, t)
-        buy_put_premium, buy_put_strike, bp_real = self._get_premium(chain_data, target_buy_put, "put", price, iv, t)
-        sell_call_premium, sell_call_strike, sc_real = self._get_premium(chain_data, target_sell_call, "call", price, iv, t)
-        buy_call_premium, buy_call_strike, bc_real = self._get_premium(chain_data, target_buy_call, "call", price, iv, t)
+        sell_put_premium, sell_put_strike, sp_real, sell_put_bid, sell_put_ask = self._get_premium(chain_data, target_sell_put, "put", price, iv, t)
+        buy_put_premium, buy_put_strike, bp_real, buy_put_bid, buy_put_ask = self._get_premium(chain_data, target_buy_put, "put", price, iv, t)
+        sell_call_premium, sell_call_strike, sc_real, sell_call_bid, sell_call_ask = self._get_premium(chain_data, target_sell_call, "call", price, iv, t)
+        buy_call_premium, buy_call_strike, bc_real, buy_call_bid, buy_call_ask = self._get_premium(chain_data, target_buy_call, "call", price, iv, t)
         uses_real = sp_real and bp_real and sc_real and bc_real
 
         net_credit_per_share = (sell_put_premium - buy_put_premium) + (sell_call_premium - buy_call_premium)
@@ -383,10 +390,10 @@ class SpreadBuilder:
             sentiment_signal=score.sentiment_signal,
             current_price=price,
             legs=[
-                SpreadLeg(option_type="put", action="buy", strike=buy_put_strike, premium=round(buy_put_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="put", action="sell", strike=sell_put_strike, premium=round(sell_put_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="call", action="sell", strike=sell_call_strike, premium=round(sell_call_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="call", action="buy", strike=buy_call_strike, premium=round(buy_call_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="put", action="buy", strike=buy_put_strike, premium=round(buy_put_premium, 2), contracts=contracts, bid=buy_put_bid, ask=buy_put_ask),
+                SpreadLeg(option_type="put", action="sell", strike=sell_put_strike, premium=round(sell_put_premium, 2), contracts=contracts, bid=sell_put_bid, ask=sell_put_ask),
+                SpreadLeg(option_type="call", action="sell", strike=sell_call_strike, premium=round(sell_call_premium, 2), contracts=contracts, bid=sell_call_bid, ask=sell_call_ask),
+                SpreadLeg(option_type="call", action="buy", strike=buy_call_strike, premium=round(buy_call_premium, 2), contracts=contracts, bid=buy_call_bid, ask=buy_call_ask),
             ],
             max_profit=round(net_credit, 2),
             max_loss=round(max_loss, 2),
@@ -453,8 +460,8 @@ class SpreadBuilder:
         target_buy_strike = round(price * 1.02, 2)
         target_sell_strike = round(price * 1.07, 2)
 
-        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
-        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
+        buy_premium, buy_strike, buy_real, buy_bid, buy_ask = self._get_premium(chain_data, target_buy_strike, "call", price, iv, t)
+        sell_premium, sell_strike, sell_real, sell_bid, sell_ask = self._get_premium(chain_data, target_sell_strike, "call", price, iv, t)
         uses_real = buy_real and sell_real
 
         spread_width = sell_strike - buy_strike
@@ -497,8 +504,8 @@ class SpreadBuilder:
             sentiment_signal=score.sentiment_signal,
             current_price=price,
             legs=[
-                SpreadLeg(option_type="call", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="call", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="call", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts, bid=buy_bid, ask=buy_ask),
+                SpreadLeg(option_type="call", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts, bid=sell_bid, ask=sell_ask),
             ],
             max_profit=round(max_profit, 2),
             max_loss=round(max_loss, 2),
@@ -524,8 +531,8 @@ class SpreadBuilder:
         target_sell_strike = round(price * 0.98, 2)
         target_buy_strike = round(price * 0.93, 2)
 
-        sell_premium, sell_strike, sell_real = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
-        buy_premium, buy_strike, buy_real = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
+        sell_premium, sell_strike, sell_real, sell_bid, sell_ask = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
+        buy_premium, buy_strike, buy_real, buy_bid, buy_ask = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
         uses_real = sell_real and buy_real
 
         spread_width = sell_strike - buy_strike
@@ -567,8 +574,8 @@ class SpreadBuilder:
             sentiment_signal=score.sentiment_signal,
             current_price=price,
             legs=[
-                SpreadLeg(option_type="put", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts),
-                SpreadLeg(option_type="put", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts),
+                SpreadLeg(option_type="put", action="sell", strike=sell_strike, premium=round(sell_premium, 2), contracts=contracts, bid=sell_bid, ask=sell_ask),
+                SpreadLeg(option_type="put", action="buy", strike=buy_strike, premium=round(buy_premium, 2), contracts=contracts, bid=buy_bid, ask=buy_ask),
             ],
             max_profit=round(max_profit, 2),
             max_loss=round(max_loss, 2),

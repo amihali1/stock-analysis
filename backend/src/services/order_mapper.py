@@ -62,6 +62,7 @@ class OrderMapper:
         settings = get_settings()
         self.max_position = max_position or settings.effective_per_trade_cap
         self.enable_fractional = settings.enable_fractional_shares
+        self.spread_marketable_fraction = settings.spread_marketable_fraction
 
     def recommendation_to_order(
         self,
@@ -387,12 +388,6 @@ class OrderMapper:
         cost = min(position_size or self.max_position, self.max_position)
         if cost <= 0:
             return None
-        if buying_power is not None and cost > buying_power:
-            logger.warning(
-                f"Insufficient buying power for {ticker} {strategy_label}: "
-                f"need ${cost:.0f}, have ${buying_power:.0f}"
-            )
-            return None
 
         # Alpaca options limit_price is quoted PER SHARE (1 contract = 100
         # shares). cost is total dollars, contracts is the spread count, so
@@ -402,6 +397,25 @@ class OrderMapper:
         # the INTC spread on 2026-06-09 with $92,000 vs $20,856 buying power
         # when intended cost was $920.
         per_share = (cost / contracts) / 100
+
+        # Marketable-limit pricing: mid-priced MLEG DAY limits filled ~17%
+        # (2026-07-09/10 — orders sat as `new` until DAY expiry canceled them).
+        # Walk the debit limit spread_marketable_fraction of the way from the
+        # quote mid toward the natural price so it can cross same-day. Needs
+        # per-leg bid/ask in legs_json; credit spreads and quoteless legs keep
+        # the cost-derived mid price above. Hard-capped at the per-trade max.
+        marketable = self._marketable_debit_per_share(raw_legs)
+        if marketable is not None:
+            per_share = min(marketable, self.max_position / (contracts * 100))
+
+        total_cost = per_share * 100 * contracts
+        if buying_power is not None and total_cost > buying_power:
+            logger.warning(
+                f"Insufficient buying power for {ticker} {strategy_label}: "
+                f"need ${total_cost:.0f}, have ${buying_power:.0f}"
+            )
+            return None
+
         return AlpacaOrderParams(
             ticker=ticker,
             qty=contracts,
@@ -412,6 +426,34 @@ class OrderMapper:
             dry_run=dry_run,
             legs=legs,
         )
+
+    def _marketable_debit_per_share(self, raw_legs: list[dict]) -> float | None:
+        """Per-share net-debit limit priced toward the natural quote.
+
+        mid = sum of buy-leg mids minus sell-leg mids; natural = sum of
+        buy-leg asks minus sell-leg bids (the price that fills immediately).
+        Returns mid + spread_marketable_fraction * (natural - mid), or None
+        when any leg lacks a two-sided quote, the spread is a net credit
+        (mid <= 0), or the quotes are crossed (natural <= mid) — callers fall
+        back to mid pricing in those cases.
+        """
+        mid = 0.0
+        natural = 0.0
+        for leg in raw_legs:
+            bid = leg.get("bid") or 0
+            ask = leg.get("ask") or 0
+            if bid <= 0 or ask <= 0:
+                return None
+            leg_mid = (bid + ask) / 2.0
+            if str(leg["action"]).strip().lower() == "buy":
+                mid += leg_mid
+                natural += ask
+            else:
+                mid -= leg_mid
+                natural -= bid
+        if mid <= 0 or natural <= mid:
+            return None
+        return round(mid + self.spread_marketable_fraction * (natural - mid), 2)
 
     def _map_bull_spread(
         self,

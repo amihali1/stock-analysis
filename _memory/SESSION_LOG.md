@@ -1426,3 +1426,23 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 5. **Wire a real Alertmanager receiver** (carried forward).
 6. **Resolve GH Actions billing** (carried forward).
 7. **Remaining pre-existing carryovers**: whisper devices block, multi-leg/OCC spread construction.
+
+---
+
+## 2026-07-13 — Marketable-limit pricing for MLEG spreads
+
+**Agent**: Claude Fable 5
+**Context**: MLEG DAY limits priced at chain mid filled ~17% (1/6 over 7/9-7/10; 7/13's LRCX/PANW/TSM all sat at `new`). Unfilled orders expire, orphan sweep closes PaperTrades with NULL pnl — bull book never builds. User decision: marketable limits (option 1 from `C:\AgentMemory\projects\stock-analysis\mleg_fill_rate_2026-07-10.md`).
+
+**What was done**:
+- `SpreadLeg` (options_strategies.py) gained optional `bid`/`ask` fields; `_get_premium` now returns `(premium, strike, used_real, bid, ask)` — quotes only when both sides present and positive. All 12 call sites + leg constructions updated (bear call, bear put, iron condor, bull call debit, bull put credit). Fields flow into `legs_json` automatically via `model_dump()`.
+- New setting `spread_marketable_fraction: float = 0.35` in config.
+- `order_mapper._map_spread`: new `_marketable_debit_per_share()` prices the limit `mid + fraction × (natural − mid)` where natural = Σ(buy asks) − Σ(sell bids). Falls back to cost-derived mid pricing when quotes missing, spread is net-credit, or quotes crossed. Limit hard-capped at `max_position / (contracts × 100)`; buying-power check now uses the actual limit-based cost.
+- 4 new tests in test_order_mapper.py (walk-toward-natural math, max-position clamp, credit-spread skip, missing-quote fallback). 82/82 pass locally in test_order_mapper.py + test_options_strategies.py. Full suite not runnable locally (no pandas/fastapi env) — pre-existing.
+
+**Caveats**:
+- Recs generated BEFORE this deploy have no bid/ask in legs_json → still mid-priced. First marketable-priced orders appear with the next rec run after deploy.
+- Credit spreads (bear_call, bull_put_credit, iron_condor) intentionally keep old pricing — negative-limit MLEG credit semantics not implemented.
+- Quotes are captured at rec time (07:30 ET) but orders submit at 10:00 ET — stale-quote drift is bounded by the max-position clamp but could still misprice; watch first week's fills.
+
+**Next steps**: deploy via push to master, run pytest inside container post-deploy, watch 7/14 exec run for bull_spread fills.
