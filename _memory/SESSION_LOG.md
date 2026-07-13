@@ -1477,3 +1477,15 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Seeded `/opt/.../trained_models/directional_rise_metrics.json` on VM from rise v2's own train output (test auc 0.6216, brier 0.1497, wf mean 0.5868) so rise gate is armed, not fail-closed.
 
 **Next natural fire**: first-Sunday cron 2026-08-02 02:00 ET — first properly gated retrain covering all three models.
+
+---
+
+## 2026-07-13 — Frontend spread/pair leg rendering
+
+**Agent**: Claude Fable 5
+**Context**: Rec dashboard rendered option-spread legs (57e22b9) but pair_short legs were invisible everywhere, and the paper-trades page showed no leg detail at all (PaperTradeResponse never exposed legs_json/expiry/direction).
+
+**What was done**:
+- Backend: `src/api/leg_parsing.py` — shared `parse_option_legs` / `parse_stock_legs` (lenient; each returns None on the other shape). `StockLegResponse` schema (leg/ticker/qty/entry = pair_short legs_json shape). RecommendationResponse + PaperTradeResponse gain `stock_legs`; PaperTradeResponse also gains `legs`, `expiry`, `direction`. Analysis route now populates legs too.
+- Frontend: `lib/legs.ts` shared formatters; recs page renders pair legs ("SHORT 15× RIVN @ $17.48 / HEDGE 0.3473× SPY @ $754.95"); paper-trades page gets LegDetailRow under each trade with legs; strategy badge colors extended (long=green, pair_short=cyan, bull_spread=blue); Strategy type union widened to all 7 prod strategies.
+- Tests: `test_leg_parsing.py` 7 tests (pure pydantic, runs locally). `npx tsc --noEmit` + `next build` clean.

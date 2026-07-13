@@ -37,6 +37,14 @@ class SpreadLegResponse(BaseModel):
     contracts: int | None = None
 
 
+class StockLegResponse(BaseModel):
+    """A stock leg of a pair trade (legs_json shape: leg/ticker/qty/entry)."""
+    leg: str  # short|hedge
+    ticker: str
+    qty: float
+    entry: float
+
+
 class RecommendationResponse(BaseModel):
     id: int | None = None
     ticker: str
@@ -56,6 +64,7 @@ class RecommendationResponse(BaseModel):
     expiry: date | None = None
     option_type: str | None = None
     legs: list[SpreadLegResponse] | None = None
+    stock_legs: list[StockLegResponse] | None = None
     risk_type: str = "undefined"
     notes: str | None = None
 

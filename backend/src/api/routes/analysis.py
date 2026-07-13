@@ -6,6 +6,7 @@ from sqlalchemy import func
 
 from src.db.session import get_db
 from src.db.models import Stock, PriceHistory, TechnicalIndicator, SentimentScore, Recommendation
+from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import (
     AnalysisResponse, PricePoint, IndicatorPoint, SentimentEntry,
     RecommendationResponse, TickerInfo, TickerListResponse,
@@ -108,6 +109,8 @@ def get_analysis(
                 position_size=r.position_size, max_loss=r.max_loss,
                 contracts=r.contracts, strike=r.strike, expiry=r.expiry,
                 option_type=r.option_type, notes=r.notes,
+                legs=parse_option_legs(r.legs_json),
+                stock_legs=parse_stock_legs(r.legs_json),
             )
             for r in recs
         ],

@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from src.db.session import get_db
 from src.db.models import PaperTrade, PriceHistory
+from src.api.leg_parsing import parse_option_legs, parse_stock_legs
+from src.api.schemas import SpreadLegResponse, StockLegResponse
 
 router = APIRouter()
 
@@ -52,6 +54,10 @@ class PaperTradeResponse(BaseModel):
     closed_at: str | None
     current_price: float | None = None
     unrealized_pnl: float | None = None
+    direction: str = "short"
+    expiry: str | None = None
+    legs: list[SpreadLegResponse] | None = None
+    stock_legs: list[StockLegResponse] | None = None
 
 
 class PaperTradeListResponse(BaseModel):
@@ -178,4 +184,8 @@ def _to_response(trade: PaperTrade, db: Session) -> PaperTradeResponse:
         closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
         current_price=current_price,
         unrealized_pnl=unrealized_pnl,
+        direction=trade.direction or "short",
+        expiry=trade.expiry.isoformat() if trade.expiry else None,
+        legs=parse_option_legs(trade.legs_json),
+        stock_legs=parse_stock_legs(trade.legs_json),
     )

@@ -10,10 +10,10 @@ import {
 } from "@/lib/api";
 import type {
   Recommendation,
-  SpreadLeg,
   Strategy,
   TradingMode,
 } from "@/lib/types";
+import { formatOptionLeg, formatStockLeg } from "@/lib/legs";
 
 function scoreColor(score: number): string {
   if (score >= 0.7) return "text-green-400";
@@ -25,7 +25,11 @@ function strategyBadge(strategy: Strategy) {
   const cls =
     strategy === "short"
       ? "bg-red-900/50 text-red-300 border-red-800"
-      : strategy === "spread"
+      : strategy === "pair_short"
+      ? "bg-cyan-900/50 text-cyan-300 border-cyan-800"
+      : strategy === "long"
+      ? "bg-green-900/50 text-green-300 border-green-800"
+      : strategy === "spread" || strategy === "bull_spread"
       ? "bg-blue-900/50 text-blue-300 border-blue-800"
       : "bg-purple-900/50 text-purple-300 border-purple-800";
   return (
@@ -57,21 +61,9 @@ function formatDollars(val: number | null): string {
 
 type SortKey = "score" | "ticker" | "max_loss" | "position_size";
 
-function formatLeg(leg: SpreadLeg, expiry: string | null): string {
-  const action = leg.action.toUpperCase();
-  const qty = leg.contracts ?? "?";
-  const exp = expiry ? ` ${expiry}` : "";
-  const strike = `$${leg.strike}`;
-  const type = leg.option_type.toUpperCase();
-  const premium =
-    leg.premium !== null && leg.premium !== undefined
-      ? ` @ $${leg.premium.toFixed(2)}`
-      : "";
-  return `${action} ${qty}×${exp} ${strike} ${type}${premium}`;
-}
-
 function hasOptionDetail(rec: Recommendation): boolean {
   if (rec.legs && rec.legs.length > 0) return true;
+  if (rec.stock_legs && rec.stock_legs.length > 0) return true;
   if (rec.strike !== null && rec.option_type !== null) return true;
   return false;
 }
@@ -92,7 +84,24 @@ function OptionDetailRow({
             {rec.legs.map((leg, j) => (
               <div key={j}>
                 <span className="text-gray-500">↳ </span>
-                {formatLeg(leg, rec.expiry)}
+                {formatOptionLeg(leg, rec.expiry)}
+              </div>
+            ))}
+          </div>
+        </td>
+      </tr>
+    );
+  }
+  // Pair trade: short leg + hedge leg.
+  if (rec.stock_legs && rec.stock_legs.length > 0) {
+    return (
+      <tr className="border-b border-gray-800/50 bg-gray-950/40">
+        <td colSpan={colSpan} className="py-2 px-3">
+          <div className="pl-6 text-xs font-mono text-gray-400 space-y-0.5">
+            {rec.stock_legs.map((leg, j) => (
+              <div key={j}>
+                <span className="text-gray-500">↳ </span>
+                {formatStockLeg(leg)}
               </div>
             ))}
           </div>

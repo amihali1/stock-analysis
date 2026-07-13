@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { getPaperTrades } from "@/lib/api";
 import type { PaperTrade, PaperTradeListResponse } from "@/lib/types";
+import { formatOptionLeg, formatStockLeg } from "@/lib/legs";
 
 function pnlColor(val: number | null): string {
   if (val === null) return "text-gray-400";
@@ -19,6 +20,41 @@ function dollar(val: number | null): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function strategyBadgeClass(strategy: string): string {
+  if (strategy === "short") return "bg-red-900/50 text-red-300 border-red-800";
+  if (strategy === "pair_short")
+    return "bg-cyan-900/50 text-cyan-300 border-cyan-800";
+  if (strategy === "long")
+    return "bg-green-900/50 text-green-300 border-green-800";
+  if (strategy === "spread" || strategy === "bull_spread")
+    return "bg-blue-900/50 text-blue-300 border-blue-800";
+  return "bg-purple-900/50 text-purple-300 border-purple-800";
+}
+
+function LegDetailRow({ trade }: { trade: PaperTrade }) {
+  const lines =
+    trade.legs && trade.legs.length > 0
+      ? trade.legs.map((leg) => formatOptionLeg(leg, trade.expiry))
+      : trade.stock_legs && trade.stock_legs.length > 0
+        ? trade.stock_legs.map((leg) => formatStockLeg(leg))
+        : null;
+  if (!lines) return null;
+  return (
+    <tr className="border-b border-gray-800/50 bg-gray-950/40">
+      <td colSpan={8} className="py-2 px-3">
+        <div className="pl-6 text-xs font-mono text-gray-400 space-y-0.5">
+          {lines.map((line, j) => (
+            <div key={j}>
+              <span className="text-gray-500">↳ </span>
+              {line}
+            </div>
+          ))}
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 export default function PaperTradesPage() {
@@ -95,10 +131,8 @@ export default function PaperTradesPage() {
             </thead>
             <tbody>
               {trades.map((trade) => (
-                <tr
-                  key={trade.id}
-                  className="border-b border-gray-800/50 hover:bg-gray-900/50"
-                >
+                <React.Fragment key={trade.id}>
+                <tr className="border-b border-gray-800/50 hover:bg-gray-900/50">
                   <td className="py-3 px-3">
                     <Link
                       href={`/analysis/${trade.ticker}`}
@@ -109,11 +143,7 @@ export default function PaperTradesPage() {
                   </td>
                   <td className="py-3 px-3">
                     <span
-                      className={`text-xs px-2 py-0.5 rounded border ${
-                        trade.strategy === "short"
-                          ? "bg-red-900/50 text-red-300 border-red-800"
-                          : "bg-purple-900/50 text-purple-300 border-purple-800"
-                      }`}
+                      className={`text-xs px-2 py-0.5 rounded border ${strategyBadgeClass(trade.strategy)}`}
                     >
                       {trade.strategy}
                     </span>
@@ -165,6 +195,8 @@ export default function PaperTradesPage() {
                       : "—"}
                   </td>
                 </tr>
+                <LegDetailRow trade={trade} />
+                </React.Fragment>
               ))}
             </tbody>
           </table>

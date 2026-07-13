@@ -1,4 +1,11 @@
-export type Strategy = "short" | "options" | "spread";
+export type Strategy =
+  | "short"
+  | "long"
+  | "options"
+  | "call_options"
+  | "spread"
+  | "bull_spread"
+  | "pair_short";
 export type RiskType = "defined" | "undefined";
 
 export interface PortfolioRiskMetrics {
@@ -40,6 +47,13 @@ export interface SpreadLeg {
   contracts: number | null;
 }
 
+export interface StockLeg {
+  leg: string; // "short" | "hedge"
+  ticker: string;
+  qty: number;
+  entry: number;
+}
+
 export interface Recommendation {
   id: number | null;
   ticker: string;
@@ -59,6 +73,7 @@ export interface Recommendation {
   expiry: string | null;
   option_type: string | null;
   legs: SpreadLeg[] | null;
+  stock_legs: StockLeg[] | null;
   risk_type: RiskType;
   notes: string | null;
 }
@@ -143,6 +158,10 @@ export interface PaperTrade {
   closed_at: string | null;
   current_price: number | null;
   unrealized_pnl: number | null;
+  direction: string;
+  expiry: string | null;
+  legs: SpreadLeg[] | null;
+  stock_legs: StockLeg[] | null;
 }
 
 export interface PaperTradeListResponse {
