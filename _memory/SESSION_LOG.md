@@ -1446,3 +1446,17 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Quotes are captured at rec time (07:30 ET) but orders submit at 10:00 ET — stale-quote drift is bounded by the max-position clamp but could still misprice; watch first week's fills.
 
 **Next steps**: deploy via push to master, run pytest inside container post-deploy, watch 7/14 exec run for bull_spread fills.
+
+---
+
+## 2026-07-13 — Off-VM backup replication (Windows pull)
+
+**Agent**: Claude Fable 5
+**Context**: Nightly pg_dumps (since 7/02) lived only on the VM; VM disks + Proxmox host share one physical disk, so on-box copies don't survive disk loss. VM→VM replication pointless for the same reason. Chose pull-to-Windows: SSH trust already exists (Windows → proxmox@10.0.0.47), no new credentials.
+
+**What was done**:
+- `scripts/windows_pull_backup.ps1`: lists remote dumps, scp's missing ones to `C:\Backups\stock-analysis\`, 1MB runt guard, 60-day local retention (vs VM's 14), logs to pull.log. ASCII-only (PS 5.1 reads BOM-less files as ANSI; em-dashes break the parse — first version died on this).
+- Windows Scheduled Task "StockAnalysis DB Backup Pull", daily 09:00 local + StartWhenAvailable (catches up after missed/asleep mornings).
+- Verified: initial pull 11 dumps (7/02–7/13), idempotent re-run pulls 0, task fires clean under scheduler context (LastTaskResult 0), SHA256 of newest dump matches VM.
+
+**Caveats**: replication depends on this PC being on within the day (StartWhenAvailable mitigates); no alerting when pull fails silently for days — check pull.log if in doubt.
