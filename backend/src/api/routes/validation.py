@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
+from src.services.live_gate import evaluate_gates
 from src.services.paper_validation import PaperValidator
 
 router = APIRouter()
@@ -24,3 +25,9 @@ def paper_vs_backtest(
         return PaperValidator(db).validate(start_date, end_date)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/validate/live-gate")
+def live_gate(db: Session = Depends(get_db)):
+    """Evaluate the D014 live-money go/no-go gates per strategy arm."""
+    return evaluate_gates(db)

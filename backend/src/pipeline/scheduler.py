@@ -1100,6 +1100,7 @@ def job_paper_validation():
             paper_validation_total_pnl,
             paper_validation_win_rate,
         )
+        from src.services.live_gate import evaluate_gates, format_gates
         from src.services.paper_validation import PaperValidator, format_report
 
         end = date.today()
@@ -1107,6 +1108,7 @@ def job_paper_validation():
         db = SessionLocal()
         try:
             report = PaperValidator(db).validate(start, end)
+            report["live_gate"] = evaluate_gates(db)
             paper = report["paper"]
             db.add(ValidationReport(
                 window_start=start,
@@ -1121,11 +1123,19 @@ def job_paper_validation():
             paper_validation_win_rate.set(paper["win_rate"])
             paper_validation_total_pnl.set(paper["total_pnl"])
             paper_validation_num_trades.set(paper["num_trades"])
-            logger.info("Scheduler: paper validation report\n%s", format_report(report))
+            logger.info(
+                "Scheduler: paper validation report\n%s\n%s",
+                format_report(report), format_gates(report["live_gate"]),
+            )
+            gate_summary = ", ".join(
+                f"{a['arm']}={'READY' if a['ready'] else 'not-ready'}"
+                for a in report["live_gate"]["arms"]
+            )
             _record_run(
                 "paper_validation",
                 f"ok ({paper['num_trades']} trades, wr {paper['win_rate']:.0%}, "
-                f"pnl ${paper['total_pnl']:.0f}, {'ok' if report['ok'] else 'DIVERGENT'})",
+                f"pnl ${paper['total_pnl']:.0f}, {'ok' if report['ok'] else 'DIVERGENT'}; "
+                f"gates: {gate_summary})",
             )
         finally:
             db.close()

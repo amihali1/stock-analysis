@@ -1501,3 +1501,16 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - `windows_pull_backup.ps1`: posts to ntfy.sh topic andym-homelab-9a7b9dce on failure (ssh list fail, scp fail, runt); on clean runs touches `.last_pull_ok` marker on the VM. Alerting best-effort (never fails the pull).
 - New `scripts/check_backup_replication.sh` + VM cron (proxmox, 0 18 * * * UTC): alerts when newest dump > 48h old (dump cron broken) or `.last_pull_ok` > 72h old / missing (replication stale). Thresholds env-overridable. Exec bit set in git index (f96c20c class-of-bug).
 - Verified end-to-end: clean run silent; forced MAX_DUMP_AGE_H=1 → alert visible in ntfy topic poll; PS alert path posted successfully. Cron installed alongside existing backup/prune entries; script also scp'd to /opt (push is [skip ci], repo blob identical for next deploy).
+
+---
+
+## 2026-07-13 — Live-gate check in ValidationReport (D014 encoded)
+
+**Agent**: Claude Fable 5
+**Context**: D014 (live-money criteria, decided earlier today) needed machine evaluation so the weekly report says READY/NOT READY per arm instead of hand-derivation.
+
+**What was done**:
+- `src/services/live_gate.py`: ArmSpec table (pair: pair_short, baseline 7/10, backtest wr 0.58; bull: long/bull_spread/call_options, baseline 7/14, wr floor None — money-layer sweep has expectancy only, no invented numbers). `evaluate_arm` enforces: ≥20 closed (NULL-pnl orphan closes excluded, pre-baseline excluded by opened_at) + ≥3 clean weeks + mean return > 0 + wr ≥ backtest − 0.10 where floor exists. Incident clock: system_settings key `live_gate_last_incident` (ISO date) resets clean-weeks — human-recorded, not derived.
+- Weekly `job_paper_validation` embeds `report["live_gate"]` in ValidationReport.report_json, logs formatted gate lines, `_record_run` includes per-arm verdicts.
+- New endpoint `GET /api/validate/live-gate` for on-demand checks.
+- `tests/test_live_gate.py`: 12 tests (evidence/performance bars, exclusions, incident reset, no-floor bull path). All pass locally (sqlite in-memory).
