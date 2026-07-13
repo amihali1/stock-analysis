@@ -1460,3 +1460,20 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Verified: initial pull 11 dumps (7/02–7/13), idempotent re-run pulls 0, task fires clean under scheduler context (LastTaskResult 0), SHA256 of newest dump matches VM.
 
 **Caveats**: replication depends on this PC being on within the day (StartWhenAvailable mitigates); no alerting when pull fails silently for days — check pull.log if in doubt.
+
+---
+
+## 2026-07-13 — Retrainer walk-forward gate + rise coverage
+
+**Agent**: Claude Fable 5
+**Context**: Retrainer gate was single-slice test AUC (runs 0.04-0.06 optimistic per 5/15 vol-K sweep), no brier check, and the rise model wasn't retrained at all. Follow-up to the 7/07 fail-closed fix.
+
+**What was done** (`src/models/retrainer.py`):
+- `retrain_directional(direction="drop"|"rise")` — parametrized; `retrain_rise()` wrapper; `retrain_all()` now covers drop + rise + volatility. Rise champion files: `directional_xgb_rise_v2.pkl` + `directional_rise_metrics.json`.
+- Primary gate metric = walk-forward mean AUC across train() folds (train() always computed fold_metrics; retrainer ignored them). Champion metrics now persist `walk_forward_auc_mean/std/folds`. Legacy champions without wf fields compare on single-slice auc_roc once; first deployment writes wf fields (self-upgrading gate, avoids fail-closed deadlock).
+- Brier guard: challenger blocked if brier regresses > brier_tolerance (0.005) or challenger is uncalibrated (brier None) — ranker floors consume calibrated probs, so brier regression is a prod regression even at higher AUC.
+- Calibration pinned `sigmoid` in retrainer challengers (constructor auto-picks isotonic on ≥1k calib rows → plateau bug from 2026-05-12).
+- Tests: 16 total (was 7) — wf-primary-over-test-slice, wf persist, legacy fallback, brier block/tolerance, uncalibrated block, rise file isolation, rise fail-closed, retrain_all keys. Validated in prod container (site-packages hot-patch): 16/16.
+- Seeded `/opt/.../trained_models/directional_rise_metrics.json` on VM from rise v2's own train output (test auc 0.6216, brier 0.1497, wf mean 0.5868) so rise gate is armed, not fail-closed.
+
+**Next natural fire**: first-Sunday cron 2026-08-02 02:00 ET — first properly gated retrain covering all three models.
