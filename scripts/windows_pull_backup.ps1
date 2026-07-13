@@ -21,10 +21,25 @@ $LocalDir = "C:\Backups\stock-analysis"
 $LogFile = Join-Path $LocalDir "pull.log"
 $RetentionDays = 60
 $MinSizeBytes = 1048576  # 1 MB, same runt guard as the VM-side script
+$NtfyTopic = "https://ntfy.sh/andym-homelab-9a7b9dce"
 
 function Write-Log($msg) {
     $line = "{0:yyyy-MM-ddTHH:mm:sszzz} {1}" -f (Get-Date), $msg
     Add-Content -Path $LogFile -Value $line -Encoding utf8
+}
+
+function Send-Alert($msg) {
+    # Same public ntfy.sh topic Alertmanager uses (see homelab-monitoring).
+    # Best-effort: alerting must never fail the pull itself.
+    try {
+        Invoke-RestMethod -Method Post -Uri $NtfyTopic -Body $msg -Headers @{
+            Title = "stock-analysis backup pull FAILED"
+            Priority = "high"
+            Tags = "warning,floppy_disk"
+        } -TimeoutSec 15 | Out-Null
+    } catch {
+        Write-Log "WARN: ntfy alert failed: $_"
+    }
 }
 
 if (-not (Test-Path $LocalDir)) {
@@ -35,10 +50,12 @@ try {
     $remoteFiles = ssh -o BatchMode=yes -o ConnectTimeout=15 $RemoteHost "ls $RemoteDir/*.dump 2>/dev/null | xargs -n1 basename"
     if ($LASTEXITCODE -ne 0 -or -not $remoteFiles) {
         Write-Log "FAIL: could not list remote dumps (ssh exit $LASTEXITCODE)"
+        Send-Alert "Could not list remote dumps on 10.0.0.47 (ssh exit $LASTEXITCODE). Check VM/SSH."
         exit 1
     }
 } catch {
     Write-Log "FAIL: ssh error: $_"
+    Send-Alert "SSH to 10.0.0.47 failed: $_"
     exit 1
 }
 
@@ -77,4 +94,16 @@ Get-ChildItem $LocalDir -Filter "*.dump" | Where-Object { $_.LastWriteTime -lt $
 
 $total = (Get-ChildItem $LocalDir -Filter "*.dump").Count
 Write-Log "DONE: pulled $pulled, failed $failed, $total dumps local"
-if ($failed -gt 0) { exit 1 }
+
+if ($failed -gt 0) {
+    Send-Alert "Pull finished with $failed failed transfer(s) ($pulled ok). See C:\Backups\stock-analysis\pull.log"
+    exit 1
+}
+
+# Touch the replication marker on the VM so the VM-side staleness check
+# (scripts/check_backup_replication.sh, daily cron) knows the off-VM copy is
+# current. Only on fully clean runs.
+ssh -o BatchMode=yes -o ConnectTimeout=15 $RemoteHost "date -u +%Y-%m-%dT%H:%M:%SZ > $RemoteDir/.last_pull_ok"
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "WARN: could not update .last_pull_ok marker on VM"
+}

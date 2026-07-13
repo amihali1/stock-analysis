@@ -1489,3 +1489,15 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Backend: `src/api/leg_parsing.py` — shared `parse_option_legs` / `parse_stock_legs` (lenient; each returns None on the other shape). `StockLegResponse` schema (leg/ticker/qty/entry = pair_short legs_json shape). RecommendationResponse + PaperTradeResponse gain `stock_legs`; PaperTradeResponse also gains `legs`, `expiry`, `direction`. Analysis route now populates legs too.
 - Frontend: `lib/legs.ts` shared formatters; recs page renders pair legs ("SHORT 15× RIVN @ $17.48 / HEDGE 0.3473× SPY @ $754.95"); paper-trades page gets LegDetailRow under each trade with legs; strategy badge colors extended (long=green, pair_short=cyan, bull_spread=blue); Strategy type union widened to all 7 prod strategies.
 - Tests: `test_leg_parsing.py` 7 tests (pure pydantic, runs locally). `npx tsc --noEmit` + `next build` clean.
+
+---
+
+## 2026-07-13 — Backup-pull alerting via ntfy
+
+**Agent**: Claude Fable 5
+**Context**: Off-VM pull (earlier today) failed silently — no signal if the Windows task breaks or the VM dump cron stalls.
+
+**What was done**:
+- `windows_pull_backup.ps1`: posts to ntfy.sh topic andym-homelab-9a7b9dce on failure (ssh list fail, scp fail, runt); on clean runs touches `.last_pull_ok` marker on the VM. Alerting best-effort (never fails the pull).
+- New `scripts/check_backup_replication.sh` + VM cron (proxmox, 0 18 * * * UTC): alerts when newest dump > 48h old (dump cron broken) or `.last_pull_ok` > 72h old / missing (replication stale). Thresholds env-overridable. Exec bit set in git index (f96c20c class-of-bug).
+- Verified end-to-end: clean run silent; forced MAX_DUMP_AGE_H=1 → alert visible in ntfy topic poll; PS alert path posted successfully. Cron installed alongside existing backup/prune entries; script also scp'd to /opt (push is [skip ci], repo blob identical for next deploy).
