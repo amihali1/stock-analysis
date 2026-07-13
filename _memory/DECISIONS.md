@@ -44,3 +44,34 @@ Only surface trades where models agree with high confidence. The goal is NOT to 
 
 ### D013: Prefer defined-risk strategies
 Default to strategies with capped max loss (vertical spreads, cash-secured puts, debit spreads) over naked shorts or uncovered options. The max loss must be known and bounded before entry.
+
+## 2026-07-13 — Live-Money Go/No-Go Criteria
+
+### D014: Per-arm live-money gates (user decision, 2026-07-13)
+Each strategy arm (pair_short bear book; long/bull_spread bull book) goes live independently when it clears ALL of:
+
+1. **Evidence bar**: ≥20 closed paper trades in the arm AND ≥3 calendar weeks
+   of clean operation (no pipeline incident requiring manual correctness fix;
+   deploys and planned changes don't reset the clock — silent failures do).
+   Evidence windows start at the arm's current-architecture baseline:
+   pair book 2026-07-10, bull book 2026-07-14 (first marketable-limit fills).
+   Pre-baseline history (May shorts n=5 0% hit, legacy book −$1,978) is excluded.
+2. **Pass bar**: arm's mean 10-day return > 0 AND win rate within 10 points of
+   its backtest (pair: ≥48% vs 58% backtest; bull: vs money-layer sweep
+   baseline). Guards against both losing outright and winning on variance
+   while underperforming design — the failure mode that killed the May shorts
+   (0% live vs 25-30% backtest).
+3. **Go-live scale**: $1k aggregate / $250 per trade (the designed live mode:
+   fractional routing, max_ticker_price, per-trade cap all built for this).
+   Scale-up only after 4 clean live weeks at $1k.
+
+**Post-live kill rules** (defaults, revisit at go-live):
+- Existing $200 max_daily_loss stays.
+- Live aggregate drawdown ≤ −$300 (30% of book) → kill switch off, arm back
+  to paper for ≥2 weeks with a written root-cause before retry.
+- Any silent pipeline failure discovered while live → immediate paper, no
+  threshold.
+
+**Earliest gate evaluation**: pair book ~2026-08-03 (20 closes by ~7/30,
+3 clean weeks from 7/13 baseline-reset), bull book ~2026-08-05. Weekly
+ValidationReport is the measurement source.
