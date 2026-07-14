@@ -245,15 +245,18 @@ def test_latest_close_helper_works_against_real_session():
 def test_daily_capital_cap_default_locked():
     """Lock the default so config drift is a deliberate, test-visible act.
     History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),
-    deliberately raised to $25k for paper mode in 9b1a39f (2026-05-27). If
-    this fails, someone changed the cap — update this test only alongside a
+    raised to $25k for paper mode in 9b1a39f (2026-05-27), raised to $50k on
+    2026-07-14 — the open-position deduction pinned the book at $25k
+    (~0-2 new trades/day) and stretched the D014 bull-arm evidence gate into
+    September; the paper cap models pipeline capacity, not live risk. If this
+    fails, someone changed the cap — update this test only alongside a
     conscious sizing decision. Revisit before live trading.
 
     Asserts the field DEFAULT, not get_settings() — the resolved value picks up
     .env / environment overrides, which made this test fail on any machine with
     a local override (and would let a prod override mask a default drift)."""
     from src.config import Settings
-    assert Settings.model_fields["daily_capital_cap"].default == 25000.0
+    assert Settings.model_fields["daily_capital_cap"].default == 50000.0
 
 
 def test_max_ticker_price_default_off():
