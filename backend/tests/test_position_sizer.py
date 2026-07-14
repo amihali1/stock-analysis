@@ -390,13 +390,16 @@ class TestSizeBullSpread:
         # Credit spread: net_credit positive
         assert rec.net_credit > 0
 
-    def test_high_vol_picks_bull_call_debit(self, sizer):
+    def test_high_vol_also_picks_put_credit(self, sizer):
+        """P11-001 (2026-07-14): structure is config-driven, not vol-driven —
+        put credit wins in both vol regimes under the VRP, so the old
+        high-vol → call-debit branch is gone. Rich IV = sell premium."""
         score = EnsembleScore(ticker="X", score=0.7, directional_signal=0.8, volatility_signal=0.7, sentiment_signal=0.6)
         rec = sizer.size_bull_spread(score, current_price=100.0)
         assert rec is not None
-        assert rec.strategy_name == "bull_call_debit_spread"
-        # Debit spread: net_credit negative
-        assert rec.net_credit < 0
+        assert rec.strategy_name == "bull_put_credit_spread"
+        # Credit spread: net_credit positive
+        assert rec.net_credit > 0
 
     def test_low_score_returns_none(self, sizer):
         """Sub-floor directional AND sub-floor score → no bull spread.
