@@ -79,15 +79,19 @@ class SpreadBuilder:
         rise_base_rate: float = 0.175,
         directional_lift: float = 1.3,
         min_score: float = 0.30,
+        bull_structure: str = "put_credit",
     ):
         # Direction-aware lift gates replaced the legacy absolute
         # `directional_signal > 0.6` threshold (unreachable under sigmoid
         # calibration). See config.spread_* for rationale.
+        if bull_structure not in ("put_credit", "call_debit"):
+            raise ValueError(f"bull_structure must be put_credit|call_debit, got {bull_structure!r}")
         self.max_position = max_position
         self.drop_base_rate = drop_base_rate
         self.rise_base_rate = rise_base_rate
         self.directional_lift = directional_lift
         self.min_score = min_score
+        self.bull_structure = bull_structure
 
     @property
     def _drop_lift_floor(self) -> float:
@@ -421,11 +425,14 @@ class SpreadBuilder:
         earnings_date: date | None = None,
         chain_data: list[dict] | None = None,
     ) -> SpreadRecommendation | None:
-        """Suggest the best bullish spread strategy based on signals.
+        """Suggest a bullish spread for the pick, gated on signal strength.
 
-        - High directional + low vol -> bull put credit spread
-        - High directional + high vol -> bull call debit spread
-        - Default for moderate confidence -> bull call debit spread
+        Structure is config-driven (`bull_spread_structure`), not signal-
+        driven: the P11-001 sweep (2026-07-14) showed put credit beats call
+        debit under the documented equity VRP in BOTH volatility regimes
+        (+0.144 vs +0.090 per collateral dollar, 76% vs 36% win rate,
+        regime-stable), so the old high-vol → call-debit branch had it
+        backwards — richer IV is a reason to sell premium, not buy it.
         """
         if current_price <= 0:
             return None
@@ -436,19 +443,15 @@ class SpreadBuilder:
             if 0 < days_to_earnings < expiry_days:
                 earnings_warning = True
 
-        # Bull-spread routing uses rise-side calibrated probability scale.
+        # Bull-spread gate uses rise-side calibrated probability scale.
         # `_rise_lift_floor` defaults to ~0.228 (rise base 0.175 × lift 1.3).
         high_dir = score.directional_signal > self._rise_lift_floor
-        high_vol = score.volatility_signal >= 0.5
+        if not high_dir and score.score < self.min_score:
+            return None
 
-        if high_dir and not high_vol:
-            return self._bull_put_credit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif high_dir and high_vol:
+        if self.bull_structure == "call_debit":
             return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-        elif score.score >= self.min_score:
-            return self._bull_call_debit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
-
-        return None
+        return self._bull_put_credit_spread(score, current_price, implied_vol, expiry_days, earnings_warning, chain_data)
 
     def _bull_call_debit_spread(
         self, score: EnsembleScore, price: float, iv: float, expiry_days: int,

@@ -456,9 +456,11 @@ class TestBullSpreadMapping:
         assert result.limit_price * 100 * result.qty <= 1000
         assert result.limit_price == pytest.approx(1000 / 300, abs=0.01)
 
-    def test_marketable_limit_skips_net_credit_spread(self):
-        # Sell-leg mid exceeds buy-leg mid → net credit; marketable debit
-        # pricing doesn't apply and the cost-derived mid limit is kept.
+    def test_credit_spread_priced_as_negative_limit(self):
+        # Bull put credit: sell 150P (mid 3.00), buy 145P (mid 1.00) →
+        # credit mid 2.00; natural credit = 2.90 - 1.10 = 1.80. Marketable =
+        # 2.00 - 0.35 * 0.20 = 1.93, expressed as limit_price -1.93 (Alpaca
+        # MLEG minimum-credit convention).
         legs = json.dumps([
             {"option_type": "put", "action": "sell", "strike": 150.0,
              "premium": 3.0, "contracts": 2, "bid": 2.90, "ask": 3.10},
@@ -472,8 +474,71 @@ class TestBullSpreadMapping:
             contracts=2, expiry=_EXPIRY, legs_json=legs,
         )
         assert result is not None
-        # position_size=400, contracts=2 → 200/contract → 2.00/share
+        assert result.limit_price == pytest.approx(-1.93)
+        # Negative limit is valid for MLEG credit orders
+        ok, msg = mapper.validate_order(result)
+        assert ok, msg
+
+    def test_credit_spread_collateral_exceeds_cap_dropped(self):
+        # Width 10, credit ~1.93 → collateral ~$807/contract; 2 contracts =
+        # $1,614 > $1,000 per-trade max → order dropped rather than emitted.
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 150.0,
+             "premium": 3.0, "contracts": 2, "bid": 2.90, "ask": 3.10},
+            {"option_type": "put", "action": "buy", "strike": 140.0,
+             "premium": 1.0, "contracts": 2, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is None
+
+    def test_credit_spread_insufficient_buying_power(self):
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 150.0,
+             "premium": 3.0, "contracts": 1, "bid": 2.90, "ask": 3.10},
+            {"option_type": "put", "action": "buy", "strike": 145.0,
+             "premium": 1.0, "contracts": 1, "bid": 0.90, "ask": 1.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=1, expiry=_EXPIRY, legs_json=legs,
+            buying_power=100.0,  # collateral ~$307 > $100
+        )
+        assert result is None
+
+    def test_credit_spread_without_quotes_keeps_legacy_path(self):
+        # No bid/ask → neither marketable path engages; cost-derived positive
+        # mid limit is kept (legacy behavior, will likely sit unfilled).
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 150.0,
+             "premium": 3.0, "contracts": 2},
+            {"option_type": "put", "action": "buy", "strike": 145.0,
+             "premium": 1.0, "contracts": 2},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is not None
         assert result.limit_price == 2.0
+
+    def test_validate_order_rejects_negative_limit_without_legs(self):
+        from src.services.order_mapper import AlpacaOrderParams
+        mapper = OrderMapper(max_position=1000)
+        params = AlpacaOrderParams(
+            ticker="AAPL", qty=1, side="buy", order_type="limit",
+            limit_price=-1.5, strategy="long",
+        )
+        ok, msg = mapper.validate_order(params)
+        assert not ok
 
     def test_marketable_limit_requires_two_sided_quotes(self):
         # One leg missing its ask → fall back to cost-derived mid pricing.

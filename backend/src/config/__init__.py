@@ -152,10 +152,18 @@ class Settings(BaseSettings):
     # urgency premium, so debit spreads sat unfilled until DAY expiry and the
     # orphan sweep closed their PaperTrades with NULL pnl. Fix: price the
     # limit `fraction` of the way from the net mid toward the net natural
-    # price (sum of buy-leg asks minus sell-leg bids). 0.0 = mid (old
-    # behavior), 1.0 = pay the full natural. Requires per-leg bid/ask in
-    # legs_json; falls back to mid pricing when quotes are missing.
+    # price (sum of buy-leg asks minus sell-leg bids; for credit spreads,
+    # concede that fraction of the mid credit toward the natural credit).
+    # 0.0 = mid (old behavior), 1.0 = full natural. Requires per-leg bid/ask
+    # in legs_json; falls back to mid pricing when quotes are missing.
     spread_marketable_fraction: float = 0.35
+    # Structure for bull options-spread recs: "put_credit" (default) or
+    # "call_debit". P11-001 sweep (2026-07-14): with the documented ~15%
+    # equity VRP priced in, put credit beats call debit (+0.144 vs +0.090
+    # per dollar of collateral, 76% vs 36% win rate, regime-stable) — the
+    # debit book pays the premium sellers harvest. Flag kept for rollback
+    # and research comparisons.
+    bull_spread_structure: str = "put_credit"
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

@@ -1561,3 +1561,23 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 4. CSP dominated — near-long-stock tail for option-income returns. Drop from consideration.
 
 **Recommendation (pending user):** route bull options to bull_put_credit_spread. Preconditions: (a) credit-side marketable MLEG pricing (negative-limit semantics — the parked item is now a blocker, debit-side fill failure will repeat otherwise); (b) note crash-correlated tail — consider a concurrent-put-credit cap. Long-stock cascade unchanged.
+
+---
+
+## 2026-07-14 — Bull book → put credit spreads (P11-001 adoption)
+
+**Agent**: Claude Fable 5
+**Context**: User approved P11-001 recommendation. Three parts, preconditions first.
+
+**1. Credit-side marketable MLEG pricing (the blocker):**
+- order_mapper: `_net_quotes()` shared helper; `_marketable_credit_per_share()` = concede fraction of mid credit toward natural credit (Σ sell bids − Σ buy asks); emitted as NEGATIVE limit_price (Alpaca MLEG minimum-credit convention — alpaca_client already documented the sign, nothing downstream changes).
+- Capital: credit orders check collateral (width − credit) against per-trade max (drop if busted) and buying power — not the limit price. Verticals only; condors keep legacy path (nothing routes them).
+- validate_order: negative limit valid only when params.legs present.
+
+**2. Routing:**
+- New setting `bull_spread_structure: "put_credit"` (default) | `"call_debit"` (rollback flag). SpreadBuilder takes `bull_structure`; suggest_bull_spread no longer branches on vol — P11-001 showed put credit wins in BOTH vol regimes under VRP; old high-vol→debit branch had it backwards. Signal gate (lift floor / min_score) unchanged.
+
+**3. Credit-book validation window:**
+- live_gate ARMS split: `bull` → `bull_stock` (long+call_options, baseline 7/14, backtest wr 0.58 from P11-001 long_stock) + `bull_credit` (bull_spread, baseline 7/15, backtest wr 0.76 from P11-001 put_credit@vrp1.15). Blended floor would gate both against a number neither owns. Debit-era history excluded by baseline.
+
+**Tests**: 89 pass in order_mapper+options_strategies (5 new credit-mapper tests incl. negative-limit validation, collateral cap/BP; 4 routing tests incl. rollback flag); 12 live_gate. Old "credit spread keeps mid price" test rewritten — behavior deliberately changed.

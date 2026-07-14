@@ -192,12 +192,35 @@ class TestCalibratedThresholds:
         assert result is None
 
     def test_bull_spread_score_floor_catches_borderline(self):
-        """Low rise_prob but score crosses min_score → bull_call_debit_spread."""
+        """Low rise_prob but score crosses min_score → still fires, and the
+        structure follows bull_structure (put_credit default post-P11-001)."""
         builder = SpreadBuilder(max_position=1000, min_score=0.30)
         score = _make_score(directional=0.20, volatility=0.4, score=0.35)
         result = builder.suggest_bull_spread(score, current_price=150.0)
         assert result is not None
+        assert result.strategy_name == "bull_put_credit_spread"
+
+    def test_bull_structure_high_vol_still_put_credit(self):
+        """P11-001: put credit beats call debit in BOTH vol regimes under the
+        VRP — the old high-vol → call-debit branch is gone. Rich IV is a
+        reason to sell premium, not buy it."""
+        builder = SpreadBuilder(max_position=1000)
+        score = _make_score(directional=0.26, volatility=0.7, score=0.45)
+        result = builder.suggest_bull_spread(score, current_price=150.0)
+        assert result is not None
+        assert result.strategy_name == "bull_put_credit_spread"
+
+    def test_bull_structure_call_debit_rollback_flag(self):
+        """bull_structure='call_debit' restores the debit book (rollback path)."""
+        builder = SpreadBuilder(max_position=1000, bull_structure="call_debit")
+        score = _make_score(directional=0.24, volatility=0.3, score=0.40)
+        result = builder.suggest_bull_spread(score, current_price=150.0)
+        assert result is not None
         assert result.strategy_name == "bull_call_debit_spread"
+
+    def test_bull_structure_invalid_rejected(self):
+        with pytest.raises(ValueError):
+            SpreadBuilder(bull_structure="naked_calls")
 
     def test_custom_lift_multiplier(self):
         """A higher lift multiplier (stricter) suppresses borderline picks."""

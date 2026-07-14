@@ -139,6 +139,7 @@ class PositionSizer:
         self._rise_base_rate = settings.directional_base_rate
         self._spread_directional_lift = settings.spread_directional_lift
         self._spread_min_score = settings.spread_min_score
+        self._bull_spread_structure = settings.bull_spread_structure
 
     def _make_spread_builder(self):
         from src.models.options_strategies import SpreadBuilder
@@ -148,6 +149,7 @@ class PositionSizer:
             rise_base_rate=self._rise_base_rate,
             directional_lift=self._spread_directional_lift,
             min_score=self._spread_min_score,
+            bull_structure=self._bull_spread_structure,
         )
 
     def size_short(

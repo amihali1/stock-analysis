@@ -53,12 +53,22 @@ ARMS: tuple[ArmSpec, ...] = (
         backtest_win_rate=0.58,  # bear-monetization sweep 2026-07-07, SPY-hedged pair
         notes="Market-neutral short + SPY hedge, 10-session exits.",
     ),
+    # Bull book split into two arms (2026-07-14): stock and credit spreads
+    # have different backtest baselines and different failure modes — a
+    # blended win-rate floor would gate both against a number neither owns.
     ArmSpec(
-        name="bull",
-        strategies=("long", "bull_spread", "call_options"),
-        baseline=date(2026, 7, 14),  # first marketable-limit MLEG fills
-        backtest_win_rate=None,  # money-layer sweep has expectancy only
-        notes="Long stock + debit spreads. Win-rate floor unset until a bull backtest win rate exists.",
+        name="bull_stock",
+        strategies=("long", "call_options"),
+        baseline=date(2026, 7, 14),  # first post-cap-fix stock fills
+        backtest_win_rate=0.58,  # P11-001 sweep long_stock K=10 H=10
+        notes="Long stock (fractional-capable) + rare single-leg calls.",
+    ),
+    ArmSpec(
+        name="bull_credit",
+        strategies=("bull_spread",),
+        baseline=date(2026, 7, 15),  # bull spreads re-routed to put credit (P11-001)
+        backtest_win_rate=0.76,  # P11-001 sweep put_credit K=10 H=10, vrp 1.15
+        notes="Bull put credit spreads. Debit-era bull_spread history excluded by baseline.",
     ),
 )
 

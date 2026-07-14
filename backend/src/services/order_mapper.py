@@ -400,13 +400,49 @@ class OrderMapper:
 
         # Marketable-limit pricing: mid-priced MLEG DAY limits filled ~17%
         # (2026-07-09/10 — orders sat as `new` until DAY expiry canceled them).
-        # Walk the debit limit spread_marketable_fraction of the way from the
-        # quote mid toward the natural price so it can cross same-day. Needs
-        # per-leg bid/ask in legs_json; credit spreads and quoteless legs keep
-        # the cost-derived mid price above. Hard-capped at the per-trade max.
+        # Walk the limit spread_marketable_fraction of the way from the quote
+        # mid toward the natural price so it can cross same-day. Needs per-leg
+        # bid/ask in legs_json; quoteless legs keep the cost-derived mid price.
+        # Debit limits are hard-capped at the per-trade max.
         marketable = self._marketable_debit_per_share(raw_legs)
         if marketable is not None:
             per_share = min(marketable, self.max_position / (contracts * 100))
+
+        # Net-credit spread (bull put credit et al): Alpaca MLEG expresses the
+        # minimum acceptable credit as a NEGATIVE limit_price. Marketable =
+        # concede `fraction` of the mid credit toward the natural credit.
+        # Capital consumed is the collateral (width - credit), not the limit,
+        # so the cap and buying-power checks use that. Verticals only — wider
+        # structures (iron condor) keep the legacy positive-limit path, which
+        # is wrong for them, but nothing routes condors today.
+        credit = self._marketable_credit_per_share(raw_legs) if marketable is None else None
+        if credit is not None and len(legs) == 2:
+            width = abs(legs[0]["strike"] - legs[1]["strike"])
+            collateral_ps = width - credit
+            if collateral_ps > 0:
+                total_collateral = collateral_ps * 100 * contracts
+                if total_collateral > self.max_position:
+                    logger.warning(
+                        f"{ticker} {strategy_label}: collateral ${total_collateral:.0f} "
+                        f"exceeds per-trade max ${self.max_position:.0f} — dropping"
+                    )
+                    return None
+                if buying_power is not None and total_collateral > buying_power:
+                    logger.warning(
+                        f"Insufficient buying power for {ticker} {strategy_label}: "
+                        f"need ${total_collateral:.0f} collateral, have ${buying_power:.0f}"
+                    )
+                    return None
+                return AlpacaOrderParams(
+                    ticker=ticker,
+                    qty=contracts,
+                    side="buy",
+                    order_type="limit",
+                    limit_price=-credit,
+                    strategy=strategy_label,
+                    dry_run=dry_run,
+                    legs=legs,
+                )
 
         total_cost = per_share * 100 * contracts
         if buying_power is not None and total_cost > buying_power:
@@ -427,15 +463,13 @@ class OrderMapper:
             legs=legs,
         )
 
-    def _marketable_debit_per_share(self, raw_legs: list[dict]) -> float | None:
-        """Per-share net-debit limit priced toward the natural quote.
+    def _net_quotes(self, raw_legs: list[dict]) -> tuple[float, float] | None:
+        """(net mid, net natural) per share from leg quotes; positive = debit.
 
         mid = sum of buy-leg mids minus sell-leg mids; natural = sum of
-        buy-leg asks minus sell-leg bids (the price that fills immediately).
-        Returns mid + spread_marketable_fraction * (natural - mid), or None
-        when any leg lacks a two-sided quote, the spread is a net credit
-        (mid <= 0), or the quotes are crossed (natural <= mid) — callers fall
-        back to mid pricing in those cases.
+        buy-leg asks minus sell-leg bids — the price that fills immediately
+        (pay the ask on buys, receive the bid on sells). None when any leg
+        lacks a two-sided quote.
         """
         mid = 0.0
         natural = 0.0
@@ -451,9 +485,43 @@ class OrderMapper:
             else:
                 mid -= leg_mid
                 natural -= bid
+        return mid, natural
+
+    def _marketable_debit_per_share(self, raw_legs: list[dict]) -> float | None:
+        """Per-share net-debit limit priced toward the natural quote.
+
+        Returns mid + spread_marketable_fraction * (natural - mid), or None
+        when quotes are missing, the spread is a net credit (mid <= 0), or
+        the quotes are crossed (natural <= mid).
+        """
+        quotes = self._net_quotes(raw_legs)
+        if quotes is None:
+            return None
+        mid, natural = quotes
         if mid <= 0 or natural <= mid:
             return None
         return round(mid + self.spread_marketable_fraction * (natural - mid), 2)
+
+    def _marketable_credit_per_share(self, raw_legs: list[dict]) -> float | None:
+        """Per-share net-credit limit priced toward the natural quote.
+
+        For a net-credit spread mid < 0 and natural sits above it (a smaller
+        credit — sells fill at the bid). Concede spread_marketable_fraction
+        of the mid credit toward the natural credit. Returns the credit as a
+        POSITIVE number (callers negate for Alpaca), or None when quotes are
+        missing, the spread is a net debit, or the concession leaves no
+        credit at all.
+        """
+        quotes = self._net_quotes(raw_legs)
+        if quotes is None:
+            return None
+        mid, natural = quotes
+        if mid >= 0 or natural <= mid:
+            return None
+        credit_mid, credit_natural = -mid, -natural
+        marketable = credit_mid - self.spread_marketable_fraction * (credit_mid - credit_natural)
+        marketable = round(marketable, 2)
+        return marketable if marketable > 0 else None
 
     def _map_bull_spread(
         self,
@@ -477,7 +545,10 @@ class OrderMapper:
         if params.qty <= 0:
             return False, "Quantity must be positive"
         if params.limit_price is not None and params.limit_price <= 0:
-            return False, "Limit price must be positive"
+            # MLEG credit spreads express the minimum credit as a negative
+            # limit_price (Alpaca convention) — negative is only valid there.
+            if not (params.legs and params.limit_price < 0):
+                return False, "Limit price must be positive"
         if params.strategy == "short":
             estimated_value = params.qty * (params.limit_price or 0)
             if estimated_value * 1.5 > self.max_position:
