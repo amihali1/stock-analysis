@@ -1540,3 +1540,24 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - `daily_capital_cap` 25k → 50k: open-position deduction had pinned the book at cap ($22.3k/25k on 7/14), throttling D014 evidence to ~0-2 trades/day. Paper cap models capacity, not live risk. No .env override on VM (verified).
 - ValidationReport: `benchmark` block — SPY buy-and-hold over the window vs naive book return (total_pnl / deployed capital of closed trades), `beats_spy` verdict, rendered in format_report ("BEATS/TRAILS SPY"). 3 new tests; 16/16 in prod container.
 - Backlog: `_tickets/phase-11/P11-001-bull-short-premium-backtest.md` — bull book pays the VRP; backtest debit vs credit vs CSP vs long-stock arms, left-tail as decision criterion.
+
+---
+
+## 2026-07-14 — P11-001 bull short-premium sweep RESULTS
+
+**Agent**: Claude Fable 5
+**Script**: `backend/scripts/sweep_bull_premium.py` (bear-monetization harness pattern); output VM `trained_models/sweep_bull_premium.json`. 4 walk-forward folds, same rise picks as prod ranker, 4 arms at prod strike discipline, BS pricing at IV=HV×{1.0,1.15}, returns per dollar of consumed capital (debit / collateral / strike / entry).
+
+**K=10 H=10, all-regime, expectancy per $ capital:**
+- call_debit: +0.198 (vrp 1.0) → +0.090 (vrp 1.15); win 36%; p5 = −1.0
+- put_credit: +0.101 (vrp 1.0) → +0.144 (vrp 1.15); win 76%; p5 = −1.0
+- long_stock: +0.014 both; win 58%; p5 = −0.13
+- csp 2%/5%: +0.003..+0.011; dominated (long-stock tail, option-income ceiling)
+
+**Findings:**
+1. VRP assumption decides the ranking: VRP-neutral → debit wins; documented ~15% VRP → put_credit wins AND is far smoother (76% vs 36% win). At H=5 with VRP, call_debit goes NEGATIVE (−0.015..−0.019) — the current book's shorter-dated entries are the worst config.
+2. put_credit regime-stable (+0.098 down / +0.101 up; +0.142/+0.144 with VRP). call_debit edge swings (+0.32 down vs +0.06 up at vrp 1.15).
+3. Left tail identical for both spreads (p5 = worst5 = min = −1.0 — 5%-width verticals lose full collateral past the short strike). Difference is frequency (24% vs 64% of trades) and WHEN: put_credit maxes out in crashes (correlated with everything else hurting), call_debit in benign chop.
+4. CSP dominated — near-long-stock tail for option-income returns. Drop from consideration.
+
+**Recommendation (pending user):** route bull options to bull_put_credit_spread. Preconditions: (a) credit-side marketable MLEG pricing (negative-limit semantics — the parked item is now a blocker, debit-side fill failure will repeat otherwise); (b) note crash-correlated tail — consider a concurrent-put-credit cap. Long-stock cascade unchanged.

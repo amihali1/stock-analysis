@@ -1,6 +1,6 @@
 # P11-001: Bull-side short-premium backtest (VRP harvest)
 
-**Status**: todo
+**Status**: done
 **Phase**: 11
 **Dependencies**: none (research-only; prod routing untouched)
 **Estimated scope**: medium (research script + report)
