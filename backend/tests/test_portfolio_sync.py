@@ -351,3 +351,83 @@ class TestPortfolioSummary:
         assert summary["alpaca_positions"] == 1
         assert summary["paper_positions"] == 1
         assert summary["total_positions"] == 2
+
+
+class TestResidueDetection:
+    """detect_residue_positions: broker positions no strategy owns (2026-07-14
+    DOCU exercise residue — 300 unowned shares saturated the capital cap)."""
+
+    def _sync(self, db):
+        import src.services.portfolio_sync as ps
+        ps._residue_alerted.clear()
+        return PortfolioSync(db, client=_mock_client())
+
+    def _add_position(self, db, ticker, qty=300.0, mkt=14778.0):
+        db.add(AlpacaPosition(
+            ticker=ticker, qty=qty, side="long", avg_entry_price=49.38,
+            current_price=49.99, market_value=mkt, synced_at=datetime.utcnow(),
+        ))
+        db.commit()
+
+    def _add_open_trade(self, db, ticker, strategy="long"):
+        db.add(Stock(ticker=ticker))
+        db.add(PaperTrade(ticker=ticker, strategy=strategy, status="open", entry_price=100.0))
+        db.commit()
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_unowned_stock_flagged(self, mock_httpx):
+        db = _make_db()
+        self._add_position(db, "DOCU")
+        residue = self._sync(db).detect_residue_positions()
+        assert [r["ticker"] for r in residue] == ["DOCU"]
+        assert mock_httpx.post.called
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_position_with_open_trade_not_flagged(self, mock_httpx):
+        db = _make_db()
+        self._add_open_trade(db, "AAPL")
+        self._add_position(db, "AAPL", qty=10.0, mkt=1550.0)
+        assert self._sync(db).detect_residue_positions() == []
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_occ_option_maps_to_underlying_trade(self, mock_httpx):
+        db = _make_db()
+        self._add_open_trade(db, "LRCX", strategy="bull_spread")
+        self._add_position(db, "LRCX260814C00355000", qty=1.0, mkt=3100.0)
+        assert self._sync(db).detect_residue_positions() == []
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_pair_hedge_symbol_not_flagged(self, mock_httpx):
+        db = _make_db()
+        self._add_open_trade(db, "RIVN", strategy="pair_short")
+        self._add_position(db, "SPY", qty=0.35, mkt=264.0)
+        assert self._sync(db).detect_residue_positions() == []
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_hedge_symbol_flagged_without_pair_trades(self, mock_httpx):
+        # SPY position with no open pair_short = residue
+        db = _make_db()
+        self._add_position(db, "SPY", qty=0.35, mkt=264.0)
+        residue = self._sync(db).detect_residue_positions()
+        assert [r["ticker"] for r in residue] == ["SPY"]
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_in_flight_order_marks_owned(self, mock_httpx):
+        db = _make_db()
+        db.add(AlpacaOrder(alpaca_order_id="o1", ticker="MU", status="new"))
+        db.commit()
+        self._add_position(db, "MU", qty=1.0, mkt=920.0)
+        assert self._sync(db).detect_residue_positions() == []
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_alert_throttled_once_per_day(self, mock_httpx):
+        db = _make_db()
+        self._add_position(db, "DOCU")
+        sync = self._sync(db)
+        now = datetime(2026, 7, 14, 14, 0)
+        sync.detect_residue_positions(now=now)
+        sync.detect_residue_positions(now=now + timedelta(minutes=5))
+        assert mock_httpx.post.call_count == 1
+        # Next day re-alerts
+        sync.detect_residue_positions(now=now + timedelta(days=1))
+        assert mock_httpx.post.call_count == 2

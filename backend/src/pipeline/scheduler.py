@@ -972,11 +972,19 @@ def job_sync_portfolio():
             # Orphan sweep MUST run after sync_orders so just-submitted orders
             # are visible as in-flight (MU/LRCX premature closes, 2026-07-06/07).
             orphans = sync.close_orphan_paper_trades()
+            # Residue detection also needs fresh orders in the DB, for the
+            # same reason: an in-flight order is what marks a just-submitted
+            # position as owned.
+            residue = sync.detect_residue_positions()
             logger.info(
                 f"Scheduler: portfolio sync complete — {pos} positions, "
-                f"{orders} new orders, {orphans} orphans closed"
+                f"{orders} new orders, {orphans} orphans closed, "
+                f"{len(residue)} residue"
             )
-            _record_run("portfolio_sync", f"ok ({pos} pos, {orders} orders, {orphans} orphaned)")
+            _record_run(
+                "portfolio_sync",
+                f"ok ({pos} pos, {orders} orders, {orphans} orphaned, {len(residue)} residue)",
+            )
         finally:
             db.close()
     except ValueError:

@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     enable_fractional_shares: bool = False
     min_confidence: float = 0.75  # Deprecated — kept for back-compat; see min_directional_lift / min_sentiment_confidence below
 
+    # ntfy.sh topic for pipeline push alerts (same topic Alertmanager and the
+    # backup scripts use — unauthenticated public topic, obscure-suffix guard,
+    # so never put secrets in alert bodies). Empty string disables push alerts.
+    ntfy_topic: str = "https://ntfy.sh/andym-homelab-9a7b9dce"
+
     # Alpaca
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""

@@ -1514,3 +1514,16 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Weekly `job_paper_validation` embeds `report["live_gate"]` in ValidationReport.report_json, logs formatted gate lines, `_record_run` includes per-arm verdicts.
 - New endpoint `GET /api/validate/live-gate` for on-demand checks.
 - `tests/test_live_gate.py`: 12 tests (evidence/performance bars, exclusions, incident reset, no-floor bull path). All pass locally (sqlite in-memory).
+
+---
+
+## 2026-07-14 — Residue-position detection (exercise/assignment class-of-bug)
+
+**Agent**: Claude Fable 5
+**Context**: 3 DOCU calls (6/09 legacy book) exercised ITM into 300 shares ($14.8k); no book owned them but the capital-cap deduction counted them — 7/14 rec run emitted 0 recs ("8 capped, $0 avail") while every job reported ok. Residue manually closed same day (+$179, order bf3e6b68); pipeline unblocked.
+
+**What was done**:
+- `PortfolioSync.detect_residue_positions()`: flags AlpacaPositions whose underlying has no open PaperTrade, no in-flight order, and isn't the pair-hedge symbol (while pair trades open). OCC symbols map to underlying. Detection-only — liquidation stays human.
+- Alerts: log warning + ntfy push (new `ntfy_topic` Settings field, same homelab topic; empty disables), throttled once per underlying per day via module-level map.
+- Wired into 5-min `job_sync_portfolio` after sync_orders (in-flight orders mark just-submitted positions as owned); `_record_run` summary now includes residue count.
+- 7 new tests in test_portfolio_sync.py (23 total pass in prod container).

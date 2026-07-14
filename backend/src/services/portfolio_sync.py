@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
+import httpx
 from sqlalchemy.orm import Session
 
+from src.config import get_settings
 from src.db.models import AlpacaOrder, AlpacaPosition, PaperTrade
 from src.services.alpaca_client import AlpacaClient, _underlying_from_occ
 
 logger = logging.getLogger(__name__)
+
+# Residue alerts throttle: once per (underlying, calendar day). Module state —
+# a backend restart may re-alert once, which is acceptable for a daily ping.
+_residue_alerted: dict[str, date] = {}
 
 # Alpaca order statuses that indicate the order is still working and the
 # underlying PaperTrade should NOT be auto-closed by the sync sweep.
@@ -130,6 +136,84 @@ class PortfolioSync:
         if closed:
             logger.info(f"Auto-closed {closed} orphan PaperTrade row(s)")
         return closed
+
+    def detect_residue_positions(self, now: datetime | None = None) -> list[dict]:
+        """Flag broker positions that no strategy owns.
+
+        Inverse of the orphan sweep: an ITM single-leg option exercises into
+        stock at expiry (or a short leg gets assigned), the option PaperTrade
+        closes, and the resulting share position belongs to nobody — but the
+        scheduler's open-position deduction still counts it against
+        daily_capital_cap. 2026-07-14: 300 exercised DOCU shares ($14.8k)
+        consumed 60% of the cap and silently halted rec generation.
+
+        A position's underlying is "owned" when an open PaperTrade carries it,
+        an in-flight order references it, or it is the pair-hedge symbol while
+        any pair_short trade is open (hedge legs live under the hedge symbol,
+        not the trade's ticker). Everything else is residue: log + ntfy alert,
+        throttled to once per underlying per day. Detection only — liquidation
+        stays a human decision.
+        """
+        now = now or datetime.utcnow()
+        owned: set[str] = set()
+        open_trades = self.db.query(PaperTrade).filter_by(status="open").all()
+        for pt in open_trades:
+            owned.add(pt.ticker)
+        if any(pt.strategy == "pair_short" for pt in open_trades):
+            owned.add(get_settings().pair_hedge_symbol)
+        for order in (
+            self.db.query(AlpacaOrder)
+            .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
+            .all()
+        ):
+            u = _to_underlying(order.ticker)
+            if u:
+                owned.add(u)
+
+        residue: list[dict] = []
+        for pos in self.db.query(AlpacaPosition).all():
+            u = _to_underlying(pos.ticker)
+            if u and u not in owned:
+                residue.append({
+                    "ticker": pos.ticker,
+                    "underlying": u,
+                    "qty": pos.qty,
+                    "market_value": pos.market_value,
+                })
+
+        for r in residue:
+            logger.warning(
+                "Residue position: %s qty=%s ($%.0f) has no open PaperTrade or "
+                "in-flight order — counts against the capital cap until closed.",
+                r["ticker"], r["qty"], r["market_value"] or 0,
+            )
+            if _residue_alerted.get(r["underlying"]) != now.date():
+                _residue_alerted[r["underlying"]] = now.date()
+                self._send_ntfy(
+                    f"Unowned broker position: {r['ticker']} qty={r['qty']} "
+                    f"(${(r['market_value'] or 0):,.0f}). Likely option exercise/"
+                    f"assignment residue — eats the capital cap until closed."
+                )
+        return residue
+
+    @staticmethod
+    def _send_ntfy(message: str) -> None:
+        topic = get_settings().ntfy_topic
+        if not topic:
+            return
+        try:
+            httpx.post(
+                topic,
+                content=message,
+                headers={
+                    "Title": "stock-analysis residue position",
+                    "Priority": "high",
+                    "Tags": "warning,moneybag",
+                },
+                timeout=10,
+            )
+        except Exception:
+            logger.exception("ntfy residue alert failed")
 
     def sync_orders(self, limit: int = 50) -> int:
         """Pull recent orders from Alpaca and upsert into alpaca_orders.
