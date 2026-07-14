@@ -1527,3 +1527,16 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - Alerts: log warning + ntfy push (new `ntfy_topic` Settings field, same homelab topic; empty disables), throttled once per underlying per day via module-level map.
 - Wired into 5-min `job_sync_portfolio` after sync_orders (in-flight orders mark just-submitted positions as owned); `_record_run` summary now includes residue count.
 - 7 new tests in test_portfolio_sync.py (23 total pass in prod container).
+
+---
+
+## 2026-07-14 — Audit #2 remediations: postgres binding, cap raise, SPY benchmark
+
+**Agent**: Claude Fable 5
+**Context**: Second audit + external strategy research (user-requested). Findings + user decisions: fix Postgres LAN exposure, raise paper cap, benchmark vs SPY, backlog the short-premium research.
+
+**What was done**:
+- docker-compose.yml: postgres port `5432:5432` → `127.0.0.1:5432:5432` — was published to the whole LAN with dev creds. Host psql/debug still works; backend uses the docker network.
+- `daily_capital_cap` 25k → 50k: open-position deduction had pinned the book at cap ($22.3k/25k on 7/14), throttling D014 evidence to ~0-2 trades/day. Paper cap models capacity, not live risk. No .env override on VM (verified).
+- ValidationReport: `benchmark` block — SPY buy-and-hold over the window vs naive book return (total_pnl / deployed capital of closed trades), `beats_spy` verdict, rendered in format_report ("BEATS/TRAILS SPY"). 3 new tests; 16/16 in prod container.
+- Backlog: `_tickets/phase-11/P11-001-bull-short-premium-backtest.md` — bull book pays the VRP; backtest debit vs credit vs CSP vs long-stock arms, left-tail as decision criterion.

@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 from sqlalchemy.orm import Session
 
-from src.db.models import PaperTrade
+from src.db.models import PaperTrade, PriceHistory
 from src.models.backtester import Backtester
 
 logger = logging.getLogger(__name__)
@@ -130,10 +130,66 @@ class PaperValidator:
             },
             "paper": paper_metrics,
             "backtest": backtest_metrics,
+            "benchmark": self._spy_benchmark(start_date, end_date, paper_metrics),
             "divergences": divergences,
             "ok": not divergences,
             "paper_sample": paper_trade_dump[:25],
         }
+
+    def _spy_benchmark(
+        self, start_date: date, end_date: date, paper_metrics: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Buy-and-hold SPY over the window vs the paper book.
+
+        ~90% of retail algos underperform buy-and-hold in year one — this line
+        keeps the scoreboard honest about whether the machinery beats doing
+        nothing. paper_return_on_deployed is naive (total pnl / total capital
+        deployed across closed trades, not time-weighted), so treat it as a
+        rough comparison, not a performance figure.
+        """
+        rows = (
+            self.db.query(PriceHistory.date, PriceHistory.close)
+            .filter(
+                PriceHistory.ticker == "SPY",
+                PriceHistory.date >= start_date,
+                PriceHistory.date <= end_date,
+                PriceHistory.close.isnot(None),
+            )
+            .order_by(PriceHistory.date.asc())
+            .all()
+        )
+        spy_return = None
+        if len(rows) >= 2 and rows[0].close:
+            spy_return = (rows[-1].close - rows[0].close) / rows[0].close
+
+        deployed = self._deployed_capital(start_date, end_date)
+        total_pnl = float(paper_metrics.get("total_pnl", 0) or 0)
+        paper_return = total_pnl / deployed if deployed else None
+
+        beats = None
+        if spy_return is not None and paper_return is not None:
+            beats = paper_return > spy_return
+        return {
+            "spy_return_pct": round(spy_return, 5) if spy_return is not None else None,
+            "paper_return_on_deployed": round(paper_return, 5) if paper_return is not None else None,
+            "deployed_capital": round(deployed, 2),
+            "beats_spy": beats,
+        }
+
+    def _deployed_capital(self, start_date: date, end_date: date) -> float:
+        start_dt = datetime.combine(start_date, time.min)
+        end_dt = datetime.combine(end_date, time.max)
+        rows = (
+            self.db.query(PaperTrade.position_size)
+            .filter(
+                PaperTrade.status == "closed",
+                PaperTrade.pnl.isnot(None),
+                PaperTrade.closed_at >= start_dt,
+                PaperTrade.closed_at <= end_dt,
+            )
+            .all()
+        )
+        return float(sum(r.position_size or 0 for r in rows))
 
     def _paper_results(
         self, start_date: date, end_date: date
@@ -210,6 +266,22 @@ def format_report(report: dict[str, Any]) -> str:
         lines.append(f"{metric:<18}{str(pv):>14}{str(bv):>14}{diff_str:>10}")
 
     lines.append("-" * 72)
+    bench = report.get("benchmark") or {}
+    spy = bench.get("spy_return_pct")
+    book = bench.get("paper_return_on_deployed")
+    if spy is not None or book is not None:
+        spy_s = f"{spy:+.2%}" if spy is not None else "n/a"
+        book_s = f"{book:+.2%}" if book is not None else "n/a"
+        verdict = (
+            "BEATS SPY" if bench.get("beats_spy")
+            else "TRAILS SPY" if bench.get("beats_spy") is False
+            else "no comparison"
+        )
+        lines.append(
+            f"Benchmark: SPY buy-and-hold {spy_s} vs book {book_s} "
+            f"on ${bench.get('deployed_capital', 0):,.0f} deployed — {verdict}"
+        )
+        lines.append("-" * 72)
     if report["divergences"]:
         lines.append(f"FLAGGED {len(report['divergences'])} divergence(s) (>{int(DIVERGENCE_THRESHOLD * 100)}%):")
         for d in report["divergences"]:

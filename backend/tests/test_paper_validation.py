@@ -169,3 +169,54 @@ class TestValidator:
 def test_threshold_constant():
     # Sanity: threshold matches the >10% spec
     assert DIVERGENCE_THRESHOLD == pytest.approx(0.10)
+
+
+class TestSpyBenchmark:
+    """SPY buy-and-hold benchmark line (audit 2026-07-14): ~90% of retail
+    algos underperform buy-and-hold — the report must say which side we're on."""
+
+    def _seed_spy(self, db, start_close: float, end_close: float, start: date, end: date):
+        from src.db.models import PriceHistory
+        db.add(Stock(ticker="SPY"))
+        db.add(PriceHistory(ticker="SPY", date=start, close=start_close))
+        db.add(PriceHistory(ticker="SPY", date=end, close=end_close))
+        db.commit()
+
+    def test_benchmark_beats_spy(self, db):
+        start, end = date(2026, 6, 1), date(2026, 6, 30)
+        self._seed_spy(db, 700.0, 707.0, start, end)  # SPY +1%
+        # One closed trade in-window: +$50 on $1000 deployed = +5%
+        t = _trade(50.0)
+        t.closed_at = datetime(2026, 6, 15)
+        t.opened_at = datetime(2026, 6, 10)
+        db.add(t)
+        db.commit()
+
+        v = PaperValidator(db, backtester=StubBacktester())
+        report = v.validate(start, end)
+        bench = report["benchmark"]
+        assert bench["spy_return_pct"] == pytest.approx(0.01)
+        assert bench["paper_return_on_deployed"] == pytest.approx(0.05)
+        assert bench["deployed_capital"] == 1000.0
+        assert bench["beats_spy"] is True
+        assert "BEATS SPY" in format_report(report)
+
+    def test_benchmark_trails_spy(self, db):
+        start, end = date(2026, 6, 1), date(2026, 6, 30)
+        self._seed_spy(db, 700.0, 721.0, start, end)  # SPY +3%
+        t = _trade(-20.0)
+        t.closed_at = datetime(2026, 6, 15)
+        t.opened_at = datetime(2026, 6, 10)
+        db.add(t)
+        db.commit()
+
+        report = PaperValidator(db, backtester=StubBacktester()).validate(start, end)
+        assert report["benchmark"]["beats_spy"] is False
+        assert "TRAILS SPY" in format_report(report)
+
+    def test_benchmark_none_without_spy_data(self, db):
+        start, end = date(2026, 6, 1), date(2026, 6, 30)
+        report = PaperValidator(db, backtester=StubBacktester()).validate(start, end)
+        bench = report["benchmark"]
+        assert bench["spy_return_pct"] is None
+        assert bench["beats_spy"] is None

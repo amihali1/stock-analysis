@@ -43,13 +43,15 @@ class Settings(BaseSettings):
     max_position_ratio: float = 0.0
     # Total daily capital cap across ALL recommendations, direction-blind.
     # Bull and bear share one pool — the long-term aim is max profit-potential,
-    # not balanced hedging (bullish_side_build memo, 2026-05-12). At ~$1k/trade
-    # and $25k aggregate, we get up to 25 concurrent positions before the cap
-    # kicks in. Paper mode uses 25k to give the pipeline headroom over the
-    # accumulated open-position deduction; live $1k mode overrides via env.
-    # Capital consumed per rec is `max(position_size, max_loss)` so credit
-    # spreads count collateral (max_loss), not credit received.
-    daily_capital_cap: float = 25000.0
+    # not balanced hedging (bullish_side_build memo, 2026-05-12). Capital
+    # consumed per rec is `max(position_size, max_loss)` so credit spreads
+    # count collateral (max_loss), not credit received.
+    # Raised 25k -> 50k on 2026-07-14: with 10-session holds and ~$6-7k/day of
+    # new positions, the open-position deduction pinned the book at the 25k
+    # cap (~0-2 trades/day) and stretched the D014 bull-arm evidence gate into
+    # September. The paper cap models pipeline capacity, not live risk — live
+    # $1k mode overrides via env.
+    daily_capital_cap: float = 50000.0
     # Drop watchlist tickers whose latest close > this threshold BEFORE running
     # ML. Default 0.0 = disabled. At $250/trade, a $500 stock can't fit a long
     # share or short (with 1.5x margin), so its ranked slot is wasted on a
