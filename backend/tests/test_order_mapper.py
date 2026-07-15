@@ -512,9 +512,13 @@ class TestBullSpreadMapping:
         )
         assert result is None
 
-    def test_credit_spread_without_quotes_keeps_legacy_path(self):
-        # No bid/ask → neither marketable path engages; cost-derived positive
-        # mid limit is kept (legacy behavior, will likely sit unfilled).
+    def test_credit_spread_without_quotes_dropped(self):
+        """Regression: 2026-07-15 pre-market chain quotes were bid=0/ask=0,
+        the credit pricing path bailed, and the order fell through to the
+        cost-derived POSITIVE limit — MRNA 66/62 put credit filled at a $0.20
+        debit instead of collecting the ~$1.96 credit. A credit-intent spread
+        without usable quotes must be dropped, never repriced as a debit.
+        """
         legs = json.dumps([
             {"option_type": "put", "action": "sell", "strike": 150.0,
              "premium": 3.0, "contracts": 2},
@@ -526,6 +530,53 @@ class TestBullSpreadMapping:
             ticker="AAPL", strategy="bull_spread", entry_price=150.0,
             stop_loss=None, target_price=None, position_size=400.0,
             contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is None
+
+    def test_credit_spread_with_null_quotes_dropped(self):
+        # The exact prod shape from 2026-07-15: put-credit legs written with
+        # bid: null / ask: null because the 07:30 ET chain had zero quotes.
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 66.0,
+             "premium": 6.66, "contracts": 4, "bid": None, "ask": None},
+            {"option_type": "put", "action": "buy", "strike": 62.0,
+             "premium": 4.7, "contracts": 4, "bid": None, "ask": None},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="MRNA", strategy="bull_spread", entry_price=67.44,
+            stop_loss=None, target_price=None, position_size=80.0,
+            contracts=4, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is None
+
+    def test_credit_spread_quotes_pricing_debit_dropped(self):
+        # Credit-intent legs whose live quotes net out to a debit (market
+        # moved): credit pricing returns None and the order is dropped rather
+        # than silently flipped to a debit trade.
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 150.0,
+             "premium": 3.0, "contracts": 2, "bid": 0.90, "ask": 1.10},
+            {"option_type": "put", "action": "buy", "strike": 145.0,
+             "premium": 1.0, "contracts": 2, "bid": 2.90, "ask": 3.10},
+        ])
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=legs,
+        )
+        assert result is None
+
+    def test_debit_spread_without_quotes_keeps_legacy_path(self):
+        # Debit-intent spreads still fall back to the cost-derived positive
+        # limit when quotes are missing — a too-low debit limit just doesn't
+        # fill; it cannot give money away the way a credit spread can.
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="bull_spread", entry_price=150.0,
+            stop_loss=None, target_price=None, position_size=400.0,
+            contracts=2, expiry=_EXPIRY, legs_json=_BULL_LEGS,
         )
         assert result is not None
         assert result.limit_price == 2.0

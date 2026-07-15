@@ -45,6 +45,8 @@ def _mock_alpaca(market_open=True):
     client.close_position.return_value = {"ticker": "AAPL", "status": "closing", "order_id": "close-001"}
     client.cancel_all_orders.return_value = {"canceled": 2}
     client.close_all_positions.return_value = [{"ticker": "AAPL", "status": "closing"}]
+    client.submit_spread_order.return_value = {"order_id": "test-mleg-001"}
+    client.get_option_quotes.return_value = {}
     return client
 
 
@@ -333,6 +335,110 @@ class TestPairShortExecution:
 
         assert results[0]["status"] == "skipped"
         alpaca.submit_order.assert_not_called()
+
+
+class TestSpreadLiveQuoteRefresh:
+    """2026-07-15: recs are generated 07:30 ET pre-market when chain quotes
+    are bid=0/ask=0, so legs_json quotes are dead by design. The engine must
+    re-quote legs from Alpaca at exec time; credit spreads with no usable
+    live quotes are dropped instead of falling into a giveaway debit limit."""
+
+    _EXPIRY = date(2026, 8, 14)
+
+    def _make_credit_spread_rec(self, db):
+        import json
+        db.add(Stock(ticker="MRNA"))
+        db.commit()
+        rec = Recommendation(
+            ticker="MRNA", date=date.today(), strategy="bull_spread",
+            direction="long", score=0.85, entry_price=67.44,
+            position_size=80.0, max_loss=80.0, contracts=1,
+            expiry=self._EXPIRY,
+            legs_json=json.dumps([
+                {"option_type": "put", "action": "sell", "strike": 66.0,
+                 "premium": 6.66, "contracts": 1, "bid": None, "ask": None},
+                {"option_type": "put", "action": "buy", "strike": 62.0,
+                 "premium": 4.7, "contracts": 1, "bid": None, "ask": None},
+            ]),
+        )
+        db.add(rec)
+        db.commit()
+        return rec
+
+    def test_live_quotes_price_credit_mleg(self):
+        db = _make_db()
+        self._make_credit_spread_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = {
+            "MRNA260814P00066000": {"bid": 2.90, "ask": 3.10},
+            "MRNA260814P00062000": {"bid": 0.90, "ask": 1.10},
+        }
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+        alpaca.get_option_quotes.assert_called_once_with(
+            ["MRNA260814P00066000", "MRNA260814P00062000"]
+        )
+        # Credit mid 2.00, natural 1.80 → marketable 1.93, negative-limit MLEG
+        kwargs = alpaca.submit_spread_order.call_args.kwargs
+        assert kwargs["limit_price"] == -1.93
+
+    def test_credit_spread_without_live_quotes_skipped(self):
+        # Regression: with dead quotes the order used to fall through to the
+        # cost-derived positive limit and fill at a debit (MRNA 2026-07-15).
+        db = _make_db()
+        self._make_credit_spread_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = {}
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "skipped"
+        alpaca.submit_spread_order.assert_not_called()
+
+    def test_stale_rec_quotes_overwritten_not_trusted(self):
+        # Legs written with rec-time quotes must be re-quoted, not reused:
+        # only the live quote payload should reach the mapper.
+        import json
+        db = _make_db()
+        db.add(Stock(ticker="MRNA"))
+        db.commit()
+        db.add(Recommendation(
+            ticker="MRNA", date=date.today(), strategy="bull_spread",
+            direction="long", score=0.85, entry_price=67.44,
+            position_size=80.0, max_loss=80.0, contracts=1,
+            expiry=self._EXPIRY,
+            legs_json=json.dumps([
+                {"option_type": "put", "action": "sell", "strike": 66.0,
+                 "premium": 6.66, "contracts": 1, "bid": 9.0, "ask": 9.2},
+                {"option_type": "put", "action": "buy", "strike": 62.0,
+                 "premium": 4.7, "contracts": 1, "bid": 0.10, "ask": 0.20},
+            ]),
+        ))
+        db.commit()
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = {
+            "MRNA260814P00066000": {"bid": 2.90, "ask": 3.10},
+            "MRNA260814P00062000": {"bid": 0.90, "ask": 1.10},
+        }
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+        # Priced from live quotes (credit 1.93), not the stale rec-time ones
+        # (which would imply a ~8.8 credit and a different limit).
+        kwargs = alpaca.submit_spread_order.call_args.kwargs
+        assert kwargs["limit_price"] == -1.93
 
 
 class TestDedup:

@@ -133,6 +133,54 @@ class ExecutionEngine:
             logger.exception("PaperTrade persist failed for rec %s (order %s)", rec.id, order_id)
             self.db.rollback()
 
+    def _with_live_leg_quotes(self, rec: Recommendation) -> str | None:
+        """legs_json with bid/ask overwritten by live Alpaca option quotes.
+
+        Returns the refreshed JSON string, or None when legs can't be parsed
+        or turned into OCC symbols (caller keeps the original legs_json).
+        Legs whose live quote is missing or one-sided get bid/ask set to None
+        so the mapper's quote-dependent pricing treats them as quoteless
+        instead of trusting stale rec-time values.
+        """
+        import json as _json
+
+        from src.services.order_mapper import build_occ_symbol
+
+        if not rec.legs_json or rec.expiry is None:
+            return None
+        try:
+            legs = _json.loads(rec.legs_json)
+        except (_json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(legs, list) or not legs:
+            return None
+
+        occ_symbols: list[str] = []
+        try:
+            for leg in legs:
+                occ_symbols.append(
+                    build_occ_symbol(
+                        rec.ticker, rec.expiry, str(leg["option_type"]), float(leg["strike"])
+                    )
+                )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"{rec.ticker} {rec.strategy}: cannot build OCC symbols for quote refresh: {e}")
+            return None
+
+        quotes = self.alpaca.get_option_quotes(occ_symbols)
+        quoted = 0
+        for leg, occ in zip(legs, occ_symbols):
+            quote = quotes.get(occ)
+            leg["bid"] = quote["bid"] if quote else None
+            leg["ask"] = quote["ask"] if quote else None
+            quoted += 1 if quote else 0
+        if quoted < len(legs):
+            logger.warning(
+                f"{rec.ticker} {rec.strategy}: live quotes for {quoted}/{len(legs)} legs "
+                f"({occ_symbols}) — quote-dependent pricing may drop this order"
+            )
+        return _json.dumps(legs)
+
     def _execute_single(
         self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
     ) -> dict:
@@ -171,6 +219,15 @@ class ExecutionEngine:
         except Exception:
             buying_power = None
 
+        # Spread legs: replace rec-time quotes with live ones. Recs are
+        # generated 07:30 ET pre-market when yfinance chains carry bid=0/
+        # ask=0, so legs_json quotes are dead by design; without live quotes
+        # the mapper cannot price marketable MLEG limits (2026-07-15: both
+        # credit spreads filled at giveaway cost-derived limits).
+        legs_json = rec.legs_json
+        if rec.strategy in ("spread", "bull_spread"):
+            legs_json = self._with_live_leg_quotes(rec) or rec.legs_json
+
         # Map recommendation to order params
         order_params = self.mapper.recommendation_to_order(
             ticker=rec.ticker,
@@ -183,7 +240,7 @@ class ExecutionEngine:
             strike=rec.strike,
             option_type=rec.option_type,
             expiry=rec.expiry,
-            legs_json=rec.legs_json,
+            legs_json=legs_json,
             buying_power=buying_power,
         )
 

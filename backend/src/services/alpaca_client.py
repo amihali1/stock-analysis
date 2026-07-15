@@ -44,6 +44,8 @@ class AlpacaClient:
     """Wrapper around alpaca-py TradingClient for order execution and account management."""
 
     def __init__(self, client: TradingClient | None = None):
+        # Option market-data client, built lazily on first quote fetch.
+        self._data_client = None
         if client is not None:
             self._client = client
         else:
@@ -256,6 +258,44 @@ class AlpacaClient:
         """Cancel all open orders."""
         results = self._client.cancel_orders()
         return {"canceled": len(results) if results else 0}
+
+    # ── Option Quotes ────────────────────────────────────────
+
+    def get_option_quotes(self, occ_symbols: list[str]) -> dict[str, dict]:
+        """Latest bid/ask per OCC symbol from Alpaca option market data.
+
+        Returns {occ_symbol: {"bid": float, "ask": float}} for symbols with a
+        two-sided quote; symbols with missing or one-sided quotes are omitted
+        so callers can treat absence as "no usable quote". Returns {} on any
+        API failure rather than raising — quote refresh is best-effort and
+        the order mapper decides what to do without quotes.
+        """
+        if not occ_symbols:
+            return {}
+        try:
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionLatestQuoteRequest
+
+            if self._data_client is None:
+                settings = get_settings()
+                self._data_client = OptionHistoricalDataClient(
+                    api_key=settings.alpaca_api_key,
+                    secret_key=settings.alpaca_secret_key,
+                )
+            quotes = self._data_client.get_option_latest_quote(
+                OptionLatestQuoteRequest(symbol_or_symbols=occ_symbols)
+            )
+        except Exception as e:
+            logger.warning(f"Option quote fetch failed for {occ_symbols}: {e}")
+            return {}
+
+        result: dict[str, dict] = {}
+        for symbol, quote in quotes.items():
+            bid = float(getattr(quote, "bid_price", 0) or 0)
+            ask = float(getattr(quote, "ask_price", 0) or 0)
+            if bid > 0 and ask > 0:
+                result[symbol] = {"bid": bid, "ask": ask}
+        return result
 
     # ── Market Clock ─────────────────────────────────────────
 

@@ -398,51 +398,70 @@ class OrderMapper:
         # when intended cost was $920.
         per_share = (cost / contracts) / 100
 
-        # Marketable-limit pricing: mid-priced MLEG DAY limits filled ~17%
-        # (2026-07-09/10 — orders sat as `new` until DAY expiry canceled them).
-        # Walk the limit spread_marketable_fraction of the way from the quote
-        # mid toward the natural price so it can cross same-day. Needs per-leg
-        # bid/ask in legs_json; quoteless legs keep the cost-derived mid price.
-        # Debit limits are hard-capped at the per-trade max.
-        marketable = self._marketable_debit_per_share(raw_legs)
-        if marketable is not None:
-            per_share = min(marketable, self.max_position / (contracts * 100))
-
         # Net-credit spread (bull put credit et al): Alpaca MLEG expresses the
         # minimum acceptable credit as a NEGATIVE limit_price. Marketable =
         # concede `fraction` of the mid credit toward the natural credit.
         # Capital consumed is the collateral (width - credit), not the limit,
-        # so the cap and buying-power checks use that. Verticals only — wider
-        # structures (iron condor) keep the legacy positive-limit path, which
-        # is wrong for them, but nothing routes condors today.
-        credit = self._marketable_credit_per_share(raw_legs) if marketable is None else None
-        if credit is not None and len(legs) == 2:
+        # so the cap and buying-power checks use that.
+        #
+        # Credit-intent structures MUST NOT fall through to the cost-derived
+        # positive-limit path below: a positive (debit) limit on a spread the
+        # market prices as a credit fills instantly at the limit, giving the
+        # entire credit away. 2026-07-15: pre-market chain quotes were bid=0/
+        # ask=0, credit pricing bailed, and the MRNA 66/62 put credit filled
+        # at a $0.20 DEBIT (limit = position_size/contracts/100) instead of
+        # collecting the ~$1.96 credit. No usable quotes → drop the order.
+        if self._is_credit_intent(raw_legs):
+            credit = self._marketable_credit_per_share(raw_legs)
+            if credit is None or len(legs) != 2:
+                logger.warning(
+                    f"{ticker} {strategy_label}: net-credit spread without usable "
+                    f"live quotes (or non-vertical structure) — dropping instead "
+                    f"of falling back to a debit limit"
+                )
+                return None
             width = abs(legs[0]["strike"] - legs[1]["strike"])
             collateral_ps = width - credit
-            if collateral_ps > 0:
-                total_collateral = collateral_ps * 100 * contracts
-                if total_collateral > self.max_position:
-                    logger.warning(
-                        f"{ticker} {strategy_label}: collateral ${total_collateral:.0f} "
-                        f"exceeds per-trade max ${self.max_position:.0f} — dropping"
-                    )
-                    return None
-                if buying_power is not None and total_collateral > buying_power:
-                    logger.warning(
-                        f"Insufficient buying power for {ticker} {strategy_label}: "
-                        f"need ${total_collateral:.0f} collateral, have ${buying_power:.0f}"
-                    )
-                    return None
-                return AlpacaOrderParams(
-                    ticker=ticker,
-                    qty=contracts,
-                    side="buy",
-                    order_type="limit",
-                    limit_price=-credit,
-                    strategy=strategy_label,
-                    dry_run=dry_run,
-                    legs=legs,
+            if collateral_ps <= 0:
+                logger.warning(
+                    f"{ticker} {strategy_label}: credit {credit:.2f} >= width "
+                    f"{width:.2f}, quotes look broken — dropping"
                 )
+                return None
+            total_collateral = collateral_ps * 100 * contracts
+            if total_collateral > self.max_position:
+                logger.warning(
+                    f"{ticker} {strategy_label}: collateral ${total_collateral:.0f} "
+                    f"exceeds per-trade max ${self.max_position:.0f} — dropping"
+                )
+                return None
+            if buying_power is not None and total_collateral > buying_power:
+                logger.warning(
+                    f"Insufficient buying power for {ticker} {strategy_label}: "
+                    f"need ${total_collateral:.0f} collateral, have ${buying_power:.0f}"
+                )
+                return None
+            return AlpacaOrderParams(
+                ticker=ticker,
+                qty=contracts,
+                side="buy",
+                order_type="limit",
+                limit_price=-credit,
+                strategy=strategy_label,
+                dry_run=dry_run,
+                legs=legs,
+            )
+
+        # Marketable-limit pricing (net-debit spreads): mid-priced MLEG DAY
+        # limits filled ~17% (2026-07-09/10 — orders sat as `new` until DAY
+        # expiry canceled them). Walk the limit spread_marketable_fraction of
+        # the way from the quote mid toward the natural price so it can cross
+        # same-day. Needs per-leg bid/ask in legs_json; quoteless legs keep
+        # the cost-derived mid price. Debit limits are hard-capped at the
+        # per-trade max.
+        marketable = self._marketable_debit_per_share(raw_legs)
+        if marketable is not None:
+            per_share = min(marketable, self.max_position / (contracts * 100))
 
         total_cost = per_share * 100 * contracts
         if buying_power is not None and total_cost > buying_power:
@@ -462,6 +481,25 @@ class OrderMapper:
             dry_run=dry_run,
             legs=legs,
         )
+
+    @staticmethod
+    def _is_credit_intent(raw_legs: list[dict]) -> bool:
+        """True when the spread is a net-credit structure by design.
+
+        Judged from the rec-time leg premiums (sell-leg premiums exceed
+        buy-leg premiums), NOT from live quotes — the intent must be knowable
+        even when quotes are missing, because that is exactly the case where
+        the credit pricing path bails and the order must be dropped rather
+        than repriced as a debit.
+        """
+        net = 0.0
+        for leg in raw_legs:
+            premium = leg.get("premium") or 0.0
+            if str(leg.get("action", "")).strip().lower() == "sell":
+                net += premium
+            else:
+                net -= premium
+        return net > 0
 
     def _net_quotes(self, raw_legs: list[dict]) -> tuple[float, float] | None:
         """(net mid, net natural) per share from leg quotes; positive = debit.
