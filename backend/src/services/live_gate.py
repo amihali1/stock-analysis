@@ -66,9 +66,13 @@ ARMS: tuple[ArmSpec, ...] = (
     ArmSpec(
         name="bull_credit",
         strategies=("bull_spread",),
-        baseline=date(2026, 7, 15),  # bull spreads re-routed to put credit (P11-001)
+        # 2026-07-16, not 07-15 (first credit-routed run): the 07-15 fills were
+        # priced off dead pre-market quotes and filled at giveaway limits (MRNA
+        # opened at a DEBIT). Exec-time live quoting shipped that evening; only
+        # honestly-priced fills may count toward the live-money gate.
+        baseline=date(2026, 7, 16),
         backtest_win_rate=0.76,  # P11-001 sweep put_credit K=10 H=10, vrp 1.15
-        notes="Bull put credit spreads. Debit-era bull_spread history excluded by baseline.",
+        notes="Bull put credit spreads. Debit-era and zero-quote-era bull_spread history excluded by baseline.",
     ),
 )
 
