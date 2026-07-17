@@ -133,6 +133,30 @@ class ExecutionEngine:
             logger.exception("PaperTrade persist failed for rec %s (order %s)", rec.id, order_id)
             self.db.rollback()
 
+    def _occ_position_conflict(self, order_params) -> str | None:
+        """OCC symbols in this order that collide with open option positions.
+
+        Returns a comma-joined string of colliding symbols, or None when there
+        is no overlap. On a positions-API failure the check is waived (returns
+        None) — the order then either submits cleanly or draws the same broker
+        rejection the check exists to pre-empt, which is logged as an error.
+        """
+        symbols: set[str] = set()
+        if order_params.legs:
+            symbols = {leg["occ_symbol"] for leg in order_params.legs}
+        elif order_params.occ_symbol:
+            symbols = {order_params.occ_symbol}
+        if not symbols:
+            return None
+        try:
+            positions = self.alpaca.get_positions()
+        except Exception:
+            logger.warning("Positions fetch failed for leg-overlap check; submitting unchecked")
+            return None
+        held = {p["ticker"] for p in positions}
+        hits = symbols & held
+        return ", ".join(sorted(hits)) if hits else None
+
     def _with_live_leg_quotes(self, rec: Recommendation) -> str | None:
         """legs_json with bid/ask overwritten by live Alpaca option quotes.
 
@@ -246,6 +270,23 @@ class ExecutionEngine:
 
         if order_params is None:
             reason = f"Could not map recommendation {rec.id} to order"
+            self._log(rec.ticker, "skip", rec.strategy, reason=reason)
+            return {"rec_id": rec.id, "ticker": rec.ticker, "status": "skipped", "reason": reason}
+
+        # Option orders whose OCC symbol is already an open position cannot be
+        # submitted: Alpaca nets per contract, so a sell leg on a held-long
+        # symbol is treated as (partially) closing it and the whole order is
+        # rejected 40310000 (2026-07-17: MRNA sell 8x 62P vs long 4x 62P from
+        # a prior spread). A buy leg on a held-short symbol is worse — it
+        # would silently close part of an existing spread's short leg. Dedup
+        # is same-day only, and the model re-picks tickers across days, so
+        # overlap must be checked against the live book.
+        conflict = self._occ_position_conflict(order_params)
+        if conflict:
+            reason = (
+                f"Skipped: leg overlaps open option position ({conflict}) — "
+                f"submitting would close or collide with the existing book"
+            )
             self._log(rec.ticker, "skip", rec.strategy, reason=reason)
             return {"rec_id": rec.id, "ticker": rec.ticker, "status": "skipped", "reason": reason}
 

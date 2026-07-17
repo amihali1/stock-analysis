@@ -47,6 +47,7 @@ def _mock_alpaca(market_open=True):
     client.close_all_positions.return_value = [{"ticker": "AAPL", "status": "closing"}]
     client.submit_spread_order.return_value = {"order_id": "test-mleg-001"}
     client.get_option_quotes.return_value = {}
+    client.get_positions.return_value = []
     return client
 
 
@@ -439,6 +440,115 @@ class TestSpreadLiveQuoteRefresh:
         # (which would imply a ~8.8 credit and a different limit).
         kwargs = alpaca.submit_spread_order.call_args.kwargs
         assert kwargs["limit_price"] == -1.93
+
+
+class TestOccPositionConflict:
+    """2026-07-17: MRNA MLEG rejected 40310000 — the new spread's sell leg
+    (8x 62P) shared an OCC symbol the book already held long (4x 62P from a
+    prior spread). Alpaca nets per contract, so overlapping legs are treated
+    as (partially) closing the existing position. Orders with any leg
+    colliding with an open position must be skipped pre-submit."""
+
+    _EXPIRY = date(2026, 8, 14)
+
+    def _make_credit_spread_rec(self, db, sell_strike=62.0, buy_strike=60.0):
+        import json
+        db.add(Stock(ticker="MRNA"))
+        db.commit()
+        rec = Recommendation(
+            ticker="MRNA", date=date.today(), strategy="bull_spread",
+            direction="long", score=0.85, entry_price=65.0,
+            position_size=160.0, max_loss=160.0, contracts=1,
+            expiry=self._EXPIRY,
+            legs_json=json.dumps([
+                {"option_type": "put", "action": "sell", "strike": sell_strike,
+                 "premium": 5.47, "contracts": 1},
+                {"option_type": "put", "action": "buy", "strike": buy_strike,
+                 "premium": 4.65, "contracts": 1},
+            ]),
+        )
+        db.add(rec)
+        db.commit()
+        return rec
+
+    def _quotes(self, sell_strike=62.0, buy_strike=60.0):
+        def occ(strike):
+            return f"MRNA260814P{int(strike * 1000):08d}"
+        return {
+            occ(sell_strike): {"bid": 2.90, "ask": 3.10},
+            occ(buy_strike): {"bid": 0.90, "ask": 1.10},
+        }
+
+    def test_overlapping_leg_skipped(self):
+        db = _make_db()
+        self._make_credit_spread_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = self._quotes()
+        alpaca.get_positions.return_value = [
+            {"ticker": "MRNA260814P00062000", "qty": 4.0, "side": "long",
+             "market_value": 2220.0},
+        ]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "skipped"
+        assert "MRNA260814P00062000" in results[0]["reason"]
+        alpaca.submit_spread_order.assert_not_called()
+        log = db.query(TradingLog).filter_by(action="skip").one()
+        assert "overlaps open option position" in log.reason
+
+    def test_no_overlap_submits(self):
+        # Same underlying held at OTHER strikes is fine — only exact OCC
+        # symbol overlap collides.
+        db = _make_db()
+        self._make_credit_spread_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = self._quotes()
+        alpaca.get_positions.return_value = [
+            {"ticker": "MRNA260814P00066000", "qty": -4.0, "side": "short",
+             "market_value": -3500.0},
+        ]
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+
+    def test_positions_fetch_failure_waives_check(self):
+        # API blip must not kill every option trade — the order proceeds and
+        # either submits cleanly or draws the broker rejection (logged error).
+        db = _make_db()
+        self._make_credit_spread_rec(db)
+        alpaca = _mock_alpaca()
+        alpaca.get_option_quotes.return_value = self._quotes()
+        alpaca.get_positions.side_effect = RuntimeError("api down")
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca, mapper=OrderMapper(max_position=1000))
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+
+    def test_stock_orders_do_not_fetch_positions(self):
+        # Equity orders carry no OCC symbols; the overlap check must not add
+        # a positions round-trip to them.
+        db = _make_db()
+        _make_rec(db)
+        alpaca = _mock_alpaca()
+
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            with patch("src.services.safety_rails.get_settings", return_value=_settings()):
+                engine = ExecutionEngine(db, alpaca=alpaca)
+                results = engine.execute_recommendations()
+
+        assert results[0]["status"] == "submitted"
+        alpaca.get_positions.assert_not_called()
 
 
 class TestDedup:
