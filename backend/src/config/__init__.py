@@ -83,10 +83,12 @@ class Settings(BaseSettings):
     # Trading safety rails
     trading_mode: str = "disabled"  # disabled, paper, live
     max_daily_loss: float = 200.0
-    # Raised 5 → 20 on 2026-07-10: with ~9 recs/day and 10-session holds, 5
-    # slots saturate on day one (capacity 0.5 trades/day). $25k cap / ~$1k avg
-    # position supports ~20 concurrent. DB system_settings can still override.
-    max_open_positions: int = 20
+    # Raised 5 → 20 on 2026-07-10, 20 → 30 on 2026-07-20: the book sat pinned
+    # at 20/20 for days, blocking every new pair_short and starving the pair
+    # arm (closest to gate eligibility) of entries — calendar would beat the
+    # trade count. 17 open vs the $50k cap left headroom. DB system_settings
+    # can still override.
+    max_open_positions: int = 30
     max_daily_orders: int = 20
     allowed_hours_only: bool = True
     blocked_tickers: list[str] = []
