@@ -109,6 +109,23 @@ class PortfolioSync:
             if u:
                 active.add(u)
 
+        # Underlyings that ever actually filled at the broker. A trade only
+        # gets marked-to-market on close if it was really held: an order that
+        # only ever reached `expired`/`canceled`/`rejected` never became a
+        # position, so pricing it at intrinsic would inject fictional P&L into
+        # the live-gate. Fills can age out of the sync window; absence of a
+        # fill row means "leave pnl NULL", which is the safe default (2026-07-22
+        # audit: all 8 orphan-closed bull_spreads had expired MLEG orders).
+        ever_filled: set[str] = set()
+        for order in (
+            self.db.query(AlpacaOrder)
+            .filter(AlpacaOrder.status.in_(("filled", "partially_filled")))
+            .all()
+        ):
+            u = _to_underlying(order.ticker)
+            if u:
+                ever_filled.add(u)
+
         closed = 0
         grace = timedelta(minutes=self.ORPHAN_GRACE_MINUTES)
         for pt in self.db.query(PaperTrade).filter_by(status="open").all():
@@ -129,17 +146,20 @@ class PortfolioSync:
                 pt.closed_at = now
                 closed += 1
                 # Price the trade at its latest underlying close instead of
-                # leaving pnl NULL. Multi-leg spreads always reach the broker
-                # exit before their expiry-based paper_exit fires, so without
-                # this every closed spread produced zero live-gate evidence
-                # (2026-07-21). Marks use intrinsic value (no time value) —
-                # same model as the expiry exits, a defined approximation.
-                current = _latest_close(self.db, pt.ticker)
-                priced = mark_to_market(self.db, pt, current) if current is not None else None
-                if priced is not None:
-                    exit_price, pnl = priced
-                    pt.exit_price = round(exit_price, 4)
-                    pt.pnl = round(pnl, 2)
+                # leaving pnl NULL — but ONLY if it was ever really held.
+                # Multi-leg spreads reach the broker exit before their
+                # expiry-based paper_exit fires, so without this every closed
+                # spread produced zero live-gate evidence (2026-07-21). Marks
+                # use intrinsic value (no time value) — same model as the
+                # expiry exits, a defined approximation. Never-filled orders
+                # stay NULL so their non-existent P&L never reaches the gate.
+                if pt.ticker in ever_filled:
+                    current = _latest_close(self.db, pt.ticker)
+                    priced = mark_to_market(self.db, pt, current) if current is not None else None
+                    if priced is not None:
+                        exit_price, pnl = priced
+                        pt.exit_price = round(exit_price, 4)
+                        pt.pnl = round(pnl, 2)
                 logger.warning(
                     "Auto-closed orphan PaperTrade %s (%s %s) — no position/order "
                     "since %s. pnl=%s",

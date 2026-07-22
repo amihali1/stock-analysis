@@ -274,6 +274,10 @@ class TestCloseOrphanPaperTrades:
             ticker="GOOG", strategy="long", status="open",
             entry_price=100.0, position_size=1000.0,
         ))
+        db.add(AlpacaOrder(  # trade really filled -> eligible for pricing
+            alpaca_order_id="goog-fill", ticker="GOOG", side="buy",
+            qty=10.0, order_type="limit", status="filled",
+        ))
         db.commit()
 
         client = _mock_client(positions=[], orders=[])
@@ -303,6 +307,10 @@ class TestCloseOrphanPaperTrades:
             ticker="LRCX", strategy="bull_spread", status="open",
             entry_price=2.0, legs_json=json.dumps(legs), contracts=1,
         ))
+        db.add(AlpacaOrder(  # spread legs really filled
+            alpaca_order_id="lrcx-fill", ticker="LRCX260807P00350000",
+            side="sell", qty=1.0, order_type="limit", status="filled",
+        ))
         db.commit()
 
         client = _mock_client(positions=[], orders=[])
@@ -316,6 +324,39 @@ class TestCloseOrphanPaperTrades:
         # credit = (5 - 3) * 100 = +200
         assert pt.pnl == 200.0
 
+    def test_orphan_close_never_filled_stays_null(self):
+        """A trade whose order only ever expired/canceled (never a real
+        position) must NOT be priced — pnl stays NULL so the non-existent
+        P&L never reaches the live-gate (2026-07-22: all 8 orphan-closed
+        bull_spreads had expired MLEG orders)."""
+        db = _make_db()
+        self._seed_stock(db, "AMD")
+        self._seed_price(db, "AMD", 560.0)
+        legs = [
+            {"action": "buy", "strike": 530.0, "option_type": "call",
+             "premium": 42.99, "contracts": 1},
+            {"action": "sell", "strike": 555.0, "option_type": "call",
+             "premium": 35.05, "contracts": 1},
+        ]
+        db.add(PaperTrade(
+            ticker="AMD", strategy="bull_spread", status="open",
+            entry_price=7.94, legs_json=json.dumps(legs), contracts=1,
+        ))
+        db.add(AlpacaOrder(  # order never filled
+            alpaca_order_id="amd-expired", ticker="AMD260807C00530000",
+            side="buy", qty=1.0, order_type="limit", status="expired",
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
+
+        assert closed == 1
+        pt = db.query(PaperTrade).filter_by(ticker="AMD").one()
+        assert pt.status == "closed"
+        assert pt.pnl is None
+
     def test_orphan_close_null_pnl_when_no_price(self):
         """No price row -> pnl stays NULL, but the trade still closes (safety
         rail must not depend on pricing being available)."""
@@ -324,6 +365,10 @@ class TestCloseOrphanPaperTrades:
         db.add(PaperTrade(
             ticker="GOOG", strategy="long", status="open",
             entry_price=100.0, position_size=1000.0,
+        ))
+        db.add(AlpacaOrder(  # filled -> eligible, but no price row to mark on
+            alpaca_order_id="goog-fill2", ticker="GOOG", side="buy",
+            qty=10.0, order_type="limit", status="filled",
         ))
         db.commit()
 
