@@ -83,12 +83,108 @@ def _sessions_open(db: Session, trade: PaperTrade) -> int:
     )
 
 
-def _evaluate_pair(trade: PaperTrade, db: Session, current: float, time_up: bool) -> dict | None:
-    """pair_short: close on short-leg stop/target cross or time expiry.
+# ---------------------------------------------------------------------------
+# Valuation — mark a trade to market at a given underlying close.
+#
+# These are the single source of P&L math. Both the exit evaluators (which
+# add the stop/target/time/expiry *decision* on top) and the orphan-close
+# pricer (portfolio_sync, which has no decision — the broker already closed
+# the legs) call them. Options/spreads use intrinsic value only: no time
+# value, matching how expiry exits are priced. A defined approximation when
+# marking a still-open position, but far better than leaving pnl NULL.
+# ---------------------------------------------------------------------------
 
-    P&L sums both legs from legs_json: short leg gains as the pick falls,
-    hedge leg gains as the hedge rises.
+
+def _value_stock(trade: PaperTrade, current: float) -> float | None:
+    """P&L for a plain long/short stock trade at ``current``."""
+    entry = trade.entry_price or 0.0
+    if entry <= 0 or not trade.position_size:
+        return None
+    # size_short persists position_size as MARGIN (1.5x notional); size_long
+    # persists plain notional. Back out actual shares accordingly.
+    notional = trade.position_size / (1.5 if trade.strategy == "short" else 1.0)
+    shares = notional / entry
+    is_long = trade.strategy == "long"
+    return shares * (current - entry) if is_long else shares * (entry - current)
+
+
+def _value_single_leg(trade: PaperTrade, current: float) -> float | None:
+    """Intrinsic P&L for a single-leg long option (debit = position_size)."""
+    if trade.strike is None:
+        return None
+    option_type = "call" if trade.strategy == "call_options" else "put"
+    if trade.option_type in ("call", "put"):
+        option_type = trade.option_type
+    contracts = trade.contracts or 1
+    value = _intrinsic(option_type, trade.strike, current) * 100 * contracts
+    return value - (trade.position_size or 0.0)
+
+
+def _value_spread(trade: PaperTrade, current: float) -> float | None:
+    """Intrinsic P&L for a multi-leg spread using legs_json premiums."""
+    if not trade.legs_json:
+        return None
+    try:
+        legs = json.loads(trade.legs_json)
+    except (ValueError, TypeError):
+        return None
+
+    pnl = 0.0
+    for leg in legs:
+        sign = 1.0 if leg.get("action") == "buy" else -1.0
+        contracts = leg.get("contracts") or trade.contracts or 1
+        strike = leg.get("strike")
+        option_type = leg.get("option_type", "put")
+        premium = leg.get("premium") or 0.0
+        if strike is None:
+            return None
+        exit_value = sign * _intrinsic(option_type, strike, current) * 100 * contracts
+        entry_cash = -sign * premium * 100 * contracts  # buy = cash out, sell = cash in
+        pnl += exit_value + entry_cash
+    return pnl
+
+
+def _value_pair(trade: PaperTrade, db: Session, current: float) -> float | None:
+    """P&L for a pair_short: short leg gains as pick falls, hedge as it rises."""
+    try:
+        legs = json.loads(trade.legs_json or "[]")
+        short_leg = next(l for l in legs if l["leg"] == "short")
+        hedge_leg = next(l for l in legs if l["leg"] == "hedge")
+    except (ValueError, KeyError, StopIteration):
+        return None
+    hedge_cur = _latest_close(db, hedge_leg["ticker"])
+    if hedge_cur is None:
+        return None
+    return (
+        float(short_leg["qty"]) * (float(short_leg["entry"]) - current)
+        + float(hedge_leg["qty"]) * (hedge_cur - float(hedge_leg["entry"]))
+    )
+
+
+def mark_to_market(db: Session, trade: PaperTrade, current: float) -> tuple[float, float] | None:
+    """Value any open trade at underlying close ``current``, independent of
+    exit rules. Returns ``(exit_price, pnl)`` or ``None`` if unpriceable
+    (missing entry/strike/legs). Used by the orphan-close sweep so
+    broker-closed trades land with real P&L instead of NULL.
     """
+    strategy = trade.strategy
+    if strategy in ("long", "short"):
+        pnl = _value_stock(trade, current)
+    elif strategy == "pair_short":
+        pnl = _value_pair(trade, db, current)
+    elif strategy in ("options", "call_options"):
+        pnl = _value_single_leg(trade, current)
+    elif strategy in ("spread", "bull_spread"):
+        pnl = _value_spread(trade, current)
+    else:
+        return None
+    if pnl is None:
+        return None
+    return current, pnl
+
+
+def _evaluate_pair(trade: PaperTrade, db: Session, current: float, time_up: bool) -> dict | None:
+    """pair_short: close on short-leg stop/target cross or time expiry."""
     breach: str | None = None
     if trade.stop_loss is not None and current >= trade.stop_loss:
         breach = f"stop hit ({current:.2f} >= {trade.stop_loss:.2f})"
@@ -99,24 +195,10 @@ def _evaluate_pair(trade: PaperTrade, db: Session, current: float, time_up: bool
     if breach is None:
         return None
 
-    try:
-        legs = json.loads(trade.legs_json or "[]")
-        short_leg = next(l for l in legs if l["leg"] == "short")
-        hedge_leg = next(l for l in legs if l["leg"] == "hedge")
-    except (ValueError, KeyError, StopIteration):
-        logger.warning("paper_exit: pair %s has malformed legs_json, skipping", trade.id)
+    pnl = _value_pair(trade, db, current)
+    if pnl is None:
+        logger.warning("paper_exit: pair %s unpriceable (bad legs/hedge), skipping", trade.id)
         return None
-
-    hedge_cur = _latest_close(db, hedge_leg["ticker"])
-    if hedge_cur is None:
-        logger.warning("paper_exit: pair %s hedge %s has no price, skipping",
-                       trade.id, hedge_leg["ticker"])
-        return None
-
-    pnl = (
-        float(short_leg["qty"]) * (float(short_leg["entry"]) - current)
-        + float(hedge_leg["qty"]) * (hedge_cur - float(hedge_leg["entry"]))
-    )
     return _close(trade, current, pnl, breach)
 
 
@@ -125,10 +207,6 @@ def _evaluate_stock(trade: PaperTrade, current: float, time_up: bool = False) ->
     entry = trade.entry_price or 0.0
     if entry <= 0 or not trade.position_size:
         return None
-    # size_short persists position_size as MARGIN (1.5x notional); size_long
-    # persists plain notional. Back out actual shares accordingly.
-    notional = trade.position_size / (1.5 if trade.strategy == "short" else 1.0)
-    shares = notional / entry
     is_long = trade.strategy == "long"
 
     breach: str | None = None
@@ -147,7 +225,9 @@ def _evaluate_stock(trade: PaperTrade, current: float, time_up: bool = False) ->
         breach = "time exit"
     if breach is None:
         return None
-    pnl = shares * (current - entry) if is_long else shares * (entry - current)
+    pnl = _value_stock(trade, current)
+    if pnl is None:
+        return None
     return _close(trade, current, pnl, breach)
 
 
@@ -155,15 +235,12 @@ def _evaluate_single_leg(trade: PaperTrade, current: float, today: date) -> dict
     """Expiry exit for single-leg long options (debit = position_size)."""
     if trade.expiry is None or today < trade.expiry:
         return None
-    option_type = "call" if trade.strategy == "call_options" else "put"
-    if trade.option_type in ("call", "put"):
-        option_type = trade.option_type
     if trade.strike is None:
         logger.warning("paper_exit: %s single-leg without strike, skipping", trade.id)
         return None
-    contracts = trade.contracts or 1
-    value = _intrinsic(option_type, trade.strike, current) * 100 * contracts
-    pnl = value - (trade.position_size or 0.0)
+    pnl = _value_single_leg(trade, current)
+    if pnl is None:
+        return None
     return _close(trade, current, pnl, f"expired {trade.expiry.isoformat()}")
 
 
@@ -174,26 +251,10 @@ def _evaluate_spread(trade: PaperTrade, current: float, today: date) -> dict | N
     if not trade.legs_json:
         logger.warning("paper_exit: %s spread without legs_json, skipping", trade.id)
         return None
-    try:
-        legs = json.loads(trade.legs_json)
-    except (ValueError, TypeError):
-        logger.warning("paper_exit: %s has malformed legs_json, skipping", trade.id)
+    pnl = _value_spread(trade, current)
+    if pnl is None:
+        logger.warning("paper_exit: %s spread unpriceable (bad legs/strike), skipping", trade.id)
         return None
-
-    pnl = 0.0
-    for leg in legs:
-        sign = 1.0 if leg.get("action") == "buy" else -1.0
-        contracts = leg.get("contracts") or trade.contracts or 1
-        strike = leg.get("strike")
-        option_type = leg.get("option_type", "put")
-        premium = leg.get("premium") or 0.0
-        if strike is None:
-            logger.warning("paper_exit: %s leg without strike, skipping trade", trade.id)
-            return None
-        exit_value = sign * _intrinsic(option_type, strike, current) * 100 * contracts
-        entry_cash = -sign * premium * 100 * contracts  # buy = cash out, sell = cash in
-        pnl += exit_value + entry_cash
-
     return _close(trade, current, pnl, f"expired {trade.expiry.isoformat()}")
 
 

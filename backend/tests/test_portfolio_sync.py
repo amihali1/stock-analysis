@@ -8,7 +8,17 @@ from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import AlpacaOrder, AlpacaPosition, Base, PaperTrade, Stock
+import json
+from datetime import date
+
+from src.db.models import (
+    AlpacaOrder,
+    AlpacaPosition,
+    Base,
+    PaperTrade,
+    PriceHistory,
+    Stock,
+)
 from src.services.portfolio_sync import PortfolioSync
 
 
@@ -249,6 +259,82 @@ class TestCloseOrphanPaperTrades:
 
         assert closed == 0
         assert db.query(PaperTrade).filter_by(ticker="AAPL").one().status == "open"
+
+    def _seed_price(self, db, ticker, close):
+        db.add(PriceHistory(ticker=ticker, date=date(2026, 7, 7), close=close))
+        db.commit()
+
+    def test_orphan_close_prices_stock_pnl(self):
+        """A stock orphan-closed by the sweep must land with real pnl, not
+        NULL — priced at the latest underlying close (2026-07-21 gap)."""
+        db = _make_db()
+        self._seed_stock(db, "GOOG")
+        self._seed_price(db, "GOOG", 90.0)  # dropped from entry 100
+        db.add(PaperTrade(
+            ticker="GOOG", strategy="long", status="open",
+            entry_price=100.0, position_size=1000.0,
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
+
+        assert closed == 1
+        pt = db.query(PaperTrade).filter_by(ticker="GOOG").one()
+        assert pt.status == "closed"
+        # 10 shares (1000/100) * (90 - 100) = -100
+        assert pt.pnl == -100.0
+        assert pt.exit_price == 90.0
+
+    def test_orphan_close_prices_spread_pnl(self):
+        """The core 2026-07-21 fix: bull_spread orphan-closed before expiry
+        must be priced from legs_json, not left NULL."""
+        db = _make_db()
+        self._seed_stock(db, "LRCX")
+        self._seed_price(db, "LRCX", 400.0)  # both legs OTM -> keep full credit
+        legs = [
+            {"action": "sell", "strike": 350.0, "option_type": "put",
+             "premium": 5.0, "contracts": 1},
+            {"action": "buy", "strike": 340.0, "option_type": "put",
+             "premium": 3.0, "contracts": 1},
+        ]
+        db.add(PaperTrade(
+            ticker="LRCX", strategy="bull_spread", status="open",
+            entry_price=2.0, legs_json=json.dumps(legs), contracts=1,
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
+
+        assert closed == 1
+        pt = db.query(PaperTrade).filter_by(ticker="LRCX").one()
+        assert pt.status == "closed"
+        # both puts expire worthless (underlying 400 > strikes): keep net
+        # credit = (5 - 3) * 100 = +200
+        assert pt.pnl == 200.0
+
+    def test_orphan_close_null_pnl_when_no_price(self):
+        """No price row -> pnl stays NULL, but the trade still closes (safety
+        rail must not depend on pricing being available)."""
+        db = _make_db()
+        self._seed_stock(db, "GOOG")
+        db.add(PaperTrade(
+            ticker="GOOG", strategy="long", status="open",
+            entry_price=100.0, position_size=1000.0,
+        ))
+        db.commit()
+
+        client = _mock_client(positions=[], orders=[])
+        self._sweep(db, client, self.T0)
+        closed = self._sweep(db, client, self.PAST_GRACE)
+
+        assert closed == 1
+        pt = db.query(PaperTrade).filter_by(ticker="GOOG").one()
+        assert pt.status == "closed"
+        assert pt.pnl is None
 
     def test_filled_order_does_not_keep_orphan_open(self):
         """A 'filled' order is not in-flight — it should not protect an

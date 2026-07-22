@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from src.config import get_settings
 from src.db.models import AlpacaOrder, AlpacaPosition, PaperTrade
 from src.services.alpaca_client import AlpacaClient, _underlying_from_occ
+from src.services.paper_exits import _latest_close, mark_to_market
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +128,23 @@ class PortfolioSync:
                 pt.status = "closed"
                 pt.closed_at = now
                 closed += 1
+                # Price the trade at its latest underlying close instead of
+                # leaving pnl NULL. Multi-leg spreads always reach the broker
+                # exit before their expiry-based paper_exit fires, so without
+                # this every closed spread produced zero live-gate evidence
+                # (2026-07-21). Marks use intrinsic value (no time value) —
+                # same model as the expiry exits, a defined approximation.
+                current = _latest_close(self.db, pt.ticker)
+                priced = mark_to_market(self.db, pt, current) if current is not None else None
+                if priced is not None:
+                    exit_price, pnl = priced
+                    pt.exit_price = round(exit_price, 4)
+                    pt.pnl = round(pnl, 2)
                 logger.warning(
                     "Auto-closed orphan PaperTrade %s (%s %s) — no position/order "
-                    "since %s. pnl left NULL; reconcile from broker fills if needed.",
+                    "since %s. pnl=%s",
                     pt.id, pt.ticker, pt.strategy, pt.orphan_seen_at.isoformat(),
+                    f"{pt.pnl:.2f}" if pt.pnl is not None else "NULL (unpriceable)",
                 )
         self.db.commit()
         if closed:
