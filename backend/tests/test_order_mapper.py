@@ -141,6 +141,33 @@ class TestLongMapping:
         assert result is not None
         assert result.qty * result.limit_price <= 1000
 
+    def test_long_entry_limit_padded_up_to_fill(self):
+        # 2026-07-24: equity buy limits sat at mid (entry) and expired unfilled.
+        # Entry limit must cross up by equity_marketable_fraction so it fills;
+        # exit stop/target stay at their intended prices.
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="long", entry_price=150.0,
+            stop_loss=142.5, target_price=165.0, position_size=900.0,
+        )
+        assert result is not None
+        assert result.limit_price == pytest.approx(150.0 * (1 + mapper.equity_marketable_fraction), abs=0.01)
+        assert result.limit_price > 150.0
+        assert result.stop_loss_price == 142.5   # exit unchanged
+        assert result.take_profit_price == 165.0  # exit unchanged
+
+    def test_short_entry_limit_padded_down_to_fill(self):
+        mapper = OrderMapper(max_position=1000)
+        result = mapper.recommendation_to_order(
+            ticker="AAPL", strategy="short", entry_price=150.0,
+            stop_loss=157.5, target_price=135.0, position_size=900.0,
+        )
+        assert result is not None
+        assert result.limit_price == pytest.approx(150.0 * (1 - mapper.equity_marketable_fraction), abs=0.01)
+        assert result.limit_price < 150.0
+        assert result.stop_loss_price == 157.5   # exit unchanged
+        assert result.take_profit_price == 135.0  # exit unchanged
+
     def test_long_insufficient_buying_power(self):
         mapper = OrderMapper(max_position=1000)
         result = mapper.recommendation_to_order(
