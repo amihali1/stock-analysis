@@ -144,6 +144,16 @@ class Settings(BaseSettings):
     # day 1 and would fire spuriously. 0.15 = exit on a 15% adverse underlying
     # move; at that point a defined-risk spread is near max loss. 0.0 disables.
     catastrophic_underlying_move: float = 0.15
+    # Regime funding tilt. The 2026-07-27 regime split found both monetized
+    # strategies POSITIVE in both SPY-50dSMA regimes, but rise's per-$ edge
+    # jumps in down-tape (~+3.3%/10d vs +1.0% up; bear pair +0.73% vs +0.41%).
+    # When on AND SPY is below its 50d SMA, fund rise candidates first so the
+    # binding daily cap captures more of that edge. NEVER gates a direction off
+    # (both are positive everywhere) and never changes per-trade size (the
+    # $1k/trade rule holds) — it only reorders funding priority. Default off so
+    # it is measurable in paper first; the down-tape sample was thin (n~130) so
+    # the magnitude is uncertain even though the direction is robust.
+    enable_regime_tilt: bool = False
     # Spread-vs-options routing in SpreadBuilder. The legacy gates
     # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
     # directional model emitted uncalibrated probs and dir_prob could swing

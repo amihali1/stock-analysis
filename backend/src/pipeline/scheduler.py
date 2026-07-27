@@ -75,6 +75,32 @@ def _rec_capital_cost(rec) -> float:
     return max(rec.position_size or 0.0, rec.max_loss or 0.0)
 
 
+def _spy_regime(db) -> str:
+    """SPY 50d-SMA regime: 'up' (SPY above its 50d SMA), 'down', or 'unknown'.
+
+    Drives the regime funding tilt (see config.enable_regime_tilt). The
+    2026-07-27 regime split found both monetized strategies positive in both
+    regimes but ~1.8-3.3x stronger in down-tape, so this is used to reorder
+    funding priority, never to gate a direction off.
+    """
+    from src.db.models import PriceHistory, TechnicalIndicator
+    price = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.ticker == "SPY", PriceHistory.close.isnot(None))
+        .order_by(PriceHistory.date.desc())
+        .first()
+    )
+    ind = (
+        db.query(TechnicalIndicator)
+        .filter(TechnicalIndicator.ticker == "SPY", TechnicalIndicator.sma_50.isnot(None))
+        .order_by(TechnicalIndicator.date.desc())
+        .first()
+    )
+    if price is None or ind is None or not ind.sma_50:
+        return "unknown"
+    return "up" if price.close > ind.sma_50 else "down"
+
+
 def _record_run(job_name: str, status: str):
     """Record job completion time in health endpoint state and Prometheus gauge.
 
@@ -544,6 +570,19 @@ def job_generate_recommendations():
             selected_bear = sum(1 for c in selected if c.direction == "drop")
             selected_bull = len(selected) - selected_bear
 
+            # Regime funding tilt (2026-07-27 sweep): in down-tape rise's per-$
+            # edge jumps, so fund rise candidates first when the daily cap binds.
+            # Stable sort preserves intra-direction score order. Never gates a
+            # direction off — both are positive in both regimes.
+            spy_regime = _spy_regime(db)
+            regime_tilt_applied = False
+            if settings.enable_regime_tilt and spy_regime == "down":
+                selected.sort(key=lambda c: 0 if c.direction == "rise" else 1)
+                regime_tilt_applied = True
+                logger.info(
+                    "Scheduler: regime tilt applied (SPY down-tape) — rise funded first"
+                )
+
             def _fetch_chain(ticker_: str, target_days: int = 30) -> tuple[list[dict] | None, date | None]:
                 """Fetch options chain for a ticker. Returns (chain, expiration_date).
 
@@ -927,6 +966,7 @@ def job_generate_recommendations():
             f"cap: ${capital_used:.0f}/${available_cap:.0f} "
             f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
             f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B], "
+            f"regime {spy_regime}{'*' if regime_tilt_applied else ''}, "
             f"chain {chain_hits}h/{chain_misses}m)",
         )
 

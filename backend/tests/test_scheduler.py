@@ -244,6 +244,41 @@ def test_latest_close_helper_works_against_real_session():
     db.close()
 
 
+def test_spy_regime_up_down_unknown():
+    """_spy_regime returns 'up'/'down' by SPY vs its latest 50d SMA, 'unknown'
+    when data is missing. Drives the regime funding tilt (2026-07-27 sweep)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from datetime import date as _date
+    from src.db.models import Base, PriceHistory, TechnicalIndicator, Stock
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    # No data -> unknown
+    assert scheduler_module._spy_regime(db) == "unknown"
+
+    db.add(Stock(ticker="SPY"))
+    db.add(PriceHistory(ticker="SPY", date=_date(2026, 7, 7), close=505.0))
+    db.add(TechnicalIndicator(ticker="SPY", date=_date(2026, 7, 7), sma_50=500.0))
+    db.commit()
+    assert scheduler_module._spy_regime(db) == "up"  # 505 > 500
+
+    db.add(PriceHistory(ticker="SPY", date=_date(2026, 7, 8), close=495.0))
+    db.add(TechnicalIndicator(ticker="SPY", date=_date(2026, 7, 8), sma_50=500.0))
+    db.commit()
+    assert scheduler_module._spy_regime(db) == "down"  # latest 495 < 500
+    db.close()
+
+
+def test_regime_tilt_default_off():
+    """The regime funding tilt ships default-off so it is paper-measurable
+    before it changes live allocation. Flip only as a conscious decision."""
+    from src.config import Settings
+    assert Settings.model_fields["enable_regime_tilt"].default is False
+
+
 def test_daily_capital_cap_default_locked():
     """Lock the default so config drift is a deliberate, test-visible act.
     History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),
