@@ -171,6 +171,54 @@ def test_credit_call_spread_expires_worthless_keeps_credit(db):
     assert t.pnl == pytest.approx(200.0)
 
 
+def test_bull_spread_catastrophic_underlying_drop(db):
+    """bull_spread (direction long) — underlying drops 17% (> 15% threshold)
+    well before expiry -> catastrophic early exit instead of riding to expiry."""
+    _seed_price(db, "TEST", 83.0)  # entry 100 -> -17%
+    legs = json.dumps([
+        {"option_type": "put", "action": "sell", "strike": 100.0, "premium": 3.00, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 95.0, "premium": 1.00, "contracts": 1},
+    ])
+    db.add(_trade(strategy="bull_spread", direction="long", entry_price=100.0,
+                  legs_json=legs, contracts=1, position_size=200.0, max_loss=300.0,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "closed"
+    assert "catastrophic" in results[0]["reason"]
+    assert db.query(PaperTrade).one().status == "closed"
+
+
+def test_bear_option_catastrophic_underlying_rise(db):
+    """options put (direction short) — underlying rises 17% before expiry -> exit."""
+    _seed_price(db, "TEST", 117.0)  # entry 100 -> +17%
+    db.add(_trade(strategy="options", direction="short", entry_price=100.0,
+                  strike=100.0, option_type="put", contracts=1, position_size=800.0,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "closed"
+    assert "catastrophic" in results[0]["reason"]
+
+
+def test_option_moderate_move_holds_to_expiry(db):
+    """A 10% adverse move (< 15% threshold) does not trigger catastrophic exit."""
+    _seed_price(db, "TEST", 110.0)  # entry 100 -> +10%, under threshold
+    db.add(_trade(strategy="options", direction="short", entry_price=100.0,
+                  strike=100.0, option_type="put", contracts=1, position_size=800.0,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "held"
+    assert db.query(PaperTrade).one().status == "open"
+
+
 def test_no_price_data_skips(db):
     db.add(Stock(ticker="TEST"))
     db.add(_trade(strategy="long", stop_loss=90.0, position_size=1000.0))

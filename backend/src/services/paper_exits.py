@@ -231,6 +231,44 @@ def _evaluate_stock(trade: PaperTrade, current: float, time_up: bool = False) ->
     return _close(trade, current, pnl, breach)
 
 
+def _evaluate_catastrophic(trade: PaperTrade, db: Session, current: float) -> dict | None:
+    """Early exit for option/spread positions on a sharp adverse UNDERLYING move.
+
+    Options and spreads otherwise only exit at expiry (no stop/target), so a
+    large move against the position rides to near-total loss unmanaged. Close
+    early when the underlying has moved ``catastrophic_underlying_move`` against
+    the position from entry.
+
+    Triggered on the underlying move, NOT option mark-to-market: the MTM
+    helpers value on intrinsic only, which shows an out-of-the-money long
+    option at a full loss from day 1 and would fire spuriously. The underlying
+    move is the robust, time-value-free trigger. The booked P&L still uses
+    ``mark_to_market`` so it matches the expiry/orphan intrinsic convention.
+
+    Runs at batch cadence (close price), so it catches a large close-to-close
+    move, not an intra-session spike that recovers by the close. A future
+    intraday poll (like monitor_fractional_exits) would tighten that.
+    """
+    f = get_settings().catastrophic_underlying_move
+    if f <= 0:
+        return None
+    entry = trade.entry_price or 0.0
+    if entry <= 0:
+        return None
+    # direction "long" = bullish exposure (bull_spread, call_options) → hurt by
+    # a falling underlying; "short" = bearish (spread, options) → hurt by a rise.
+    bullish = trade.direction == "long"
+    adverse = current <= entry * (1 - f) if bullish else current >= entry * (1 + f)
+    if not adverse:
+        return None
+    marked = mark_to_market(db, trade, current)
+    if marked is None:
+        return None
+    _, pnl = marked
+    move = current / entry - 1
+    return _close(trade, current, pnl, f"catastrophic underlying move {move:+.1%}")
+
+
 def _evaluate_single_leg(trade: PaperTrade, current: float, today: date) -> dict | None:
     """Expiry exit for single-leg long options (debit = position_size)."""
     if trade.expiry is None or today < trade.expiry:
@@ -286,9 +324,15 @@ def evaluate_paper_exits(db: Session, today: date | None = None) -> list[dict]:
                 else:
                     outcome = _evaluate_stock(trade, current, time_up)
             elif trade.strategy in ("options", "call_options"):
-                outcome = _evaluate_single_leg(trade, current, today)
+                outcome = (
+                    _evaluate_catastrophic(trade, db, current)
+                    or _evaluate_single_leg(trade, current, today)
+                )
             elif trade.strategy in ("spread", "bull_spread"):
-                outcome = _evaluate_spread(trade, current, today)
+                outcome = (
+                    _evaluate_catastrophic(trade, db, current)
+                    or _evaluate_spread(trade, current, today)
+                )
             else:
                 results.append({
                     "id": trade.id, "ticker": trade.ticker,

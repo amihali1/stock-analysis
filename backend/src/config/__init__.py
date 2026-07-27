@@ -135,6 +135,15 @@ class Settings(BaseSettings):
     # N trading sessions. Hold=10 dominated every shorter hold in the sweep
     # (rise +1.59% at H=10 vs +0.43% at H=5).
     time_exit_sessions: int = 10
+    # Catastrophic early exit for option/spread positions (options, call_options,
+    # spread, bull_spread). These otherwise ONLY exit at expiry — a large adverse
+    # move rides to near-total loss unmanaged. Close early when the UNDERLYING
+    # moves this fraction against the position from entry (direction-signed).
+    # Triggered on underlying move, NOT option mark-to-market: the MTM helpers
+    # use intrinsic value only, which shows an OTM long option at full loss from
+    # day 1 and would fire spuriously. 0.15 = exit on a 15% adverse underlying
+    # move; at that point a defined-risk spread is near max loss. 0.0 disables.
+    catastrophic_underlying_move: float = 0.15
     # Spread-vs-options routing in SpreadBuilder. The legacy gates
     # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
     # directional model emitted uncalibrated probs and dir_prob could swing
