@@ -279,6 +279,15 @@ def test_regime_tilt_default_off():
     assert Settings.model_fields["enable_regime_tilt"].default is False
 
 
+def test_per_direction_capital_reserve_default_off():
+    """Per-direction capital reservation ships at 0.0 (pure score-order, current
+    behavior). Raising it guarantees each direction a floor of the daily cap so
+    the bear arm is not starved by higher-scoring bulls — a conscious sizing
+    decision, measurable in paper first."""
+    from src.config import Settings
+    assert Settings.model_fields["per_direction_capital_reserve"].default == 0.0
+
+
 def test_daily_capital_cap_default_locked():
     """Lock the default so config drift is a deliberate, test-visible act.
     History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),
