@@ -148,6 +148,25 @@ def main() -> int:
     paths = _load_paths()
     logger.info("Loaded paths for %d tickers", len(paths))
 
+    # SPY 50d-SMA regime for a per-direction regime split (mirrors the bear
+    # monetization sweep, which found down-tape pairs materially stronger).
+    # The rise/money-layer side never had this breakdown — it's the evidence a
+    # regime filter needs before gating either direction. up = SPY above its
+    # 50d SMA at entry, else down.
+    spy = paths.get("SPY")
+    if spy is None:
+        raise ValueError("SPY path required for regime split")
+    spy = spy.copy()
+    spy["sma50"] = spy["close"].rolling(50).mean()
+
+    def _regime(entry_date) -> str:
+        if entry_date not in spy.index:
+            return "unknown"
+        sma = spy.loc[entry_date, "sma50"]
+        if not np.isfinite(sma):
+            return "unknown"
+        return "up" if spy.loc[entry_date, "close"] > sma else "down"
+
     dates = sorted(df["date"].unique())
     fold_size = len(dates) // (N_FOLDS + 1)
 
@@ -181,7 +200,7 @@ def main() -> int:
                         continue
                     selected[k].append({
                         "ticker": c.ticker, "date": d, "direction": c.direction,
-                        "vol_ann": vol_ann,
+                        "vol_ann": vol_ann, "regime": _regime(d),
                     })
 
     logger.info("Selected trades: %s", {k: len(v) for k, v in selected.items()})
@@ -245,6 +264,44 @@ def main() -> int:
         logger.info("  K=%d H=%d -> exp=%+.4f (n=%d, drop=%s rise=%s)",
                     r["k"], r["hold"], r["expectancy"], r["n"],
                     r["expectancy_drop"], r["expectancy_rise"])
+
+    # --- Regime split: per-direction expectancy in up vs down tape ---
+    # No-exit baseline only (the sweep already shows exit geometry ~irrelevant
+    # to expectancy). Answers: does gating a direction by SPY regime help, and
+    # by how much, for rise vs drop separately. vol_h is unused when stop/target
+    # are None, so 0.0 is safe here.
+    regime_rows = []
+    for k in KS:
+        for hold in HOLDS:
+            buckets: dict[tuple[str, str], list[float]] = {}
+            for tr in selected[k]:
+                path = paths.get(tr["ticker"])
+                if path is None:
+                    continue
+                sim = _simulate(path, tr["date"], tr["direction"], 0.0, hold, None, None)
+                if sim is None:
+                    continue
+                ret, _ = sim
+                for reg in (tr["regime"], "all"):
+                    buckets.setdefault((tr["direction"], reg), []).append(ret)
+            for (direction, reg), rr in sorted(buckets.items()):
+                arr = np.array(rr)
+                regime_rows.append({
+                    "k": k, "hold": hold, "direction": direction, "regime": reg,
+                    "n": len(arr),
+                    "expectancy": round(float(arr.mean()), 5),
+                    "win_rate": round(float((arr > 0).mean()), 4),
+                    "low_n": len(arr) < MIN_TRADES,
+                })
+    reg_path = _resolve_model_dir() / "regime_split_money_layer.json"
+    reg_path.write_text(json.dumps({"rows": regime_rows}, indent=2))
+    logger.info("Wrote %s", reg_path)
+    logger.info("REGIME SPLIT (no-exit baseline, H=10):")
+    for r in [x for x in regime_rows if x["hold"] == 10 and x["regime"] in ("up", "down", "all")]:
+        logger.info("  K=%d %-4s %-5s -> exp=%+.4f wr=%.2f (n=%d)%s",
+                    r["k"], r["direction"], r["regime"],
+                    r["expectancy"], r["win_rate"], r["n"],
+                    " [low-n]" if r["low_n"] else "")
     return 0
 
 
