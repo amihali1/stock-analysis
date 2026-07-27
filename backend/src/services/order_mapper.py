@@ -63,6 +63,21 @@ class OrderMapper:
         self.max_position = max_position or settings.effective_per_trade_cap
         self.enable_fractional = settings.enable_fractional_shares
         self.spread_marketable_fraction = settings.spread_marketable_fraction
+        self.equity_marketable_fraction = settings.equity_marketable_fraction
+
+    def _marketable_equity_limit(self, entry_price: float, side: str) -> float:
+        """Pad an equity entry limit across the spread so it actually fills.
+
+        buy  -> entry * (1 + f)  (crosses up toward the ask)
+        sell -> entry * (1 - f)  (short crosses down toward the bid)
+
+        f = equity_marketable_fraction (0.0 reproduces the old mid limit).
+        Only entry limits are padded; bracket stop/target are exit triggers
+        and stay at their intended prices.
+        """
+        f = self.equity_marketable_fraction
+        padded = entry_price * (1 + f) if side == "buy" else entry_price * (1 - f)
+        return round(padded, 2)
 
     def recommendation_to_order(
         self,
@@ -154,7 +169,7 @@ class OrderMapper:
             qty=shares,
             side="sell",
             order_type="limit",
-            limit_price=round(entry_price, 2),
+            limit_price=self._marketable_equity_limit(entry_price, "sell"),
             stop_loss_price=round(stop_loss, 2) if stop_loss else None,
             take_profit_price=round(target_price, 2) if target_price else None,
             is_bracket=stop_loss is not None or target_price is not None,
@@ -223,7 +238,7 @@ class OrderMapper:
             qty=shares,
             side="buy",
             order_type="limit",
-            limit_price=round(entry_price, 2),
+            limit_price=self._marketable_equity_limit(entry_price, "buy"),
             stop_loss_price=round(stop_loss, 2) if stop_loss else None,
             take_profit_price=round(target_price, 2) if target_price else None,
             is_bracket=stop_loss is not None or target_price is not None,

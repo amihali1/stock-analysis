@@ -159,6 +159,15 @@ class Settings(BaseSettings):
     # 0.0 = mid (old behavior), 1.0 = full natural. Requires per-leg bid/ask
     # in legs_json; falls back to mid pricing when quotes are missing.
     spread_marketable_fraction: float = 0.35
+    # Marketability buffer for equity (long/short) entry limit orders, as a
+    # fraction of entry_price. The mapper only knows the reference price, not
+    # live bid/ask, so a flat pad crosses the spread: buy limit = entry*(1+f),
+    # short-sell limit = entry*(1-f). 0.0 = old mid-limit behavior that left
+    # entries sitting `new` and expiring unfilled (observed 2026-07-24: equity
+    # buys never hit their mid limit intraday, bracket sells stuck `held`).
+    # 0.002 = 20 bps, covers typical liquid-name spreads while bounding worst-
+    # case slippage vs a naked market order. Exit stop/target are NOT padded.
+    equity_marketable_fraction: float = 0.002
     # Structure for bull options-spread recs: "put_credit" (default) or
     # "call_debit". P11-001 sweep (2026-07-14): with the documented ~15%
     # equity VRP priced in, put credit beats call debit (+0.144 vs +0.090
