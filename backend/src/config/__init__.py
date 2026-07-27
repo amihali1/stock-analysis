@@ -154,6 +154,15 @@ class Settings(BaseSettings):
     # it is measurable in paper first; the down-tape sample was thin (n~130) so
     # the magnitude is uncertain even though the direction is robust.
     enable_regime_tilt: bool = False
+    # Per-direction capital reservation. Funding is score-ordered and bull
+    # scores systematically exceed bear scores (different model scales —
+    # 2026-07-27: bull avg 0.53 vs bear 0.33, non-overlapping), so a tight daily
+    # cap funds all bulls first and starves the cheaper bears, blocking bear
+    # gate evidence. When >0 AND both directions have candidates, cap each
+    # direction at (1 - reserve) of available_cap so the other side keeps a
+    # guaranteed floor. 0.30 = each side guaranteed 30%, 40% first-come. 0.0
+    # disables (pure score-order, current behavior). Range 0.0-0.5.
+    per_direction_capital_reserve: float = 0.0
     # Spread-vs-options routing in SpreadBuilder. The legacy gates
     # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
     # directional model emitted uncalibrated probs and dir_prob could swing

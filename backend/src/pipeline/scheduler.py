@@ -583,6 +583,19 @@ def job_generate_recommendations():
                     "Scheduler: regime tilt applied (SPY down-tape) — rise funded first"
                 )
 
+            # Per-direction capital reservation: funding is score-ordered and
+            # bull scores systematically exceed bear scores (different model
+            # scales), so a tight cap funds all bulls first and starves the
+            # cheaper bears. When reserve>0 and both directions have candidates,
+            # cap each direction at (1-reserve) of available_cap so the other
+            # side keeps a guaranteed floor. Keyed by candidate direction
+            # (rise/drop). dir_ceiling == available_cap means inactive.
+            dir_used = {"rise": 0.0, "drop": 0.0}
+            dir_ceiling = available_cap
+            if (settings.per_direction_capital_reserve > 0
+                    and selected_bear > 0 and selected_bull > 0):
+                dir_ceiling = available_cap * (1.0 - settings.per_direction_capital_reserve)
+
             def _fetch_chain(ticker_: str, target_days: int = 30) -> tuple[list[dict] | None, date | None]:
                 """Fetch options chain for a ticker. Returns (chain, expiration_date).
 
@@ -648,9 +661,10 @@ def job_generate_recommendations():
                             notes=bull_spread_rec.strategy_name,
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost <= available_cap:
+                        if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                             db.add(rec)
                             capital_used += cost
+                            dir_used[direction] += cost
                             count += 1
                             bull_spread_recs += 1
                             bull_recs += 1
@@ -685,9 +699,10 @@ def job_generate_recommendations():
                                 risk_type="defined",
                             )
                             cost = _rec_capital_cost(rec)
-                            if capital_used + cost <= available_cap:
+                            if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                                 db.add(rec)
                                 capital_used += cost
+                                dir_used[direction] += cost
                                 count += 1
                                 call_options_recs += 1
                                 bull_recs += 1
@@ -715,9 +730,10 @@ def job_generate_recommendations():
                                 risk_type=long_rec.risk_type,
                             )
                             cost = _rec_capital_cost(rec)
-                            if capital_used + cost <= available_cap:
+                            if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                                 db.add(rec)
                                 capital_used += cost
+                                dir_used[direction] += cost
                                 count += 1
                                 long_recs += 1
                                 bull_recs += 1
@@ -779,9 +795,10 @@ def job_generate_recommendations():
                             notes="Market-neutral pair: short pick + equal-$ long hedge",
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost <= available_cap:
+                        if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                             db.add(rec)
                             capital_used += cost
+                            dir_used[direction] += cost
                             count += 1
                             pair_recs += 1
                             bear_recs += 1
@@ -825,9 +842,10 @@ def job_generate_recommendations():
                         notes=spread_rec.strategy_name,
                     )
                     cost = _rec_capital_cost(rec)
-                    if capital_used + cost <= available_cap:
+                    if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                         db.add(rec)
                         capital_used += cost
+                        dir_used[direction] += cost
                         count += 1
                         spread_recs += 1
                         bear_recs += 1
@@ -861,9 +879,10 @@ def job_generate_recommendations():
                             risk_type="defined",
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost <= available_cap:
+                        if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                             db.add(rec)
                             capital_used += cost
+                            dir_used[direction] += cost
                             count += 1
                             options_recs += 1
                             bear_recs += 1
@@ -892,9 +911,10 @@ def job_generate_recommendations():
                             notes="Naked short — no defined-risk alternative available",
                         )
                         cost = _rec_capital_cost(rec)
-                        if capital_used + cost <= available_cap:
+                        if capital_used + cost <= available_cap and dir_used[direction] + cost <= dir_ceiling:
                             db.add(rec)
                             capital_used += cost
+                            dir_used[direction] += cost
                             count += 1
                             short_recs += 1
                             bear_recs += 1
@@ -967,6 +987,8 @@ def job_generate_recommendations():
             f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
             f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B], "
             f"regime {spy_regime}{'*' if regime_tilt_applied else ''}, "
+            f"reserve {'on' if dir_ceiling < available_cap else 'off'} "
+            f"(rise ${dir_used['rise']:.0f}/drop ${dir_used['drop']:.0f}), "
             f"chain {chain_hits}h/{chain_misses}m)",
         )
 
