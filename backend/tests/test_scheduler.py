@@ -30,6 +30,8 @@ EXPECTED_JOB_IDS = {
     "portfolio_sync_close",
     "monitor_exits",
     "paper_exits",
+    "fetch_prices_close",
+    "paper_exits_close",
     "paper_validation",
     "retrain_models",
     "fetch_earnings",
