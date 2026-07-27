@@ -93,9 +93,16 @@ def _record_run(job_name: str, status: str):
         pipeline_job_errors_total.labels(job=job_name).inc()
 
 
-def job_fetch_prices():
-    """6:00 AM ET — Fetch new price data for all tickers."""
-    logger.info("Scheduler: starting price fetch")
+def job_fetch_prices(label: str = "fetch_prices"):
+    """Fetch new price data for all tickers.
+
+    Runs twice on weekdays: 6:00 AM ET (label ``fetch_prices``) picks up the
+    prior session's finalized close pre-market, and 4:30 PM ET (label
+    ``fetch_prices_close``) picks up the session that just closed so the
+    evening paper-exit run can count it. Distinct labels keep the two runs'
+    telemetry from clobbering each other in /api/health.
+    """
+    logger.info("Scheduler: starting price fetch (%s)", label)
     try:
         from src.pipeline.data_fetcher import DataFetcher
         Base.metadata.create_all(engine)
@@ -105,10 +112,10 @@ def job_fetch_prices():
         total = sum(v for v in results.values() if v > 0)
         pipeline_prices_fetched_total.inc(total)
         logger.info(f"Scheduler: price fetch complete — {total} new rows across {len(results)} tickers")
-        _record_run("fetch_prices", f"ok ({total} rows)")
+        _record_run(label, f"ok ({total} rows)")
     except Exception:
         logger.exception("Scheduler: price fetch failed")
-        _record_run("fetch_prices", "error")
+        _record_run(label, "error")
 
 
 def job_compute_indicators():
@@ -1033,14 +1040,24 @@ def job_monitor_fractional_exits():
         _record_run("monitor_exits", "error")
 
 
-def job_evaluate_paper_exits():
-    """6:15 AM ET weekdays — close open paper trades on stop/target/expiry.
+def job_evaluate_paper_exits(label: str = "paper_exits"):
+    """Close open paper trades on stop/target/time/expiry rules.
 
-    Runs after fetch_prices (6:00) so "latest close" is the prior trading
-    day. Without this job PaperTrade rows stay open forever and the
-    paper-vs-backtest validation has no realized P&L to measure.
+    Runs twice on weekdays. The 6:15 AM ET run evaluates against the prior
+    session's close (fetch_prices at 6:00 only sees completed bars pre-open).
+    That leaves time-exits one session late: a trade whose Nth session
+    completes today is not counted until tomorrow's run, and a boundary that
+    lands on a Friday slips across the weekend (observed 2026-07-27: SNAP's
+    10th session was Fri 7/24 but it closed Mon 7/27). The 4:30 PM ET run
+    (label ``paper_exits_close``), after ``fetch_prices_close`` at 4:30 pulls
+    the just-closed session, counts that session the same day so time-exits
+    fire on schedule and price off the actual same-day close.
+
+    Safe to run twice: evaluate_paper_exits only queries status='open' trades,
+    so a trade closed in the morning run is not re-evaluated in the evening
+    (and vice-versa) — no double-close.
     """
-    logger.info("Scheduler: starting paper exit evaluation")
+    logger.info("Scheduler: starting paper exit evaluation (%s)", label)
     try:
         from src.db.session import SessionLocal
         from src.services.paper_exits import evaluate_paper_exits
@@ -1079,14 +1096,14 @@ def job_evaluate_paper_exits():
                 f"{held} held, {errors} errors, {len(results)} evaluated"
             )
             _record_run(
-                "paper_exits",
+                label,
                 f"ok ({closed} closed / {unwound} unwound / {held} held / {len(results)} evaluated)",
             )
         finally:
             db.close()
     except Exception:
         logger.exception("Scheduler: paper exit evaluation failed")
-        _record_run("paper_exits", "error")
+        _record_run(label, "error")
 
 
 def job_paper_validation():
@@ -1197,6 +1214,14 @@ def init_scheduler():
     scheduler.add_job(job_sync_portfolio, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync", replace_existing=True)
     # Also catch the 16:00 close
     scheduler.add_job(job_sync_portfolio, CronTrigger(minute="0,5", hour=16, timezone="US/Eastern", day_of_week="mon-fri"), id="portfolio_sync_close", replace_existing=True)
+
+    # Evening close run: pull the just-closed session at 4:30 PM ET, then
+    # re-evaluate paper exits at 4:45 PM ET. The morning batch (6:00/6:15)
+    # only ever sees the prior session, so time-exits fired a session late;
+    # this run counts today's session same-day and prices exits off the
+    # actual close. Distinct job ids/labels from the morning runs.
+    scheduler.add_job(job_fetch_prices, CronTrigger(hour=16, minute=30, timezone="US/Eastern", day_of_week="mon-fri"), id="fetch_prices_close", args=["fetch_prices_close"], replace_existing=True)
+    scheduler.add_job(job_evaluate_paper_exits, CronTrigger(hour=16, minute=45, timezone="US/Eastern", day_of_week="mon-fri"), id="paper_exits_close", args=["paper_exits_close"], replace_existing=True)
 
     # Fractional exit monitor: every 5 minutes, weekdays 9:30 AM - 4:00 PM ET.
     # Acts as the polling bracket for fractional long orders, which Alpaca
