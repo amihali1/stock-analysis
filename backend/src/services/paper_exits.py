@@ -232,31 +232,57 @@ def _evaluate_stock(trade: PaperTrade, current: float, time_up: bool = False) ->
 
 
 def _evaluate_catastrophic(trade: PaperTrade, db: Session, current: float) -> dict | None:
-    """Early exit for option/spread positions on a sharp adverse UNDERLYING move.
+    """Early exit for option/spread positions before expiry, by strategy.
 
     Options and spreads otherwise only exit at expiry (no stop/target), so a
-    large move against the position rides to near-total loss unmanaged. Close
-    early when the underlying has moved ``catastrophic_underlying_move`` against
-    the position from entry.
+    large move against the position rides to near-total loss unmanaged.
 
-    Triggered on the underlying move, NOT option mark-to-market: the MTM
-    helpers value on intrinsic only, which shows an out-of-the-money long
-    option at a full loss from day 1 and would fire spuriously. The underlying
-    move is the robust, time-value-free trigger. The booked P&L still uses
-    ``mark_to_market`` so it matches the expiry/orphan intrinsic convention.
+    Two triggers, because the same rule does not fit both shapes:
 
-    Runs at batch cadence (close price), so it catches a large close-to-close
-    move, not an intra-session spike that recovers by the close. A future
-    intraday poll (like monitor_fractional_exits) would tighten that.
+    * Single-leg long options — UNDERLYING move (>= catastrophic_underlying_move
+      against entry). Their mark-to-market is intrinsic only, which shows an
+      out-of-the-money long option at a full loss from day 1, so an MTM-based
+      trigger would fire spuriously. The underlying move is time-value-free.
+
+    * Spreads — MARK-TO-MARKET loss as a fraction of max_loss (>=
+      catastrophic_spread_loss_fraction). A defined-risk spread reaches max
+      loss at a fairly small underlying move, so the underlying-move trigger
+      only fired once the spread was already at ~max loss (observed 2026-07-29:
+      4 bull_spreads booked exactly -max_loss). The MTM-vs-max_loss trigger
+      cuts at a chosen fraction (e.g. 60%) BEFORE max loss and frees the
+      capital. Spread MTM does not have the OTM full-loss artifact — the two
+      legs net out — so it is a usable signal here. Booked P&L uses
+      mark_to_market, matching the expiry/orphan intrinsic convention.
+
+    Runs at batch cadence (close price): catches a large close-to-close move,
+    not an intra-session spike that recovers by the close.
     """
-    f = get_settings().catastrophic_underlying_move
+    settings = get_settings()
+
+    if trade.strategy in ("spread", "bull_spread"):
+        frac = settings.catastrophic_spread_loss_fraction
+        if frac <= 0 or not trade.max_loss or trade.max_loss <= 0:
+            return None
+        marked = mark_to_market(db, trade, current)
+        if marked is None:
+            return None
+        _, pnl = marked
+        if pnl > -frac * trade.max_loss:  # loss not yet deep enough
+            return None
+        return _close(
+            trade, current, pnl,
+            f"catastrophic spread loss {pnl:.0f} (>= {frac:.0%} of {trade.max_loss:.0f} max)",
+        )
+
+    # Single-leg long options: underlying-move trigger.
+    f = settings.catastrophic_underlying_move
     if f <= 0:
         return None
     entry = trade.entry_price or 0.0
     if entry <= 0:
         return None
-    # direction "long" = bullish exposure (bull_spread, call_options) → hurt by
-    # a falling underlying; "short" = bearish (spread, options) → hurt by a rise.
+    # direction "long" = bullish exposure (call_options) → hurt by a falling
+    # underlying; "short" = bearish (options/puts) → hurt by a rise.
     bullish = trade.direction == "long"
     adverse = current <= entry * (1 - f) if bullish else current >= entry * (1 + f)
     if not adverse:

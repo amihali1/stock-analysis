@@ -219,6 +219,66 @@ def test_option_moderate_move_holds_to_expiry(db):
     assert db.query(PaperTrade).one().status == "open"
 
 
+def test_spread_catastrophic_cuts_before_max_loss(db):
+    """Spread catastrophic exit fires on MTM loss >= 60% of max_loss, BEFORE
+    the spread reaches full max loss (2026-07-29 fix). Put credit sell 100P /
+    buy 90P (credit 2, width 10 -> max_loss 800). At underlying 92 the MTM loss
+    is -600 (75% of max) -> exit."""
+    _seed_price(db, "TEST", 92.0)
+    legs = json.dumps([
+        {"option_type": "put", "action": "sell", "strike": 100.0, "premium": 3.00, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 90.0, "premium": 1.00, "contracts": 1},
+    ])
+    db.add(_trade(strategy="bull_spread", direction="long", entry_price=105.0,
+                  legs_json=legs, contracts=1, position_size=200.0, max_loss=800.0,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "closed"
+    assert "catastrophic spread loss" in results[0]["reason"]
+    t = db.query(PaperTrade).one()
+    assert t.pnl == pytest.approx(-600.0)  # cut at 75% of max, not full -800
+
+
+def test_spread_small_loss_holds_to_expiry(db):
+    """A spread MTM loss under the 60% threshold does not trigger catastrophic
+    exit. At underlying 97 the MTM loss is -100 (12.5% of 800 max) -> held."""
+    _seed_price(db, "TEST", 97.0)
+    legs = json.dumps([
+        {"option_type": "put", "action": "sell", "strike": 100.0, "premium": 3.00, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 90.0, "premium": 1.00, "contracts": 1},
+    ])
+    db.add(_trade(strategy="bull_spread", direction="long", entry_price=105.0,
+                  legs_json=legs, contracts=1, position_size=200.0, max_loss=800.0,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "held"
+    assert db.query(PaperTrade).one().status == "open"
+
+
+def test_spread_without_max_loss_no_catastrophic(db):
+    """Legacy spread rows without max_loss can't use the fraction trigger — they
+    fall through to the expiry evaluator, never catastrophic (no false close)."""
+    _seed_price(db, "TEST", 50.0)  # far adverse
+    legs = json.dumps([
+        {"option_type": "put", "action": "sell", "strike": 100.0, "premium": 3.00, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 90.0, "premium": 1.00, "contracts": 1},
+    ])
+    db.add(_trade(strategy="bull_spread", direction="long", entry_price=105.0,
+                  legs_json=legs, contracts=1, max_loss=None,
+                  expiry=TODAY + timedelta(days=30)))
+    db.commit()
+
+    results = evaluate_paper_exits(db, today=TODAY)
+
+    assert results[0]["status"] == "held"  # no max_loss -> no catastrophic, not expired
+
+
 def test_no_price_data_skips(db):
     db.add(Stock(ticker="TEST"))
     db.add(_trade(strategy="long", stop_loss=90.0, position_size=1000.0))

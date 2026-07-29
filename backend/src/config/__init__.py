@@ -144,6 +144,15 @@ class Settings(BaseSettings):
     # day 1 and would fire spuriously. 0.15 = exit on a 15% adverse underlying
     # move; at that point a defined-risk spread is near max loss. 0.0 disables.
     catastrophic_underlying_move: float = 0.15
+    # Catastrophic early exit for SPREADS (spread, bull_spread). Unlike single-
+    # leg options, a defined-risk spread reaches max loss at a small underlying
+    # move, so the underlying-move trigger only fired once the spread was already
+    # at ~max loss (2026-07-29: 4 bull_spreads booked exactly -max_loss). Instead
+    # close a spread when its mark-to-market loss reaches this fraction of
+    # max_loss — cutting BEFORE max loss and freeing the capital. Spread MTM
+    # nets across legs so it has no OTM full-loss artifact. 0.60 = exit at 60%
+    # of max risk. 0.0 disables the spread catastrophic exit.
+    catastrophic_spread_loss_fraction: float = 0.60
     # Regime funding tilt. The 2026-07-27 regime split found both monetized
     # strategies POSITIVE in both SPY-50dSMA regimes, but rise's per-$ edge
     # jumps in down-tape (~+3.3%/10d vs +1.0% up; bear pair +0.73% vs +0.41%).
