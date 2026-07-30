@@ -176,50 +176,71 @@ def test_rec_capital_cost_takes_max_of_position_and_loss():
     assert scheduler_module._rec_capital_cost(_RecLike(500.0, None)) == 500.0
 
 
-class _PosLike:
-    """Stand-in for AlpacaPosition — only the fields _open_position_capital reads."""
-    def __init__(self, market_value, side="long"):
-        self.market_value = market_value
-        self.side = side
+def _cap_db(positions, owned_tickers=()):
+    """In-memory session with AlpacaPositions + open PaperTrades owning the
+    given tickers. _open_position_capital now excludes positions whose
+    underlying no open trade owns (residue), so ownership must be modeled.
+    positions: list of (ticker, market_value, side)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from src.db.models import Base, AlpacaPosition, PaperTrade, Stock
 
-
-class _FakeDB:
-    def __init__(self, positions): self._positions = positions
-    def query(self, *a, **kw): return self
-    def all(self): return self._positions
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    for tk in set(owned_tickers):
+        db.add(Stock(ticker=tk))
+        db.add(PaperTrade(ticker=tk, direction="long", strategy="long",
+                          status="open", entry_price=1.0))
+    for tk, mv, side in positions:
+        db.add(AlpacaPosition(ticker=tk, qty=1.0, side=side, market_value=mv))
+    db.commit()
+    return db
 
 
 def test_open_position_capital_sums_longs_at_market_value():
-    """A $400 long and a $250 long contribute their full market_value
+    """A $400 long and a $250 long (both owned) contribute full market_value
     (no margin multiplier on longs)."""
-    db = _FakeDB([_PosLike(400.0, "long"), _PosLike(250.0, "long")])
+    db = _cap_db([("AAPL", 400.0, "long"), ("MSFT", 250.0, "long")],
+                 owned_tickers=["AAPL", "MSFT"])
     assert scheduler_module._open_position_capital(db) == 650.0
 
 
 def test_open_position_capital_weights_shorts_by_margin():
-    """A $200 short locks 1.5x margin = $300. Matches size_short which
+    """A $200 short (owned) locks 1.5x margin = $300. Matches size_short which
     writes margin_required (not market_value) as position_size."""
-    db = _FakeDB([_PosLike(200.0, "short")])
+    db = _cap_db([("AAPL", 200.0, "short")], owned_tickers=["AAPL"])
     assert scheduler_module._open_position_capital(db) == 300.0
 
 
 def test_open_position_capital_handles_mixed_and_negative_market_value():
     """Alpaca returns negative market_value for shorts. abs() before scaling.
-    Mixed account: $300 long + $100 short → 300 + 100 * 1.5 = 450."""
-    db = _FakeDB([_PosLike(300.0, "long"), _PosLike(-100.0, "short")])
+    Mixed owned account: $300 long + $100 short → 300 + 100 * 1.5 = 450."""
+    db = _cap_db([("AAPL", 300.0, "long"), ("MSFT", -100.0, "short")],
+                 owned_tickers=["AAPL", "MSFT"])
     assert scheduler_module._open_position_capital(db) == 450.0
 
 
 def test_open_position_capital_empty_account_is_zero():
     """No positions → no deduction."""
-    db = _FakeDB([])
+    db = _cap_db([])
     assert scheduler_module._open_position_capital(db) == 0.0
 
 
 def test_open_position_capital_handles_null_fields():
     """Safety: a row with null market_value or null side must not blow up."""
-    db = _FakeDB([_PosLike(None, "long"), _PosLike(100.0, None)])
+    db = _cap_db([("AAPL", None, "long"), ("MSFT", 100.0, None)],
+                 owned_tickers=["AAPL", "MSFT"])
     assert scheduler_module._open_position_capital(db) == 100.0
+
+
+def test_open_position_capital_excludes_residue():
+    """Residue (a broker position no open trade owns) is excluded so orphaned
+    legs can't push open capital over the cap and shut out recs (2026-07-30).
+    AAPL owned -> counted; ZZZ unowned -> residue, excluded."""
+    db = _cap_db([("AAPL", 400.0, "long"), ("ZZZ", 500.0, "short")],
+                 owned_tickers=["AAPL"])
+    assert scheduler_module._open_position_capital(db) == 400.0
 
 
 def test_latest_close_helper_works_against_real_session():

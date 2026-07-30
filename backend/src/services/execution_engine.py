@@ -511,13 +511,23 @@ class ExecutionEngine:
 
         return results
 
-    def unwind_stock_trade(self, trade) -> dict:
-        """Unwind the broker position for a paper-exit-closed stock trade.
+    def unwind_broker_position(self, trade) -> dict:
+        """Unwind the broker position(s) for a paper-exit-closed trade.
 
         long/short: close the whole position (Alpaca handles side).
         pair_short: buy back the short-leg qty and sell the hedge-leg qty from
         legs_json — the hedge symbol (SPY) may be shared across pairs, so only
         this pair's quantity is sold, never close_position on the hedge.
+        options/call_options: sell-to-close the long single-leg option (OCC
+        built from ticker/expiry/strike/type).
+        spread/bull_spread: close each leg with a market order in the opposite
+        of its opening side (opened buy -> sell, opened sell -> buy).
+
+        Without the option/spread paths, spread/option broker legs stayed open
+        after their PaperTrade closed, piled up as residue, and pushed open
+        capital over the daily cap → 0 recs (2026-07-30). Per-leg market orders
+        (not MLEG) get out reliably and avoid the OCC net-per-contract collision
+        that rejects offsetting multi-leg submits.
         """
         import json as _json
 
@@ -559,6 +569,65 @@ class ExecutionEngine:
             status = "closed" if "short_close" in results and "hedge_close" in results else "partial"
             self._log(trade.ticker, "time_exit", trade.strategy,
                       reason=f"pair unwind trade {trade.id}: {results}")
+            return {"ticker": trade.ticker, "status": status, **results}
+
+        if trade.strategy in ("options", "call_options"):
+            from src.services.order_mapper import build_occ_symbol
+            if trade.strike is None or trade.expiry is None:
+                return {"ticker": trade.ticker, "status": "error",
+                        "reason": "option missing strike/expiry"}
+            opt_type = trade.option_type or ("call" if trade.strategy == "call_options" else "put")
+            occ = build_occ_symbol(trade.ticker, trade.expiry, opt_type, trade.strike)
+            try:
+                res = self.alpaca.submit_order(
+                    ticker=occ, qty=float(trade.contracts or 1),
+                    side="sell", order_type="market", time_in_force="day",
+                )
+                self._log(trade.ticker, "time_exit", trade.strategy,
+                          reason=f"option unwind trade {trade.id} ({occ})")
+                return {"ticker": trade.ticker, "status": "closed",
+                        "order_id": res.get("order_id") if isinstance(res, dict) else None}
+            except Exception as e:
+                logger.exception("unwind: option close failed for %s (%s)", trade.ticker, occ)
+                return {"ticker": trade.ticker, "status": "error", "reason": str(e)}
+
+        if trade.strategy in ("spread", "bull_spread"):
+            from src.services.order_mapper import build_occ_symbol
+            if trade.expiry is None:
+                return {"ticker": trade.ticker, "status": "error", "reason": "spread missing expiry"}
+            try:
+                legs = _json.loads(trade.legs_json or "[]")
+            except (ValueError, TypeError):
+                return {"ticker": trade.ticker, "status": "error", "reason": "malformed legs_json"}
+            if not legs:
+                return {"ticker": trade.ticker, "status": "error", "reason": "spread has no legs"}
+            results: dict = {}
+            all_ok = True
+            for i, leg in enumerate(legs):
+                strike = leg.get("strike")
+                if strike is None:
+                    all_ok = False
+                    results[f"leg{i}_error"] = "missing strike"
+                    continue
+                occ = build_occ_symbol(
+                    trade.ticker, trade.expiry, leg.get("option_type", "put"), strike,
+                )
+                # reverse the opening side to close
+                close_side = "sell" if leg.get("action") == "buy" else "buy"
+                qty = float(leg.get("contracts") or trade.contracts or 1)
+                try:
+                    res = self.alpaca.submit_order(
+                        ticker=occ, qty=qty, side=close_side,
+                        order_type="market", time_in_force="day",
+                    )
+                    results[f"leg{i}"] = res.get("order_id") if isinstance(res, dict) else None
+                except Exception as e:
+                    all_ok = False
+                    results[f"leg{i}_error"] = str(e)
+                    logger.exception("unwind: spread leg close failed for %s (%s)", trade.ticker, occ)
+            status = "closed" if all_ok else "partial"
+            self._log(trade.ticker, "time_exit", trade.strategy,
+                      reason=f"spread unwind trade {trade.id}: {results}")
             return {"ticker": trade.ticker, "status": status, **results}
 
         return {"ticker": trade.ticker, "status": "skipped",
