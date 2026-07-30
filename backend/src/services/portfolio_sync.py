@@ -39,6 +39,33 @@ def _to_underlying(ticker: str | None) -> str | None:
     return _underlying_from_occ(ticker) or ticker
 
 
+def owned_underlyings(db: Session) -> set[str]:
+    """Underlyings currently owned by a strategy.
+
+    A broker position's underlying is "owned" when an open PaperTrade carries
+    it, an in-flight order references it, or it is the pair-hedge symbol while
+    any pair_short is open (hedge legs live under the hedge symbol). Anything
+    else is residue. Shared by `detect_residue_positions` (flag/alert) and the
+    scheduler's `_open_position_capital` (exclude residue from the cap so
+    orphaned legs don't starve rec generation).
+    """
+    owned: set[str] = set()
+    open_trades = db.query(PaperTrade).filter_by(status="open").all()
+    for pt in open_trades:
+        owned.add(pt.ticker)
+    if any(pt.strategy == "pair_short" for pt in open_trades):
+        owned.add(get_settings().pair_hedge_symbol)
+    for order in (
+        db.query(AlpacaOrder)
+        .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
+        .all()
+    ):
+        u = _to_underlying(order.ticker)
+        if u:
+            owned.add(u)
+    return owned
+
+
 class PortfolioSync:
     """Pulls data from Alpaca and upserts into local tables."""
 
@@ -189,20 +216,7 @@ class PortfolioSync:
         stays a human decision.
         """
         now = now or datetime.utcnow()
-        owned: set[str] = set()
-        open_trades = self.db.query(PaperTrade).filter_by(status="open").all()
-        for pt in open_trades:
-            owned.add(pt.ticker)
-        if any(pt.strategy == "pair_short" for pt in open_trades):
-            owned.add(get_settings().pair_hedge_symbol)
-        for order in (
-            self.db.query(AlpacaOrder)
-            .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
-            .all()
-        ):
-            u = _to_underlying(order.ticker)
-            if u:
-                owned.add(u)
+        owned = owned_underlyings(self.db)
 
         residue: list[dict] = []
         for pos in self.db.query(AlpacaPosition).all():

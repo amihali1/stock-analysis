@@ -551,6 +551,71 @@ class TestOccPositionConflict:
         alpaca.get_positions.assert_not_called()
 
 
+class TestUnwindBrokerPosition:
+    """2026-07-30: spread/option broker legs never unwound on paper-close, so
+    they piled up as residue and jammed the capital cap. unwind_broker_position
+    must now close them with per-leg market orders in the reverse side."""
+
+    def _trade(self, db, **kw):
+        from src.db.models import PaperTrade
+        from datetime import timedelta
+        ticker = kw.get("ticker", "MRNA")
+        db.add(Stock(ticker=ticker))
+        db.commit()
+        defaults = dict(
+            ticker=ticker, direction="long", status="closed", entry_price=67.0,
+            expiry=date.today() + timedelta(days=30),
+        )
+        defaults.update(kw)
+        t = PaperTrade(**defaults)
+        db.add(t)
+        db.commit()
+        return t
+
+    def test_unwind_single_leg_option_sells_to_close(self):
+        db = _make_db()
+        alpaca = _mock_alpaca()
+        trade = self._trade(db, ticker="AAPL", strategy="options", direction="short",
+                            option_type="put", strike=145.0, contracts=2)
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            out = engine.unwind_broker_position(trade)
+        assert out["status"] == "closed"
+        kw = alpaca.submit_order.call_args.kwargs
+        assert kw["side"] == "sell"           # long option -> sell to close
+        assert kw["qty"] == 2.0
+        assert kw["ticker"].startswith("AAPL")  # OCC symbol, not equity ticker
+        assert kw["order_type"] == "market"
+
+    def test_unwind_spread_closes_each_leg_reversed(self):
+        import json
+        db = _make_db()
+        alpaca = _mock_alpaca()
+        legs = json.dumps([
+            {"option_type": "put", "action": "sell", "strike": 66.0, "contracts": 1},
+            {"option_type": "put", "action": "buy", "strike": 62.0, "contracts": 1},
+        ])
+        trade = self._trade(db, ticker="MRNA", strategy="bull_spread",
+                            legs_json=legs, contracts=1, max_loss=400.0)
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            out = engine.unwind_broker_position(trade)
+        assert out["status"] == "closed"
+        assert alpaca.submit_order.call_count == 2
+        sides = [c.kwargs["side"] for c in alpaca.submit_order.call_args_list]
+        assert sides == ["buy", "sell"]  # opened sell->buy-to-close, opened buy->sell-to-close
+
+    def test_unwind_unknown_strategy_skipped(self):
+        db = _make_db()
+        alpaca = _mock_alpaca()
+        trade = self._trade(db, ticker="AAPL", strategy="mystery")
+        with patch("src.services.execution_engine.get_settings", return_value=_settings()):
+            engine = ExecutionEngine(db, alpaca=alpaca)
+            out = engine.unwind_broker_position(trade)
+        assert out["status"] == "skipped"
+        alpaca.submit_order.assert_not_called()
+
+
 class TestDedup:
     def test_skips_if_already_submitted_today(self):
         db = _make_db()

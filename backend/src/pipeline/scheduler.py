@@ -38,14 +38,34 @@ def _open_position_capital(db) -> float:
     Shorts are weighted by the 1.5x margin multiplier to match the rec
     sizer's position_size convention (size_short writes margin_required as
     position_size). Longs use market_value directly.
+
+    Residue positions (broker legs no strategy owns — e.g. spread/option legs
+    whose PaperTrade closed but never unwound, or exercise/assignment stock)
+    are EXCLUDED: they are unmanaged and will expire, and counting them let a
+    pile of orphaned legs push open capital over the cap and shut out all recs
+    (2026-07-30: 16 residue legs → open $60.5k > $50k cap → 0 recs). The real
+    fix is unwinding those legs on close; this stops them starving the cap
+    meanwhile.
     """
     from src.db.models import AlpacaPosition
+    from src.services.portfolio_sync import owned_underlyings, _to_underlying
+    owned = owned_underlyings(db)
     total = 0.0
+    residue_skipped = 0.0
     for p in db.query(AlpacaPosition).all():
         mv = abs(p.market_value or 0.0)
         if (p.side or "").lower() == "short":
             mv *= 1.5
+        u = _to_underlying(p.ticker)
+        if u is not None and u not in owned:
+            residue_skipped += mv  # unowned residue — don't let it starve the cap
+            continue
         total += mv
+    if residue_skipped:
+        logger.info(
+            "open_position_capital: excluded $%.0f residue (unowned legs)",
+            residue_skipped,
+        )
     return total
 
 
@@ -1131,23 +1151,29 @@ def job_evaluate_paper_exits(label: str = "paper_exits"):
             held = sum(1 for r in results if r["status"] == "held")
             errors = sum(1 for r in results if r["status"] == "error")
 
-            # Mirror stock-strategy closes at the broker — a closed PaperTrade
-            # with a live Alpaca position would desync the capital cap and
-            # trigger the orphan sweep's inverse problem.
+            # Mirror closes at the broker — a closed PaperTrade with a live
+            # Alpaca position would desync the capital cap and trigger the
+            # orphan sweep's inverse problem. Includes option/spread legs:
+            # without unwinding them they lingered as residue and jammed the cap
+            # (2026-07-30). unwind_broker_position routes by strategy.
             unwound = 0
-            stock_closed_ids = [
+            closed_ids = [
                 r["id"] for r in results
-                if r["status"] == "closed" and r.get("strategy") in ("long", "short", "pair_short")
+                if r["status"] == "closed"
+                and r.get("strategy") in (
+                    "long", "short", "pair_short",
+                    "options", "call_options", "spread", "bull_spread",
+                )
             ]
-            if stock_closed_ids:
+            if closed_ids:
                 try:
                     from src.db.models import PaperTrade
                     from src.services.execution_engine import ExecutionEngine
                     engine = ExecutionEngine(db)
-                    for tid in stock_closed_ids:
+                    for tid in closed_ids:
                         trade = db.get(PaperTrade, tid)
                         if trade is not None:
-                            outcome = engine.unwind_stock_trade(trade)
+                            outcome = engine.unwind_broker_position(trade)
                             if outcome.get("status") in ("closed", "partial"):
                                 unwound += 1
                 except ValueError:
