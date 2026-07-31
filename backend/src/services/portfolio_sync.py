@@ -244,6 +244,36 @@ class PortfolioSync:
                 )
         return residue
 
+    def liquidate_residue(self, residue: list[dict]) -> int:
+        """Submit closing market orders for residue positions (broker legs/stock
+        no strategy owns). Gated on `auto_liquidate_residue` — an outward broker
+        action, default off. AlpacaPosition.qty is signed: long (>0) sells,
+        short (<0) buys, both at abs(qty). Returns count of close orders sent.
+        Complements the on-close unwind (PR #54): clears residue that predates
+        the unwind or arrives via option exercise/assignment.
+        """
+        if not get_settings().auto_liquidate_residue or not residue:
+            return 0
+        submitted = 0
+        for r in residue:
+            ticker = r.get("ticker")
+            qty = r.get("qty") or 0.0
+            if not ticker or not qty:
+                continue
+            side = "sell" if qty > 0 else "buy"
+            try:
+                self.client.submit_order(
+                    ticker=ticker, qty=abs(float(qty)), side=side,
+                    order_type="market", time_in_force="day",
+                )
+                submitted += 1
+                logger.warning(
+                    "Liquidated residue %s qty=%s side=%s", ticker, qty, side,
+                )
+            except Exception:
+                logger.exception("residue liquidation failed for %s", ticker)
+        return submitted
+
     @staticmethod
     def _send_ntfy(message: str) -> None:
         topic = get_settings().ntfy_topic

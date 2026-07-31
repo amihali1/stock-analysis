@@ -220,3 +220,36 @@ def test_min_score_applied_before_per_direction_dedup():
     out = select_candidates(cands, top_k=10, min_score=0.60)
     assert len(out) == 1
     assert out[0].score.score == 0.65
+
+
+def test_top_k_by_direction_overrides_per_side():
+    """Regime-aware mix (2026-07-31): per-direction cap overrides the even
+    top_k. Down-tape example — 3 bear / 1 bull from 4 of each."""
+    drops = [_cand(f"D{i}", 0.30, 0.60 - i * 0.01, direction="drop") for i in range(4)]
+    rises = [_cand(f"R{i}", 0.30, 0.90 - i * 0.01, direction="rise") for i in range(4)]
+    out = select_candidates(drops + rises, top_k=5,
+                            top_k_by_direction={"drop": 3, "rise": 1})
+    assert sum(1 for c in out if c.direction == "drop") == 3
+    assert sum(1 for c in out if c.direction == "rise") == 1
+    # highest-score pick kept on the capped side
+    assert next(c for c in out if c.direction == "rise").ticker == "R0"
+
+
+def test_top_k_by_direction_zero_fully_cuts_a_side():
+    """A direction mapped to 0 is fully cut for that run."""
+    cands = [
+        _cand("D0", 0.30, 0.60, direction="drop"),
+        _cand("R0", 0.30, 0.90, direction="rise"),
+    ]
+    out = select_candidates(cands, top_k=5, top_k_by_direction={"rise": 0, "drop": 5})
+    assert [c.ticker for c in out] == ["D0"]
+
+
+def test_top_k_by_direction_missing_key_falls_back_to_top_k():
+    """Directions absent from the override use the base top_k."""
+    drops = [_cand(f"D{i}", 0.30, 0.60 - i * 0.01, direction="drop") for i in range(4)]
+    rises = [_cand(f"R{i}", 0.30, 0.90 - i * 0.01, direction="rise") for i in range(4)]
+    # only override rise; drop falls back to top_k=2
+    out = select_candidates(drops + rises, top_k=2, top_k_by_direction={"rise": 1})
+    assert sum(1 for c in out if c.direction == "drop") == 2
+    assert sum(1 for c in out if c.direction == "rise") == 1

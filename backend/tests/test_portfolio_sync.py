@@ -562,3 +562,50 @@ class TestResidueDetection:
         # Next day re-alerts
         sync.detect_residue_positions(now=now + timedelta(days=1))
         assert mock_httpx.post.call_count == 2
+
+
+class TestLiquidateResidue:
+    """liquidate_residue: submit closing market orders for unowned broker
+    positions when auto_liquidate_residue is on (2026-07-31). Signed qty:
+    long (>0) sells, short (<0) buys."""
+
+    def _residue(self):
+        return [
+            {"ticker": "MRNA260814P00066000", "underlying": "MRNA",
+             "qty": -4.0, "market_value": -5180.0},   # short option -> buy to close
+            {"ticker": "SOFI", "underlying": "SOFI",
+             "qty": 16.0, "market_value": 1392.0},     # long stock -> sell to close
+        ]
+
+    def test_disabled_submits_nothing(self):
+        db = _make_db()
+        client = _mock_client()
+        sync = PortfolioSync(db, client=client)
+        with patch("src.services.portfolio_sync.get_settings") as gs:
+            gs.return_value.auto_liquidate_residue = False
+            n = sync.liquidate_residue(self._residue())
+        assert n == 0
+        client.submit_order.assert_not_called()
+
+    def test_enabled_closes_each_by_signed_qty(self):
+        db = _make_db()
+        client = _mock_client()
+        sync = PortfolioSync(db, client=client)
+        with patch("src.services.portfolio_sync.get_settings") as gs:
+            gs.return_value.auto_liquidate_residue = True
+            n = sync.liquidate_residue(self._residue())
+        assert n == 2
+        calls = {c.kwargs["ticker"]: c.kwargs for c in client.submit_order.call_args_list}
+        assert calls["MRNA260814P00066000"]["side"] == "buy"
+        assert calls["MRNA260814P00066000"]["qty"] == 4.0
+        assert calls["SOFI"]["side"] == "sell"
+        assert calls["SOFI"]["qty"] == 16.0
+
+    def test_empty_residue_noop(self):
+        db = _make_db()
+        client = _mock_client()
+        sync = PortfolioSync(db, client=client)
+        with patch("src.services.portfolio_sync.get_settings") as gs:
+            gs.return_value.auto_liquidate_residue = True
+            assert sync.liquidate_residue([]) == 0
+        client.submit_order.assert_not_called()
