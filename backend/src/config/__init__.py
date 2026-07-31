@@ -122,6 +122,23 @@ class Settings(BaseSettings):
     # Lowered 10 → 5 on 2026-07-07: money-layer sweep showed K=3-5 carries the
     # best per-trade expectancy (rise +1.59%/1.50% at K=3/5 vs +1.44% at K=10).
     recommendations_top_k: int = 5
+    # Regime-aware selection mix. The fixed even top_k per direction selects the
+    # same 5 bull + 5 bear regardless of the market. In a down-tape, absolute
+    # P&L on longs/spreads suffers even when the (excess-label) model likes them
+    # — 2026-07-29: bull_spreads on crashing semis lost -$3.4k. When on, scale
+    # per-direction selection by SPY 50d-SMA regime: the with-tape (favored)
+    # direction selects regime_top_k_favored, the counter-tape regime_top_k_
+    # disfavored. down-tape → bear favored, up-tape → bull favored; unknown/base
+    # falls back to recommendations_top_k both sides. Default off (even).
+    enable_regime_selection: bool = False
+    regime_top_k_favored: int = 7
+    regime_top_k_disfavored: int = 3
+    # Auto-liquidate residue: submit closing market orders for broker positions
+    # no strategy owns (orphaned option/spread legs, exercise/assignment stock).
+    # Detection is always on; liquidation is an outward broker action so it is
+    # gated here and defaults off. Complements the on-close unwind (PR #54) by
+    # clearing residue that predates the unwind or arrives via exercise.
+    auto_liquidate_residue: bool = False
 
     # Bear-side pair trading (money_layer + bear_monetization sweeps, 2026-07-07):
     # bear picks carry relative alpha (-0.54%/10d vs universe) but naked shorts

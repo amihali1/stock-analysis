@@ -48,6 +48,7 @@ def select_candidates(
     base_rate: float | None = None,        # accepted for back-compat; ignored
     min_dir_prob_lift: float | None = None,  # accepted for back-compat; ignored
     min_score: float | None = None,
+    top_k_by_direction: dict[str, int] | None = None,
 ) -> list[Candidate]:
     """Rank candidates per direction, cap at top_k per direction.
 
@@ -66,6 +67,11 @@ def select_candidates(
     dropped from BOTH selections and each side backfills from its own ranked
     list. This is NOT the pre-2026-05-18 joint ranking (which starved drops
     via base-rate scale mismatch); each side still ranks independently.
+
+    `top_k_by_direction` (optional) overrides the per-direction cap for the
+    given directions (others fall back to `top_k`). Used by the regime-aware
+    selection mix to take e.g. 7 with-tape / 3 counter-tape instead of an even
+    split. A direction mapped to 0 is fully cut for that run.
 
     `min_score` (optional, in [0, 1]) is an absolute composite-score floor
     applied per candidate *before* the top-K cap so the ranker never returns
@@ -100,7 +106,8 @@ def select_candidates(
     while True:
         selections: dict[str, list[Candidate]] = {}
         for direction, cands in by_direction.items():
-            selections[direction] = [c for c in cands if c.ticker not in banned][:top_k]
+            cap = top_k if top_k_by_direction is None else top_k_by_direction.get(direction, top_k)
+            selections[direction] = [c for c in cands if c.ticker not in banned][:cap]
 
         if len(selections) < 2:
             break

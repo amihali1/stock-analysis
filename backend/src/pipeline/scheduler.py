@@ -582,10 +582,27 @@ def job_generate_recommendations():
             # absolute lift floor noise. See rec_ranker.py for full history.
             cand_bear = sum(1 for c in candidates if c.direction == "drop")
             cand_bull = len(candidates) - cand_bear
+
+            # Regime-aware selection mix (2026-07-31): the fixed even top_k per
+            # direction ignores the market. When enabled, select more of the
+            # with-tape direction and fewer counter-tape — down-tape favors bear
+            # (bull longs/spreads lose absolute money in a real downturn even
+            # when the excess-label model likes them, 2026-07-29 semi crash).
+            spy_regime = _spy_regime(db)
+            top_k_by_direction = None
+            if settings.enable_regime_selection and spy_regime in ("up", "down"):
+                fav = settings.regime_top_k_favored
+                dis = settings.regime_top_k_disfavored
+                if spy_regime == "down":
+                    top_k_by_direction = {"drop": fav, "rise": dis}
+                else:  # up
+                    top_k_by_direction = {"rise": fav, "drop": dis}
+
             selected = select_candidates(
                 candidates,
                 top_k=settings.recommendations_top_k,
                 min_score=settings.recommendations_min_score or None,
+                top_k_by_direction=top_k_by_direction,
             )
             selected_bear = sum(1 for c in selected if c.direction == "drop")
             selected_bull = len(selected) - selected_bear
@@ -593,8 +610,8 @@ def job_generate_recommendations():
             # Regime funding tilt (2026-07-27 sweep): in down-tape rise's per-$
             # edge jumps, so fund rise candidates first when the daily cap binds.
             # Stable sort preserves intra-direction score order. Never gates a
-            # direction off — both are positive in both regimes.
-            spy_regime = _spy_regime(db)
+            # direction off — both are positive in both regimes. (spy_regime was
+            # computed above for the selection mix.)
             regime_tilt_applied = False
             if settings.enable_regime_tilt and spy_regime == "down":
                 selected.sort(key=lambda c: 0 if c.direction == "rise" else 1)
@@ -1006,7 +1023,8 @@ def job_generate_recommendations():
             f"cap: ${capital_used:.0f}/${available_cap:.0f} "
             f"(open ${open_capital:.0f}, cap ${capital_cap:.0f}), "
             f"{bear_capped + bull_capped} capped [{bear_capped}b/{bull_capped}B], "
-            f"regime {spy_regime}{'*' if regime_tilt_applied else ''}, "
+            f"regime {spy_regime}{'*' if regime_tilt_applied else ''}"
+            f"{' mix' if top_k_by_direction else ''}, "
             f"reserve {'on' if dir_ceiling < available_cap else 'off'} "
             f"(rise ${dir_used['rise']:.0f}/drop ${dir_used['drop']:.0f}), "
             f"chain {chain_hits}h/{chain_misses}m)",
@@ -1065,14 +1083,16 @@ def job_sync_portfolio():
             # same reason: an in-flight order is what marks a just-submitted
             # position as owned.
             residue = sync.detect_residue_positions()
+            liquidated = sync.liquidate_residue(residue)
             logger.info(
                 f"Scheduler: portfolio sync complete — {pos} positions, "
                 f"{orders} new orders, {orphans} orphans closed, "
-                f"{len(residue)} residue"
+                f"{len(residue)} residue ({liquidated} liquidated)"
             )
             _record_run(
                 "portfolio_sync",
-                f"ok ({pos} pos, {orders} orders, {orphans} orphaned, {len(residue)} residue)",
+                f"ok ({pos} pos, {orders} orders, {orphans} orphaned, "
+                f"{len(residue)} residue, {liquidated} liq)",
             )
         finally:
             db.close()

@@ -309,6 +309,22 @@ def test_per_direction_capital_reserve_default_off():
     assert Settings.model_fields["per_direction_capital_reserve"].default == 0.0
 
 
+def test_regime_selection_defaults():
+    """Regime-aware selection ships off (even top_k both sides); the 7/3 mix
+    activates only when enabled. Flip is a conscious trading decision."""
+    from src.config import Settings
+    assert Settings.model_fields["enable_regime_selection"].default is False
+    assert Settings.model_fields["regime_top_k_favored"].default == 7
+    assert Settings.model_fields["regime_top_k_disfavored"].default == 3
+
+
+def test_auto_liquidate_residue_default_off():
+    """Residue auto-liquidation is an outward broker action — ships off.
+    Detection stays always-on; only submission is gated."""
+    from src.config import Settings
+    assert Settings.model_fields["auto_liquidate_residue"].default is False
+
+
 def test_daily_capital_cap_default_locked():
     """Lock the default so config drift is a deliberate, test-visible act.
     History: $5k direction-blind pool (bullish_side_build memo, 2026-05-12),
