@@ -149,9 +149,16 @@ class Settings(BaseSettings):
     pair_hedge_symbol: str = "SPY"
 
     # Time-based exit for stock strategies (long/short/pair_short): close after
-    # N trading sessions. Hold=10 dominated every shorter hold in the sweep
-    # (rise +1.59% at H=10 vs +0.43% at H=5).
-    time_exit_sessions: int = 10
+    # N trading sessions. An earlier sweep kept H=10 for per-trade edge
+    # (rise +1.59% at H=10 vs +0.43% at H=5). The 2026-08-13 long/rise-book exit
+    # sweep (48 configs, sweep_exits2.py) re-ran the tradeoff: H=10 and H=5 give
+    # ~equal TOTAL P&L (~$10.4k vs ~$10.3k) because H=5 does ~2x the trades at
+    # ~half the per-trade return, but H=5 has higher Sharpe (0.94 vs 0.83) and
+    # ~2x turnover. With the hard 30-position cap saturating (bulls hold slots,
+    # blocking new entries incl. all bears), turnover is the binding constraint,
+    # so H=5 is chosen to free slots faster. 3% trailing stops tested WORSE
+    # (whipsaw, Sharpe 0.32-0.58) — not adopted. Stop 5% / target 10% unchanged.
+    time_exit_sessions: int = 5
     # Catastrophic early exit for option/spread positions (options, call_options,
     # spread, bull_spread). These otherwise ONLY exit at expiry — a large adverse
     # move rides to near-total loss unmanaged. Close early when the UNDERLYING
