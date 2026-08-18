@@ -65,10 +65,10 @@ class AlpacaClient:
         """Get account info: equity, buying power, cash, day trade count."""
         acct = self._client.get_account()
         return {
-            "equity": float(acct.equity),
-            "buying_power": float(acct.buying_power),
-            "cash": float(acct.cash),
-            "day_trade_count": int(acct.daytrade_count),
+            "equity": float(acct.equity or 0),
+            "buying_power": float(acct.buying_power or 0),
+            "cash": float(acct.cash or 0),
+            "day_trade_count": int(acct.daytrade_count or 0),
             "pattern_day_trader": acct.pattern_day_trader,
             "currency": acct.currency,
             "status": acct.status.value if acct.status else "unknown",
