@@ -64,6 +64,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# AuthMiddleware is added first so CORSMiddleware wraps *outside* it.
+# Starlette runs the last-added middleware outermost; CORS must be outermost so
+# that error responses short-circuited by AuthMiddleware (e.g. 401) still get
+# Access-Control-Allow-Origin headers. Otherwise the browser blocks the 401 as a
+# CORS failure and fetch() throws "Failed to fetch" instead of surfacing the 401
+# (which the frontend needs to trigger its token-refresh flow).
+app.add_middleware(AuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3100", "http://10.0.0.47:3100"],
@@ -71,8 +79,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.add_middleware(AuthMiddleware)
 
 Instrumentator(
     excluded_handlers=["/metrics"],
