@@ -6,16 +6,46 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from src.db.session import get_db
-from src.db.models import Recommendation
+from src.db.models import PaperTrade, Recommendation
 from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import (
     RecommendationResponse,
     RecommendationsListResponse,
 )
+from src.services.paper_trade_valuation import (
+    build_positions_map,
+    fetch_live_prices,
+    value_open_trade,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _open_trade_map(db: Session, tickers: set[str]) -> dict[str, list[PaperTrade]]:
+    """Open paper trades on the given tickers, grouped by ticker (newest first)."""
+    if not tickers:
+        return {}
+    rows = (
+        db.query(PaperTrade)
+        .filter(PaperTrade.status == "open", PaperTrade.ticker.in_(tickers))
+        .order_by(PaperTrade.opened_at.desc())
+        .all()
+    )
+    grouped: dict[str, list[PaperTrade]] = {}
+    for t in rows:
+        grouped.setdefault(t.ticker.upper(), []).append(t)
+    return grouped
+
+
+def _match_open_trade(rec: Recommendation, trades: list[PaperTrade]) -> PaperTrade | None:
+    """Pick the open trade backing a recommendation: same strategy if present,
+    else the most recent open trade on that ticker."""
+    if not trades:
+        return None
+    same = [t for t in trades if t.strategy == rec.strategy]
+    return (same or trades)[0]
 
 
 @router.get("/recommendations", response_model=RecommendationsListResponse)
@@ -32,8 +62,21 @@ def get_recommendations(
 
     recs = query.limit(limit).all()
 
-    items = [
-        RecommendationResponse(
+    # Enrich with live underlying price and, where the rec is an open position,
+    # its unrealized P&L. All best-effort: unavailable data → None (shows "—").
+    tickers = {r.ticker.upper() for r in recs if r.ticker}
+    stock_prices = fetch_live_prices(tickers)
+    open_trades = _open_trade_map(db, tickers)
+    positions_map = build_positions_map(db) if open_trades else {}
+
+    items = []
+    for r in recs:
+        trade = _match_open_trade(r, open_trades.get((r.ticker or "").upper(), []))
+        unrealized_pnl = None
+        if trade is not None:
+            _, unrealized_pnl = value_open_trade(trade, positions_map, stock_prices)
+
+        items.append(RecommendationResponse(
             id=r.id,
             ticker=r.ticker,
             date=r.date,
@@ -55,8 +98,8 @@ def get_recommendations(
             stock_legs=parse_stock_legs(r.legs_json),
             risk_type=r.risk_type or "undefined",
             notes=r.notes,
-        )
-        for r in recs
-    ]
+            current_price=stock_prices.get((r.ticker or "").upper()),
+            unrealized_pnl=unrealized_pnl,
+        ))
 
     return RecommendationsListResponse(recommendations=items, count=len(items))

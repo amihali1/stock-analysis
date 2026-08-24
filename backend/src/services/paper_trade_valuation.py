@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 
-from src.db.models import PaperTrade
+from src.db.models import AlpacaPosition, PaperTrade
 from src.services.order_mapper import build_occ_symbol
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,39 @@ logger = logging.getLogger(__name__)
 # Strategies whose position is one or more option legs.
 _OPTION_STRATEGIES = {"options", "call_options", "spread", "bull_spread"}
 _MULTI_LEG_STRATEGIES = {"spread", "bull_spread"}
+
+
+def build_positions_map(db) -> dict[str, dict]:
+    """{symbol -> {current_price, unrealized_pl}} from the last portfolio sync.
+
+    Covers both equity tickers and option legs (keyed by OCC symbol)."""
+    rows = db.query(
+        AlpacaPosition.ticker,
+        AlpacaPosition.current_price,
+        AlpacaPosition.unrealized_pl,
+    ).all()
+    return {
+        r[0].upper(): {"current_price": r[1], "unrealized_pl": r[2]}
+        for r in rows
+        if r[0]
+    }
+
+
+def fetch_live_prices(tickers) -> dict[str, float]:
+    """Live last-trade prices, best-effort. Empty dict if Alpaca is unavailable.
+
+    Imports AlpacaClient lazily so this module stays importable without the
+    alpaca SDK (unit tests, offline dev)."""
+    tickers = list(tickers)
+    if not tickers:
+        return {}
+    try:
+        from src.services.alpaca_client import AlpacaClient
+
+        return AlpacaClient().get_latest_stock_prices(tickers)
+    except Exception as e:
+        logger.warning(f"Live stock price batch failed: {e}")
+        return {}
 
 
 def underlying_tickers(trades: list[PaperTrade]) -> set[str]:

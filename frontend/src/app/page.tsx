@@ -296,6 +296,7 @@ function Dashboard() {
                 </th>
                 <th className="py-3 px-3 text-right">Sentiment</th>
                 <th className="py-3 px-3 text-right">Entry</th>
+                <th className="py-3 px-3 text-right">Current</th>
                 <th className="py-3 px-3 text-right">Stop Loss</th>
                 <th
                   className="py-3 px-3 cursor-pointer hover:text-white text-right"
@@ -309,12 +310,13 @@ function Dashboard() {
                 >
                   Max Loss{sortIcon("max_loss")}
                 </th>
+                <th className="py-3 px-3 text-right">P&amp;L</th>
                 {tradingEnabled && <th className="py-3 px-3"></th>}
               </tr>
             </thead>
             <tbody>
               {sorted.map((rec, i) => {
-                const baseCols = 9; // ticker, strategy, risk, score, sent, entry, stop, pos, max_loss
+                const baseCols = 11; // ticker, strategy, risk, score, sent, entry, current, stop, pos, max_loss, pnl
                 const colSpan = baseCols + (tradingEnabled ? 1 : 0);
                 return (
                   <React.Fragment key={`${rec.ticker}-${rec.strategy}-${i}`}>
@@ -343,6 +345,9 @@ function Dashboard() {
                     {rec.entry_price ? `$${rec.entry_price.toFixed(2)}` : "—"}
                   </td>
                   <td className="py-3 px-3 text-right font-mono">
+                    {rec.current_price != null ? `$${rec.current_price.toFixed(2)}` : "—"}
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono">
                     {rec.stop_loss ? `$${rec.stop_loss.toFixed(2)}` : "—"}
                   </td>
                   <td className="py-3 px-3 text-right font-mono">
@@ -350,6 +355,19 @@ function Dashboard() {
                   </td>
                   <td className="py-3 px-3 text-right font-mono text-red-400">
                     {formatDollars(rec.max_loss)}
+                  </td>
+                  <td
+                    className={`py-3 px-3 text-right font-mono ${
+                      rec.unrealized_pnl == null
+                        ? ""
+                        : rec.unrealized_pnl >= 0
+                        ? "text-green-400"
+                        : "text-red-400"
+                    }`}
+                  >
+                    {rec.unrealized_pnl == null
+                      ? "—"
+                      : `${rec.unrealized_pnl >= 0 ? "+" : ""}$${rec.unrealized_pnl.toFixed(2)}`}
                   </td>
                   {tradingEnabled && (
                     <td className="py-3 px-3 text-right">

@@ -9,19 +9,17 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.db.models import PaperTrade, PriceHistory, AlpacaPosition
+from src.db.models import PaperTrade, PriceHistory
 from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import SpreadLegResponse, StockLegResponse
 from src.services.paper_trade_valuation import (
+    build_positions_map,
+    fetch_live_prices,
     spread_entry_mark,
     underlying_tickers,
     value_open_trade,
     uses_underlying_price,
 )
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -143,8 +141,8 @@ def list_trades(
     # + a live stock-price batch. Both best-effort — on failure open trades fall
     # back to the stored daily close and broker P&L.
     open_trades = [t for t in trades if t.status == "open"]
-    positions_map = _build_positions_map(db) if open_trades else {}
-    stock_prices = _fetch_stock_prices(underlying_tickers(open_trades)) if open_trades else {}
+    positions_map = build_positions_map(db) if open_trades else {}
+    stock_prices = fetch_live_prices(underlying_tickers(open_trades)) if open_trades else {}
 
     responses = [_to_response(t, db, positions_map, stock_prices) for t in trades]
 
@@ -162,35 +160,6 @@ def list_trades(
     }
 
     return PaperTradeListResponse(trades=responses, summary=summary)
-
-
-def _build_positions_map(db: Session) -> dict[str, dict]:
-    """{symbol -> {current_price, unrealized_pl}} from the last portfolio sync.
-
-    Covers both equity tickers and option legs (keyed by OCC symbol)."""
-    rows = db.query(
-        AlpacaPosition.ticker,
-        AlpacaPosition.current_price,
-        AlpacaPosition.unrealized_pl,
-    ).all()
-    return {
-        r[0].upper(): {"current_price": r[1], "unrealized_pl": r[2]}
-        for r in rows
-        if r[0]
-    }
-
-
-def _fetch_stock_prices(tickers: set[str]) -> dict[str, float]:
-    """Live last-trade prices, best-effort. Empty dict if Alpaca is unavailable."""
-    if not tickers:
-        return {}
-    try:
-        from src.services.alpaca_client import AlpacaClient
-
-        return AlpacaClient().get_latest_stock_prices(list(tickers))
-    except Exception as e:
-        logger.warning(f"Live stock price batch failed: {e}")
-        return {}
 
 
 def _to_response(

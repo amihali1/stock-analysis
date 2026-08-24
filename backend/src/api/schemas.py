@@ -67,6 +67,8 @@ class RecommendationResponse(BaseModel):
     stock_legs: list[StockLegResponse] | None = None
     risk_type: str = "undefined"
     notes: str | None = None
+    current_price: float | None = None
+    unrealized_pnl: float | None = None
 
 
 class RecommendationsListResponse(BaseModel):

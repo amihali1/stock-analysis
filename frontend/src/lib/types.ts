@@ -76,6 +76,8 @@ export interface Recommendation {
   stock_legs: StockLeg[] | null;
   risk_type: RiskType;
   notes: string | null;
+  current_price: number | null;
+  unrealized_pnl: number | null;
 }
 
 export interface RecommendationsResponse {
