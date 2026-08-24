@@ -31,12 +31,15 @@ export class SessionExpiredError extends Error {
 
 function redirectToLogin(): void {
   if (typeof window === "undefined") return;
+  // Guard on pathname only. If we're already on /login (possibly with a ?next=
+  // query), do NOT re-wrap the current URL into a new next= param — otherwise a
+  // repeated redirect nests next= inside next= and grows the query unbounded
+  // until the server rejects the request headers with 431.
+  if (window.location.pathname === "/login") {
+    return;
+  }
   const next = window.location.pathname + window.location.search;
-  const target =
-    next && next !== "/login"
-      ? `/login?next=${encodeURIComponent(next)}`
-      : "/login";
-  window.location.replace(target);
+  window.location.replace(`/login?next=${encodeURIComponent(next)}`);
 }
 
 function getToken(): string | null {
