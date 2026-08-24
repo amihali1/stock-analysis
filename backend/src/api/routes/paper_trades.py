@@ -13,6 +13,7 @@ from src.db.models import PaperTrade, PriceHistory, AlpacaPosition
 from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import SpreadLegResponse, StockLegResponse
 from src.services.paper_trade_valuation import (
+    spread_entry_mark,
     underlying_tickers,
     value_open_trade,
     uses_underlying_price,
@@ -225,12 +226,20 @@ def _to_response(
             if latest and latest[0]:
                 current_price = latest[0]
 
+    # For spreads, show the net entry premium (from legs) rather than the stored
+    # entry_price, which is the underlying stock price at entry — so the entry
+    # and current columns are both net premium and comparable.
+    entry_price = trade.entry_price
+    spread_entry = spread_entry_mark(trade)
+    if spread_entry is not None:
+        entry_price = spread_entry
+
     return PaperTradeResponse(
         id=trade.id,
         ticker=trade.ticker,
         strategy=trade.strategy,
         status=trade.status,
-        entry_price=trade.entry_price,
+        entry_price=entry_price,
         stop_loss=trade.stop_loss,
         target_price=trade.target_price,
         position_size=trade.position_size,

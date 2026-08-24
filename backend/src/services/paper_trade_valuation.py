@@ -194,6 +194,27 @@ def _option_legs_with_meta(trade: PaperTrade) -> list[tuple[str, str]]:
     return []
 
 
+def spread_entry_mark(trade: PaperTrade) -> float | None:
+    """Net entry premium of a multi-leg spread from its leg premiums, using the
+    same buy=+ / sell=- convention as the live net mark, so the entry and
+    current columns are comparable. None for non-spreads or missing premiums.
+
+    (The stored entry_price on spread trades is the underlying stock price at
+    entry, not the net premium, so it can't be shown next to a premium mark.)"""
+    if trade.strategy not in _MULTI_LEG_STRATEGIES:
+        return None
+    net = 0.0
+    priced = 0
+    for leg in _load_legs(trade):
+        premium = leg.get("premium")
+        if premium is None:
+            continue
+        sign = 1.0 if str(leg.get("action", "")).strip().lower() == "buy" else -1.0
+        net += sign * float(premium)
+        priced += 1
+    return net if priced else None
+
+
 def uses_underlying_price(strategy: str) -> bool:
     """Whether current_price for this strategy is the underlying stock price
     (so a daily-close fallback is meaningful). False for option strategies,

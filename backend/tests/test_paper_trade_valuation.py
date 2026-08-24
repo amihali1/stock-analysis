@@ -17,6 +17,7 @@ from src.services.order_mapper import build_occ_symbol
 import pytest
 
 from src.services.paper_trade_valuation import (
+    spread_entry_mark,
     underlying_tickers,
     uses_underlying_price,
     value_open_trade,
@@ -115,6 +116,22 @@ def test_spread_net_mark_none_when_no_leg_priced():
     current, pnl = value_open_trade(trade, {}, {})
     assert current is None
     assert pnl is None
+
+
+def test_spread_entry_mark_net_premium():
+    # LRCX-style: sell 300 put @16.11, buy 290 put @12.20 => net -3.91 credit.
+    legs = [
+        {"option_type": "put", "action": "sell", "strike": 300.0, "premium": 16.11, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 290.0, "premium": 12.20, "contracts": 1},
+    ]
+    trade = _trade(ticker="LRCX", strategy="bull_spread", entry_price=310.53,
+                   expiry=EXPIRY, legs_json=json.dumps(legs))
+    assert spread_entry_mark(trade) == pytest.approx(-3.91)
+
+
+def test_spread_entry_mark_none_for_non_spread():
+    assert spread_entry_mark(_trade(strategy="long")) is None
+    assert spread_entry_mark(_trade(strategy="call_options")) is None
 
 
 def test_uses_underlying_price_gating():
