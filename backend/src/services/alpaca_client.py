@@ -308,7 +308,9 @@ class AlpacaClient:
         as "no live price" and fall back to a stored close. Returns {} on any
         API failure rather than raising — live pricing is best-effort display.
         """
-        symbols = sorted({t.upper() for t in tickers if t})
+        # Drop index symbols (e.g. ^VIX): Alpaca's stock data API 400s on them
+        # ("invalid symbol"), and a single bad symbol fails the whole batch.
+        symbols = sorted({t.upper() for t in tickers if t and not t.startswith("^")})
         if not symbols:
             return {}
         try:
