@@ -14,7 +14,13 @@ from datetime import date, datetime
 
 from src.db.models import PaperTrade
 from src.services.order_mapper import build_occ_symbol
-from src.services.paper_trade_valuation import underlying_tickers, value_open_trade
+import pytest
+
+from src.services.paper_trade_valuation import (
+    underlying_tickers,
+    uses_underlying_price,
+    value_open_trade,
+)
 
 EXPIRY = date(2026, 9, 18)
 
@@ -77,7 +83,7 @@ def test_single_leg_option_uses_occ_broker_mark():
     assert pnl == 350.0
 
 
-def test_bull_spread_sums_legs_no_single_price():
+def test_bull_spread_sums_legs_and_net_mark():
     legs = [
         {"option_type": "put", "action": "sell", "strike": 90.0, "contracts": 1},
         {"option_type": "put", "action": "buy", "strike": 85.0, "contracts": 1},
@@ -93,8 +99,32 @@ def test_bull_spread_sums_legs_no_single_price():
 
     current, pnl = value_open_trade(trade, positions, {})
 
-    assert current is None  # multi-leg: no single meaningful price
+    # Net spread mark: buy leg +0.20, sell leg -0.40 => -0.20 (net credit).
+    assert current == pytest.approx(-0.20)
     assert pnl == 40.0  # 60 + (-20)
+
+
+def test_spread_net_mark_none_when_no_leg_priced():
+    legs = [
+        {"option_type": "put", "action": "sell", "strike": 90.0, "contracts": 1},
+        {"option_type": "put", "action": "buy", "strike": 85.0, "contracts": 1},
+    ]
+    trade = _trade(ticker="SOFI", strategy="bull_spread", entry_price=1.0,
+                   expiry=EXPIRY, legs_json=json.dumps(legs))
+    # No broker rows for either leg.
+    current, pnl = value_open_trade(trade, {}, {})
+    assert current is None
+    assert pnl is None
+
+
+def test_uses_underlying_price_gating():
+    assert uses_underlying_price("long") is True
+    assert uses_underlying_price("pair_short") is True
+    assert uses_underlying_price("short") is True
+    assert uses_underlying_price("bull_spread") is False
+    assert uses_underlying_price("spread") is False
+    assert uses_underlying_price("call_options") is False
+    assert uses_underlying_price("options") is False
 
 
 def test_option_pnl_none_when_no_broker_match():

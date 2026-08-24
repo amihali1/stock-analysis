@@ -124,26 +124,38 @@ def _value_pair_short(
 def _value_option(
     trade: PaperTrade, positions_map: dict[str, dict]
 ) -> tuple[float | None, float | None]:
-    occs = _option_occ_symbols(trade)
-    if not occs:
+    legs = _option_legs_with_meta(trade)
+    if not legs:
         return None, None
 
     pnl = 0.0
-    matched = 0
-    for occ in occs:
+    pnl_matched = 0
+    net_mark = 0.0
+    mark_matched = 0
+    for occ, action in legs:
         pos = positions_map.get(occ)
-        if pos and pos.get("unrealized_pl") is not None:
+        if not pos:
+            continue
+        if pos.get("unrealized_pl") is not None:
             pnl += pos["unrealized_pl"]
-            matched += 1
+            pnl_matched += 1
+        if pos.get("current_price") is not None:
+            # Long leg (buy) adds value, short leg (sell) subtracts: the net
+            # premium to liquidate the spread. Positive = net debit, negative
+            # = net credit.
+            sign = 1.0 if action == "buy" else -1.0
+            net_mark += sign * pos["current_price"]
+            mark_matched += 1
 
-    unrealized = pnl if matched else None
+    unrealized = pnl if pnl_matched else None
 
-    # Single-leg: surface the option mark as current_price. Multi-leg spreads
-    # have no single meaningful price, so leave it None (row shows "—").
-    current_price = None
-    if trade.strategy not in _MULTI_LEG_STRATEGIES and len(occs) == 1:
-        pos = positions_map.get(occs[0])
-        current_price = (pos or {}).get("current_price")
+    if trade.strategy in _MULTI_LEG_STRATEGIES:
+        # Net spread mark across the legs (None if no leg priced → row shows "—",
+        # never falls back to the underlying stock price).
+        current_price = net_mark if mark_matched else None
+    else:
+        # Single-leg option: the option's own mark.
+        current_price = (positions_map.get(legs[0][0]) or {}).get("current_price")
     return current_price, unrealized
 
 
@@ -157,26 +169,37 @@ def _equity_shares(trade: PaperTrade) -> float:
     return (trade.position_size or 0) / denom if denom else 0.0
 
 
-def _option_occ_symbols(trade: PaperTrade) -> list[str]:
-    """OCC symbols for an option trade: from legs_json if present, else the
-    single-leg strike/type/expiry fields."""
-    occs: list[str] = []
+def _option_legs_with_meta(trade: PaperTrade) -> list[tuple[str, str]]:
+    """(occ_symbol, action) per option leg. From legs_json if present, else the
+    single-leg strike/type/expiry fields. action is 'buy' (long) or 'sell'
+    (short); single bought options default to 'buy'."""
+    legs: list[tuple[str, str]] = []
     for leg in _load_legs(trade):
         otype = leg.get("option_type")
         strike = leg.get("strike")
         if otype and strike is not None and trade.expiry:
             try:
-                occs.append(build_occ_symbol(trade.ticker, trade.expiry, str(otype), float(strike)))
+                occ = build_occ_symbol(trade.ticker, trade.expiry, str(otype), float(strike))
             except (ValueError, TypeError):
                 continue
-    if occs:
-        return occs
+            action = str(leg.get("action", "buy")).strip().lower()
+            legs.append((occ, "sell" if action == "sell" else "buy"))
+    if legs:
+        return legs
     if trade.option_type and trade.strike and trade.expiry:
         try:
-            return [build_occ_symbol(trade.ticker, trade.expiry, trade.option_type, trade.strike)]
+            return [(build_occ_symbol(trade.ticker, trade.expiry, trade.option_type, trade.strike), "buy")]
         except (ValueError, TypeError):
             return []
     return []
+
+
+def uses_underlying_price(strategy: str) -> bool:
+    """Whether current_price for this strategy is the underlying stock price
+    (so a daily-close fallback is meaningful). False for option strategies,
+    whose current_price is an option/spread mark — the underlying close would
+    be a misleading number in the entry/current column."""
+    return strategy not in _OPTION_STRATEGIES
 
 
 def _load_legs(trade: PaperTrade) -> list[dict]:

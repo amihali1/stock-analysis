@@ -12,7 +12,11 @@ from src.db.session import get_db
 from src.db.models import PaperTrade, PriceHistory, AlpacaPosition
 from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import SpreadLegResponse, StockLegResponse
-from src.services.paper_trade_valuation import underlying_tickers, value_open_trade
+from src.services.paper_trade_valuation import (
+    underlying_tickers,
+    value_open_trade,
+    uses_underlying_price,
+)
 
 import logging
 
@@ -207,7 +211,11 @@ def _to_response(
             current_price, unrealized_pnl = value_open_trade(
                 trade, positions_map or {}, stock_prices or {}
             )
-        if current_price is None:
+        # Fall back to the latest stored close only for strategies whose
+        # current_price IS the underlying stock price. Option strategies show an
+        # option/spread mark, so the underlying close would be misleading — leave
+        # None (row shows "—").
+        if current_price is None and uses_underlying_price(trade.strategy):
             latest = (
                 db.query(PriceHistory.close)
                 .filter_by(ticker=trade.ticker)
