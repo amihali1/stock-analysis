@@ -9,9 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.db.models import PaperTrade, PriceHistory
+from src.db.models import PaperTrade, PriceHistory, AlpacaPosition
 from src.api.leg_parsing import parse_option_legs, parse_stock_legs
 from src.api.schemas import SpreadLegResponse, StockLegResponse
+from src.services.paper_trade_valuation import underlying_tickers, value_open_trade
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -128,7 +133,15 @@ def list_trades(
         query = query.filter(PaperTrade.status == status)
 
     trades = query.all()
-    responses = [_to_response(t, db) for t in trades]
+
+    # Build valuation maps once: broker MTM from alpaca_positions (5-min synced)
+    # + a live stock-price batch. Both best-effort — on failure open trades fall
+    # back to the stored daily close and broker P&L.
+    open_trades = [t for t in trades if t.status == "open"]
+    positions_map = _build_positions_map(db) if open_trades else {}
+    stock_prices = _fetch_stock_prices(underlying_tickers(open_trades)) if open_trades else {}
+
+    responses = [_to_response(t, db, positions_map, stock_prices) for t in trades]
 
     # Summary stats
     closed = [t for t in trades if t.status == "closed" and t.pnl is not None]
@@ -146,23 +159,63 @@ def list_trades(
     return PaperTradeListResponse(trades=responses, summary=summary)
 
 
-def _to_response(trade: PaperTrade, db: Session) -> PaperTradeResponse:
-    """Convert DB model to response, adding current price for open trades."""
+def _build_positions_map(db: Session) -> dict[str, dict]:
+    """{symbol -> {current_price, unrealized_pl}} from the last portfolio sync.
+
+    Covers both equity tickers and option legs (keyed by OCC symbol)."""
+    rows = db.query(
+        AlpacaPosition.ticker,
+        AlpacaPosition.current_price,
+        AlpacaPosition.unrealized_pl,
+    ).all()
+    return {
+        r[0].upper(): {"current_price": r[1], "unrealized_pl": r[2]}
+        for r in rows
+        if r[0]
+    }
+
+
+def _fetch_stock_prices(tickers: set[str]) -> dict[str, float]:
+    """Live last-trade prices, best-effort. Empty dict if Alpaca is unavailable."""
+    if not tickers:
+        return {}
+    try:
+        from src.services.alpaca_client import AlpacaClient
+
+        return AlpacaClient().get_latest_stock_prices(list(tickers))
+    except Exception as e:
+        logger.warning(f"Live stock price batch failed: {e}")
+        return {}
+
+
+def _to_response(
+    trade: PaperTrade,
+    db: Session,
+    positions_map: dict[str, dict] | None = None,
+    stock_prices: dict[str, float] | None = None,
+) -> PaperTradeResponse:
+    """Convert DB model to response, adding live price + P&L for open trades.
+
+    When valuation maps are supplied (list endpoint) open trades are marked to
+    market via broker P&L + live prices. Without them (single open/close
+    responses) we fall back to the latest stored close for current_price."""
     current_price = None
     unrealized_pnl = None
 
     if trade.status == "open":
-        latest = (
-            db.query(PriceHistory.close)
-            .filter_by(ticker=trade.ticker)
-            .order_by(PriceHistory.date.desc())
-            .first()
-        )
-        if latest and latest[0]:
-            current_price = latest[0]
-            if trade.strategy == "short":
-                shares = int((trade.position_size or 0) / (trade.entry_price * 1.5)) if trade.entry_price else 0
-                unrealized_pnl = (trade.entry_price - current_price) * shares
+        if positions_map is not None or stock_prices is not None:
+            current_price, unrealized_pnl = value_open_trade(
+                trade, positions_map or {}, stock_prices or {}
+            )
+        if current_price is None:
+            latest = (
+                db.query(PriceHistory.close)
+                .filter_by(ticker=trade.ticker)
+                .order_by(PriceHistory.date.desc())
+                .first()
+            )
+            if latest and latest[0]:
+                current_price = latest[0]
 
     return PaperTradeResponse(
         id=trade.id,

@@ -44,8 +44,9 @@ class AlpacaClient:
     """Wrapper around alpaca-py TradingClient for order execution and account management."""
 
     def __init__(self, client: TradingClient | None = None):
-        # Option market-data client, built lazily on first quote fetch.
-        self._data_client = None
+        # Market-data clients, built lazily on first quote/price fetch.
+        self._data_client = None  # option data
+        self._stock_data_client = None  # stock data
         if client is not None:
             self._client = client
         else:
@@ -295,6 +296,43 @@ class AlpacaClient:
             ask = float(getattr(quote, "ask_price", 0) or 0)
             if bid > 0 and ask > 0:
                 result[symbol] = {"bid": bid, "ask": ask}
+        return result
+
+    # ── Stock Quotes ─────────────────────────────────────────
+
+    def get_latest_stock_prices(self, tickers: list[str]) -> dict[str, float]:
+        """Latest trade price per equity ticker from Alpaca stock market data.
+
+        Returns {ticker: price} for symbols with a usable last trade; symbols
+        that error or come back empty are omitted so callers can treat absence
+        as "no live price" and fall back to a stored close. Returns {} on any
+        API failure rather than raising — live pricing is best-effort display.
+        """
+        symbols = sorted({t.upper() for t in tickers if t})
+        if not symbols:
+            return {}
+        try:
+            from alpaca.data.historical.stock import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+
+            if self._stock_data_client is None:
+                settings = get_settings()
+                self._stock_data_client = StockHistoricalDataClient(
+                    api_key=settings.alpaca_api_key,
+                    secret_key=settings.alpaca_secret_key,
+                )
+            trades = self._stock_data_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbols)
+            )
+        except Exception as e:
+            logger.warning(f"Stock price fetch failed for {symbols}: {e}")
+            return {}
+
+        result: dict[str, float] = {}
+        for symbol, trade in trades.items():
+            price = float(getattr(trade, "price", 0) or 0)
+            if price > 0:
+                result[symbol] = price
         return result
 
     # ── Market Clock ─────────────────────────────────────────
