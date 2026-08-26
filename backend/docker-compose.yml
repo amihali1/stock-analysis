@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://stockuser:stockpass@postgres:5432/stock_analysis
+      - DATABASE_URL=postgresql://stockuser:${POSTGRES_PASSWORD}@postgres:5432/stock_analysis
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
     depends_on:
       postgres:
@@ -45,7 +45,7 @@ services:
     image: postgres:16-alpine
     environment:
       - POSTGRES_USER=stockuser
-      - POSTGRES_PASSWORD=stockpass
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=stock_analysis
     volumes:
       - pgdata:/var/lib/postgresql/data

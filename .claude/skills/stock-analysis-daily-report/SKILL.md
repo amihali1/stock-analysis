@@ -16,7 +16,7 @@ Run every step. Report each section in order. Terse, structured. One-line summar
 
 - VM: `proxmox@10.0.0.47`
 - Containers: `backend-backend-1` (FastAPI :8000), `backend-frontend-1` (Next.js :3100), `backend-postgres-1` (PG :5432)
-- DB: `stock_analysis`, user `stockuser` / pass `stockpass`
+- DB: `stock_analysis`, user `stockuser` (password in the VM `.env` as `POSTGRES_PASSWORD`)
 - Repo on VM: `/opt/stock-analysis`
 - PG query: `docker exec backend-postgres-1 psql -U stockuser -d stock_analysis -c "..."`
 - Times in logs are UTC; ET = UTC - 4 (EDT) or - 5 (EST)
