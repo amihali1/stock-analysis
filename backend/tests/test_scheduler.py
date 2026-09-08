@@ -35,6 +35,7 @@ EXPECTED_JOB_IDS = {
     "paper_validation",
     "retrain_models",
     "fetch_earnings",
+    "compute_ic",
 }
 
 

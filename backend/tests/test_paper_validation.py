@@ -68,6 +68,21 @@ class TestPaperMetrics:
         assert out["total_pnl"] == 100.0
         assert out["avg_pnl"] == 25.0
 
+    def test_expectancy(self):
+        # winners avg 75 @ 50%, losers avg 25 @ 50% → 75*.5 - 25*.5 = 25.0
+        trades = [_trade(50), _trade(-30), _trade(100), _trade(-20)]
+        out = _compute_paper_metrics(trades)
+        assert out["expectancy"] == 25.0
+        assert "sharpe_daily" in out
+        assert "avg_r_multiple" in out
+
+    def test_negative_expectancy_despite_wins(self):
+        # 60% win rate but tiny wins, big losses → negative expectancy (the trap).
+        trades = [_trade(10), _trade(10), _trade(10), _trade(-100), _trade(-100)]
+        out = _compute_paper_metrics(trades)
+        assert out["win_rate"] == 0.6
+        assert out["expectancy"] < 0
+
     def test_max_drawdown_from_equity_curve(self):
         # +100 then -200 then +50 → equity = 100, -100, -50; peak=100, max_dd=200
         trades = [

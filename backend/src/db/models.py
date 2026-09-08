@@ -505,6 +505,63 @@ class SECFiling8K(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SignalScore(Base):
+    """Full-universe per-ticker signal snapshot from the daily recommendations run.
+
+    Unlike `recommendations` (which only stores the funded top-K), this table
+    captures EVERY scored candidate — both directions for all watchlist tickers —
+    so cross-sectional Information Coefficient (IC) can be measured against
+    forward returns. `selected` flags the rows that made it into the funded set.
+    Component signals (drop_prob/rise_prob/predicted_vol/sentiment) are stored
+    alongside the composite so each signal's standalone IC is measurable, even
+    when a signal carries zero weight in the composite (see Ensemble weights).
+    """
+
+    __tablename__ = "signal_scores"
+    __table_args__ = (
+        Index("ix_signal_scores_date_ticker_dir", "date", "ticker", "direction", unique=True),
+        Index("ix_signal_scores_date_dir", "date", "direction"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, nullable=False)
+    ticker = Column(String(10), nullable=False)
+    direction = Column(String(5), nullable=False)  # drop (bear) / rise (bull)
+    drop_prob = Column(Float)
+    rise_prob = Column(Float)
+    predicted_vol = Column(Float)
+    sentiment_score = Column(Float)
+    sentiment_confidence = Column(Float)
+    composite_score = Column(Float, nullable=False)
+    selected = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class IcMetric(Base):
+    """Information Coefficient time series — rank-corr of a signal vs forward return.
+
+    One row per (date, signal, horizon, sample). `signal` is the column tested
+    (drop_prob, rise_prob, composite); `horizon` is the forward window in trading
+    days (5, 10); `sample` distinguishes the full-universe series ('universe')
+    from the funded-only baseline backfill ('funded'). This is the go/no-go time
+    series that replaces win-rate as the primary quality metric.
+    """
+
+    __tablename__ = "ic_metrics"
+    __table_args__ = (
+        Index("ix_ic_metrics_date_signal", "date", "signal", "horizon", "sample", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, nullable=False)
+    signal = Column(String(20), nullable=False)   # drop_prob, rise_prob, composite
+    horizon = Column(Integer, nullable=False)     # forward trading days
+    sample = Column(String(12), nullable=False, default="universe")  # universe / funded
+    ic = Column(Float, nullable=False)            # Spearman rank-IC for the day
+    n = Column(Integer, nullable=False)           # names in the cross-section
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class InsiderTransaction(Base):
     """SEC Form 4 insider transaction (P10-005).
 

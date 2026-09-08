@@ -382,3 +382,17 @@ export interface BacktestCompareResponse {
     }
   >;
 }
+
+export interface IcSignal {
+  signal: string;
+  horizon: number;
+  days: number;
+  mean_ic: number;
+  ir: number;
+}
+
+export interface IcResponse {
+  window_days: number;
+  sample: string;
+  signals: IcSignal[];
+}

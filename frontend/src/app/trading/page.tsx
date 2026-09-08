@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import type { PortfolioSummary, AlpacaOrder } from "@/lib/types";
 import TradingControls from "@/components/TradingControls";
+import IcPanel from "@/components/IcPanel";
 
 function MetricCard({
   label,
@@ -190,6 +191,11 @@ export default function TradingPage() {
       {/* Trading Controls */}
       <div className="mb-6">
         <TradingControls />
+      </div>
+
+      {/* Ranker quality — Information Coefficient */}
+      <div className="mb-6">
+        <IcPanel />
       </div>
 
       {/* Open Positions */}

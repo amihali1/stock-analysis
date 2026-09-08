@@ -18,6 +18,7 @@ import type {
   TradingSettings,
   SafetyStatus,
   PortfolioRiskReport,
+  IcResponse,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -369,4 +370,16 @@ export async function updateTradingSettings(
 
 export async function getSafetyStatus(): Promise<SafetyStatus> {
   return fetchAPI<SafetyStatus>("/api/trading/safety-status");
+}
+
+// Information Coefficient — ranker quality (rank-corr of signal vs fwd return)
+
+export async function getInformationCoefficient(
+  windowDays = 60,
+  sample = "universe"
+): Promise<IcResponse> {
+  const params = new URLSearchParams();
+  params.set("window_days", String(windowDays));
+  params.set("sample", sample);
+  return fetchAPI<IcResponse>(`/api/validate/ic?${params}`);
 }

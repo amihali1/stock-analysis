@@ -58,3 +58,29 @@ paper_validation_num_trades = Gauge(
     "paper_validation_num_trades",
     "Number of closed paper trades in the last validation window",
 )
+
+# Expectancy and risk-adjusted return of the paper book (Phase 1 of the IC
+# rebuild). Win rate alone is uninformative — these are the real quality gauges.
+paper_validation_expectancy = Gauge(
+    "paper_validation_expectancy",
+    "Per-trade expectancy (avg_win*winrate - avg_loss*lossrate) in dollars",
+)
+
+paper_validation_sharpe = Gauge(
+    "paper_validation_sharpe",
+    "Annualized Sharpe of daily paper P&L in the last validation window",
+)
+
+# Information Coefficient — rank-corr of a signal vs forward return. THE
+# go/no-go metric that replaces win rate. Labelled by signal and horizon.
+signal_ic = Gauge(
+    "signal_ic",
+    "Rolling mean rank-IC of a signal vs forward return",
+    ["signal", "horizon"],
+)
+
+signal_ic_ir = Gauge(
+    "signal_ic_ir",
+    "Information Ratio (mean IC / std IC) of a signal over the rolling window",
+    ["signal", "horizon"],
+)

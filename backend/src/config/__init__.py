@@ -256,6 +256,17 @@ class Settings(BaseSettings):
     # without unreachability problems.
     min_sentiment_confidence: float = 0.40
 
+    # Ensemble score weights. The 2026-09-08 IC audit found the composite score
+    # anti-ranked (IC −0.24) because 60% of it was non-directional: `vol_signal`
+    # is direction-blind (cannot pick direction) and sentiment was unvalidated.
+    # Default is now directional-only (1/0/0) so the score IS the directional
+    # model's probability. Vol + sentiment are still computed and logged to
+    # signal_scores for IC comparison, but carry zero weight. Re-weight only a
+    # signal whose standalone IC is demonstrably positive.
+    weight_directional: float = 1.0
+    weight_volatility: float = 0.0
+    weight_sentiment: float = 0.0
+
     # Watchlist
     # Expanded May 2026 from ~50 mega-caps to ~150 names. Mega-caps alone are
     # too stable to often cross the >3%-drop-in-5d label, leaving the rare-event

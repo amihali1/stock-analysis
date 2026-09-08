@@ -34,6 +34,9 @@ def _compute_paper_metrics(trades: list[PaperTrade], hold_days: int = 5) -> dict
             "total_pnl": 0.0,
             "sharpe_ratio": 0.0,
             "max_drawdown": 0.0,
+            "expectancy": 0.0,
+            "avg_r_multiple": 0.0,
+            "sharpe_daily": 0.0,
         }
 
     pnls = [float(t.pnl) for t in closed]
@@ -44,12 +47,38 @@ def _compute_paper_metrics(trades: list[PaperTrade], hold_days: int = 5) -> dict
             returns.append(float(t.pnl) / size)
 
     winners = [p for p in pnls if p > 0]
+    losers = [p for p in pnls if p < 0]
     win_rate = len(winners) / len(pnls)
 
     if len(returns) > 1 and np.std(returns) > 0:
         sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(252 / max(hold_days, 1))
     else:
         sharpe = 0.0
+
+    # Expectancy: the per-trade edge in dollars. avg_win*P(win) - avg_loss*P(loss).
+    # Positive win rate with negative expectancy (small wins, big losses) is the
+    # trap win-rate reporting hides — this is the number that actually matters.
+    loss_rate = len(losers) / len(pnls)
+    avg_win = float(np.mean(winners)) if winners else 0.0
+    avg_loss = float(abs(np.mean(losers))) if losers else 0.0
+    expectancy = avg_win * win_rate - avg_loss * loss_rate
+
+    # Average R-multiple: P&L expressed in units of the trade's initial risk
+    # (max_loss). R > 0 means winners outrun the risk taken.
+    r_multiples = [float(t.pnl) / float(t.max_loss) for t in closed if t.max_loss]
+    avg_r = float(np.mean(r_multiples)) if r_multiples else 0.0
+
+    # Sharpe of the DAILY P&L series (distinct from the per-trade return Sharpe
+    # above) — the book-level risk-adjusted return the dashboard should lead with.
+    daily: dict[Any, float] = {}
+    for t in closed:
+        key = t.closed_at.date() if t.closed_at else None
+        daily[key] = daily.get(key, 0.0) + float(t.pnl)
+    daily_pnls = list(daily.values())
+    if len(daily_pnls) > 1 and np.std(daily_pnls) > 0:
+        sharpe_daily = (np.mean(daily_pnls) / np.std(daily_pnls)) * np.sqrt(252)
+    else:
+        sharpe_daily = 0.0
 
     # Equity curve sorted by close time, then max drawdown
     by_close = sorted(closed, key=lambda t: t.closed_at or datetime.min)
@@ -69,6 +98,9 @@ def _compute_paper_metrics(trades: list[PaperTrade], hold_days: int = 5) -> dict
         "total_pnl": round(sum(pnls), 2),
         "sharpe_ratio": round(float(sharpe), 4),
         "max_drawdown": round(max_dd, 2),
+        "expectancy": round(expectancy, 2),
+        "avg_r_multiple": round(avg_r, 4),
+        "sharpe_daily": round(float(sharpe_daily), 4),
     }
 
 
@@ -265,6 +297,12 @@ def format_report(report: dict[str, Any]) -> str:
         diff_str = f"{diff:.1%}" if metric != "num_trades" else "-"
         lines.append(f"{metric:<18}{str(pv):>14}{str(bv):>14}{diff_str:>10}")
 
+    lines.append("-" * 72)
+    lines.append(
+        f"Expectancy ${p.get('expectancy', 0):,.2f}/trade  |  "
+        f"avg R {p.get('avg_r_multiple', 0):+.2f}  |  "
+        f"daily Sharpe {p.get('sharpe_daily', 0):+.2f}"
+    )
     lines.append("-" * 72)
     bench = report.get("benchmark") or {}
     spy = bench.get("spy_return_pct")

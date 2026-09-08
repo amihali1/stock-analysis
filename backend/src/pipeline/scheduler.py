@@ -345,7 +345,7 @@ def job_generate_recommendations():
     try:
         from src.config import get_settings
         from src.db.session import SessionLocal
-        from src.db.models import PriceHistory, TechnicalIndicator, SentimentScore, Recommendation, Stock
+        from src.db.models import PriceHistory, TechnicalIndicator, SentimentScore, Recommendation, Stock, SignalScore
         from src.models.directional import DirectionalModel
         from src.models.volatility import VolatilityModel
         from src.models.ensemble import Ensemble, SignalInputs
@@ -374,7 +374,11 @@ def job_generate_recommendations():
         except Exception:
             logger.exception("Scheduler: volatility model unavailable, falling back to default vol")
             vol_model = None
-        ensemble = Ensemble()
+        ensemble = Ensemble(
+            weight_directional=settings.weight_directional,
+            weight_volatility=settings.weight_volatility,
+            weight_sentiment=settings.weight_sentiment,
+        )
         sizer = PositionSizer()
         chain_fetcher = OptionsChainFetcher()
         chain_hits = 0
@@ -415,6 +419,11 @@ def job_generate_recommendations():
         open_capital = _open_position_capital(db)
         available_cap = max(0.0, capital_cap - open_capital)
         candidates: list[Candidate] = []
+        # Full-universe signal snapshot for IC measurement (one row per
+        # ticker+direction, keyed to dedupe against the unique index). Persisted
+        # alongside the funded recs so every scored name — not just the top-K —
+        # can be measured against forward returns.
+        signal_by_key: dict[tuple[str, str], SignalScore] = {}
 
         try:
             from src.db.watchlist import get_watchlist_tickers
@@ -571,6 +580,22 @@ def job_generate_recommendations():
                             direction=s.direction,
                             extras={"price_close": price.close},
                         ))
+                        # Snapshot every scored candidate (raw component signals
+                        # + composite) for IC. Both dir probs are stored on each
+                        # row so any signal's IC is measurable regardless of the
+                        # row's direction.
+                        signal_by_key[(ticker, s.direction)] = SignalScore(
+                            date=today,
+                            ticker=ticker,
+                            direction=s.direction,
+                            drop_prob=inputs.drop_prob,
+                            rise_prob=inputs.rise_prob,
+                            predicted_vol=inputs.predicted_vol,
+                            sentiment_score=inputs.sentiment_score,
+                            sentiment_confidence=inputs.sentiment_confidence,
+                            composite_score=s.score,
+                            selected=False,
+                        )
                 except Exception:
                     ticker_errors += 1
                     logger.exception(f"Scheduler: candidate build failed for {ticker}")
@@ -606,6 +631,14 @@ def job_generate_recommendations():
             )
             selected_bear = sum(1 for c in selected if c.direction == "drop")
             selected_bull = len(selected) - selected_bear
+
+            # Flag the ranker-selected names and persist the full scored universe
+            # for IC measurement (committed with the recs at the end of the job).
+            selected_keys = {(c.ticker, c.direction) for c in selected}
+            for key, sig in signal_by_key.items():
+                if key in selected_keys:
+                    sig.selected = True
+            db.add_all(list(signal_by_key.values()))
 
             # Regime funding tilt (2026-07-27 sweep): in down-tape rise's per-$
             # edge jumps, so fund rise candidates first when the daily cap binds.
@@ -1232,6 +1265,8 @@ def job_paper_validation():
             paper_validation_num_trades,
             paper_validation_total_pnl,
             paper_validation_win_rate,
+            paper_validation_expectancy,
+            paper_validation_sharpe,
         )
         from src.services.live_gate import evaluate_gates, format_gates
         from src.services.paper_validation import PaperValidator, format_report
@@ -1256,6 +1291,8 @@ def job_paper_validation():
             paper_validation_win_rate.set(paper["win_rate"])
             paper_validation_total_pnl.set(paper["total_pnl"])
             paper_validation_num_trades.set(paper["num_trades"])
+            paper_validation_expectancy.set(paper.get("expectancy", 0.0))
+            paper_validation_sharpe.set(paper.get("sharpe_daily", 0.0))
             logger.info(
                 "Scheduler: paper validation report\n%s\n%s",
                 format_report(report), format_gates(report["live_gate"]),
@@ -1293,6 +1330,40 @@ def job_retrain_models():
     except Exception:
         logger.exception("Scheduler: model retraining failed")
         _record_run("retrain_models", "error")
+
+
+def job_compute_ic():
+    """Daily after close — compute the Information Coefficient time series.
+
+    Reads the full scored universe (`signal_scores`), joins forward returns, and
+    upserts per-day rank-IC into `ic_metrics`. Updates the `signal_ic`/`signal_ic_ir`
+    Prometheus gauges from the rolling window. This is the go/no-go quality metric
+    that replaces win rate (2026-09-08 audit: composite score IC was negative).
+    """
+    logger.info("Scheduler: starting IC computation")
+    try:
+        from src.db.session import SessionLocal
+        from src.metrics import signal_ic, signal_ic_ir
+        from src.services.ic_metrics import compute_and_store_ic, rolling_ic_summary
+
+        db = SessionLocal()
+        try:
+            summary = compute_and_store_ic(db)
+            rolling = rolling_ic_summary(db)
+            for r in rolling:
+                signal_ic.labels(signal=r["signal"], horizon=str(r["horizon"])).set(r["mean_ic"])
+                signal_ic_ir.labels(signal=r["signal"], horizon=str(r["horizon"])).set(r["ir"])
+            detail = ", ".join(
+                f"{r['signal']}@{r['horizon']}d IC {r['mean_ic']:+.3f}/IR {r['ir']:+.2f} (n={r['days']})"
+                for r in rolling
+            ) or "no eligible days yet"
+            logger.info("Scheduler: IC computation complete — %s", detail)
+            _record_run("compute_ic", f"ok ({summary['written']} rows; {detail})")
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Scheduler: IC computation failed")
+        _record_run("compute_ic", "error")
 
 
 def init_scheduler():
@@ -1338,6 +1409,9 @@ def init_scheduler():
     scheduler.add_job(job_monitor_fractional_exits, CronTrigger(minute="*/5", hour="9-15", timezone="US/Eastern", day_of_week="mon-fri"), id="monitor_exits", replace_existing=True)
 
     # Monthly model retraining: first Sunday of each month at 2:00 AM ET
+    # IC computation runs after the 16:30 ET close price fetch so the latest
+    # session's forward returns are available for maturing scores.
+    scheduler.add_job(job_compute_ic, CronTrigger(hour=17, minute=0, timezone="US/Eastern", day_of_week="mon-fri"), id="compute_ic", replace_existing=True)
     scheduler.add_job(job_paper_validation, CronTrigger(hour=3, minute=0, timezone="US/Eastern", day_of_week="sun"), id="paper_validation", replace_existing=True)
     scheduler.add_job(job_retrain_models, CronTrigger(hour=2, minute=0, timezone="US/Eastern", day_of_week="sun", day="1-7"), id="retrain_models", replace_existing=True)
 
