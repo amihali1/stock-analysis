@@ -152,7 +152,10 @@ class TestPositionSizerShort:
         rec = sizer.size_short(score, current_price=50000.0)
         assert rec is None
 
-    def test_low_confidence_smaller_position(self, sizer):
+    def test_low_confidence_smaller_position(self):
+        # Confidence scaling is opt-in (default OFF). With it ON, higher score
+        # => larger position.
+        sizer = PositionSizer(max_position=1000.0, enable_confidence_scaling=True)
         high_score = EnsembleScore(ticker="X", score=0.9, directional_signal=0.9, volatility_signal=0.5, sentiment_signal=0.8)
         low_score = EnsembleScore(ticker="X", score=0.3, directional_signal=0.3, volatility_signal=0.2, sentiment_signal=0.3)
 
@@ -160,6 +163,18 @@ class TestPositionSizerShort:
         rec_low = sizer.size_short(low_score, current_price=50.0)
 
         assert rec_high.shares > rec_low.shares
+
+    def test_confidence_scaling_off_by_default(self, sizer):
+        # Default sizer: no scaling, so score magnitude does not shrink size —
+        # a low-prob dir-only score sizes the same as a high one (selection is
+        # gated upstream by top_k + floors, not by shrinking the position).
+        high_score = EnsembleScore(ticker="X", score=0.9, directional_signal=0.9, volatility_signal=0.5, sentiment_signal=0.8)
+        low_score = EnsembleScore(ticker="X", score=0.12, directional_signal=0.12, volatility_signal=0.2, sentiment_signal=0.3)
+
+        rec_high = sizer.size_short(high_score, current_price=50.0)
+        rec_low = sizer.size_short(low_score, current_price=50.0)
+
+        assert rec_high.shares == rec_low.shares
 
     def test_zero_price(self, sizer):
         score = EnsembleScore(ticker="X", score=0.8, directional_signal=0.8, volatility_signal=0.3, sentiment_signal=0.7)
@@ -508,3 +523,18 @@ class TestSizePairShort:
         assert rec.strategy == "pair_short"
         assert rec.risk_type == "defined"
         assert rec.hedge_symbol == "SPY"
+
+    def test_low_dir_prob_expensive_bear_funds_without_scaling(self):
+        """Regression (2026-09-09): under dir-only scoring bear score = drop_prob
+        (~0.12). Legacy confidence scaling (min(score*2,1)=0.24) shrank the pair
+        budget to $240/2.5=$96 → 0 shares on a $210 stock → every bear rejected.
+        With scaling off (default) the full $1000 budget sizes ≥1 share."""
+        sizer = PositionSizer(max_position=1000.0)  # scaling off by default
+        rec = sizer.size_pair_short(self._score(s=0.12), current_price=209.80,
+                                    hedge_price=600.0)
+        assert rec is not None
+        assert rec.shares >= 1
+        # Same case WITH legacy scaling would be rejected.
+        legacy = PositionSizer(max_position=1000.0, enable_confidence_scaling=True)
+        assert legacy.size_pair_short(self._score(s=0.12), current_price=209.80,
+                                      hedge_price=600.0) is None

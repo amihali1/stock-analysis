@@ -132,9 +132,18 @@ class OptionsRecommendation(BaseModel):
 class PositionSizer:
     """Calculate position sizes within the $1,000 budget constraint."""
 
-    def __init__(self, max_position: float | None = None):
+    def __init__(
+        self,
+        max_position: float | None = None,
+        enable_confidence_scaling: bool | None = None,
+    ):
         settings = get_settings()
         self.max_position = max_position or settings.effective_per_trade_cap
+        self._confidence_scaling = (
+            settings.enable_confidence_scaling
+            if enable_confidence_scaling is None
+            else enable_confidence_scaling
+        )
         self._drop_base_rate = settings.drop_base_rate
         self._rise_base_rate = settings.directional_base_rate
         self._spread_directional_lift = settings.spread_directional_lift
@@ -152,6 +161,19 @@ class PositionSizer:
             bull_structure=self._bull_spread_structure,
         )
 
+    def _confidence_scale(self, score: EnsembleScore) -> float:
+        """Position-size multiplier derived from score confidence.
+
+        Legacy behavior scaled linearly with the score (min(score*2, 1.0), so
+        0.5+ = full size), tuned for the old composite scale. Under dir-only
+        scoring raw probs sit far below 0.5 and this zeroed out sizing for most
+        names, so it is OFF by default (`enable_confidence_scaling=False`) →
+        full size, with selection handled upstream by top_k + score floors.
+        """
+        if not self._confidence_scaling:
+            return 1.0
+        return min(score.score * 2, 1.0)
+
     def size_short(
         self,
         score: EnsembleScore,
@@ -167,8 +189,8 @@ class PositionSizer:
         if current_price <= 0:
             return None
 
-        # Scale position by score confidence (higher score = larger position)
-        confidence_scale = min(score.score * 2, 1.0)  # 0.5+ score = full size
+        # Scale position by score confidence (off by default; see _confidence_scale)
+        confidence_scale = self._confidence_scale(score)
         effective_max = self.max_position * confidence_scale
 
         # Margin requirement: 150% of position value
@@ -220,7 +242,7 @@ class PositionSizer:
         if current_price <= 0 or hedge_price <= 0:
             return None
 
-        confidence_scale = min(score.score * 2, 1.0)
+        confidence_scale = self._confidence_scale(score)
         effective_max = self.max_position * confidence_scale
 
         # short_notional * 1.5 (margin) + short_notional (hedge) <= effective_max
@@ -271,7 +293,7 @@ class PositionSizer:
         if current_price <= 0:
             return None
 
-        confidence_scale = min(score.score * 2, 1.0)
+        confidence_scale = self._confidence_scale(score)
         effective_max = self.max_position * confidence_scale
 
         max_shares = int(effective_max / current_price)
@@ -350,7 +372,7 @@ class PositionSizer:
         if cost_per_contract <= 0:
             return None
 
-        confidence_scale = min(score.score * 2, 1.0)
+        confidence_scale = self._confidence_scale(score)
         effective_max = self.max_position * confidence_scale
 
         max_contracts = int(effective_max / cost_per_contract)

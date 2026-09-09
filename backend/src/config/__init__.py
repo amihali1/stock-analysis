@@ -208,6 +208,13 @@ class Settings(BaseSettings):
     # composite-score floor that matches the actual production score range.
     drop_base_rate: float = 0.05  # vol-normalized drop label (v7) pos_rate
     # rise_base_rate reuses `directional_base_rate` above (0.175).
+    # Position sizing confidence scaling. Legacy sizers scaled position size by
+    # min(score*2, 1.0) — calibrated for the composite scale (bear ~0.31-0.55).
+    # Under dir-only scoring (weights 1/0/0, 2026-09-08) raw dir probs are
+    # ~0.02-0.35, so score*2 collapses sizing to <1 share for most bears (every
+    # bear rejected 2026-09-09). OFF = risk-governed full size; selection is
+    # already gated upstream by top_k + score floors. 2026-09-09.
+    enable_confidence_scaling: bool = False
     spread_directional_lift: float = 1.3  # multiplier on direction base-rate
     spread_min_score: float = 0.30  # composite-score fallback, calibrated to today's range
     # Marketable-limit pricing for multi-leg spread orders. MLEG DAY limits
