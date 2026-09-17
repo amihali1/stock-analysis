@@ -72,8 +72,15 @@ class ExecutionEngine:
         rails = TradingSafetyRails(self.db)
         results = []
 
+        # Per-direction slot reserve needs to know whether the OTHER direction
+        # still has recs to place this batch — reserving slots is only worth it
+        # when a peer is actually waiting for them.
+        has_bear = any(r.direction == "short" for r in recs)
+        has_bull = any(r.direction != "short" for r in recs)
+
         for rec in recs:
-            result = self._execute_single(rec, rails, market_open)
+            peer_pending = has_bull if rec.direction == "short" else has_bear
+            result = self._execute_single(rec, rails, market_open, peer_pending)
             results.append(result)
 
         logger.info(
@@ -207,6 +214,7 @@ class ExecutionEngine:
 
     def _execute_single(
         self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
+        peer_pending: bool = False,
     ) -> dict:
         """Execute a single recommendation through the pipeline."""
         # Hard kill-switch: ALPACA_TRADING_ENABLED is the env-level capability
@@ -234,7 +242,7 @@ class ExecutionEngine:
         # Market-neutral pair (short pick + long hedge) is a two-order strategy
         # the single-order mapper can't express — dedicated path.
         if rec.strategy == "pair_short":
-            return self._execute_pair(rec, rails, market_open)
+            return self._execute_pair(rec, rails, market_open, peer_pending)
 
         # Get buying power
         try:
@@ -291,7 +299,10 @@ class ExecutionEngine:
             return {"rec_id": rec.id, "ticker": rec.ticker, "status": "skipped", "reason": reason}
 
         # Check safety rails
-        allowed, rail_reason = rails.check_order(order_params, market_open=market_open)
+        allowed, rail_reason = rails.check_order(
+            order_params, market_open=market_open,
+            direction=rec.direction, peer_pending=peer_pending,
+        )
         if not allowed:
             return {
                 "rec_id": rec.id, "ticker": rec.ticker,
@@ -351,6 +362,7 @@ class ExecutionEngine:
 
     def _execute_pair(
         self, rec: Recommendation, rails: TradingSafetyRails, market_open: bool,
+        peer_pending: bool = False,
     ) -> dict:
         """Submit a pair_short rec: short the pick + long the hedge (legs_json).
 
@@ -376,7 +388,10 @@ class ExecutionEngine:
             ticker=short_leg["ticker"], qty=float(short_leg["qty"]), side="sell",
             order_type="market", strategy="pair_short",
         )
-        allowed, rail_reason = rails.check_order(short_params, market_open=market_open)
+        allowed, rail_reason = rails.check_order(
+            short_params, market_open=market_open,
+            direction=rec.direction, peer_pending=peer_pending,
+        )
         if not allowed:
             return {
                 "rec_id": rec.id, "ticker": rec.ticker,

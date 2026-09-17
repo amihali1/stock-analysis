@@ -36,6 +36,7 @@ def _make_settings(**overrides):
     s.trading_mode = overrides.get("trading_mode", "paper")
     s.max_daily_loss = overrides.get("max_daily_loss", 200.0)
     s.max_open_positions = overrides.get("max_open_positions", 5)
+    s.per_direction_position_reserve = overrides.get("per_direction_position_reserve", 0.0)
     s.max_position_size = overrides.get("max_position_size", 1000.0)
     s.effective_per_trade_cap = overrides.get("effective_per_trade_cap", s.max_position_size)
     s.max_daily_orders = overrides.get("max_daily_orders", 20)
@@ -125,6 +126,74 @@ class TestPositionLimit:
             rails = TradingSafetyRails(db)
             ok, _ = rails.check_order(_make_order())
             assert ok is True
+
+
+class TestDirectionSlotReserve:
+    """Per-direction slot reserve on the count cap (mirror of the capital reserve)."""
+
+    def _seed(self, db, longs=0, shorts=0):
+        from src.db.models import Stock
+        db.add(Stock(ticker="AAPL"))
+        for _ in range(longs):
+            db.add(PaperTrade(ticker="AAPL", direction="long", strategy="long", status="open", entry_price=150))
+        for _ in range(shorts):
+            db.add(PaperTrade(ticker="AAPL", direction="short", strategy="pair_short", status="open", entry_price=150))
+        db.commit()
+
+    def _settings(self):
+        # 10-slot cap, 0.30 reserve => 3 slots held for the peer, bull ceiling 7.
+        return _make_settings(max_open_positions=10, per_direction_position_reserve=0.30)
+
+    def test_bull_blocked_at_ceiling_when_bear_pending(self):
+        db = _make_db()
+        self._seed(db, longs=7)  # ceiling = 10 - 3 = 7
+        with patch("src.services.safety_rails.get_settings", return_value=self._settings()):
+            rails = TradingSafetyRails(db)
+            ok, reason = rails.check_order(_make_order(), direction="long", peer_pending=True)
+            assert ok is False
+            assert "slot reserve" in reason.lower()
+
+    def test_bull_allowed_when_no_bear_pending(self):
+        db = _make_db()
+        self._seed(db, longs=7)
+        with patch("src.services.safety_rails.get_settings", return_value=self._settings()):
+            rails = TradingSafetyRails(db)
+            ok, _ = rails.check_order(_make_order(), direction="long", peer_pending=False)
+            assert ok is True  # one-sided day: reserved slots not idled
+
+    def test_reserve_zero_disables(self):
+        db = _make_db()
+        self._seed(db, longs=7)
+        settings = _make_settings(max_open_positions=10, per_direction_position_reserve=0.0)
+        with patch("src.services.safety_rails.get_settings", return_value=settings):
+            rails = TradingSafetyRails(db)
+            ok, _ = rails.check_order(_make_order(), direction="long", peer_pending=True)
+            assert ok is True
+
+    def test_bear_not_blocked_by_own_reserve(self):
+        db = _make_db()
+        self._seed(db, longs=7)  # bulls hold 7, no open bears
+        with patch("src.services.safety_rails.get_settings", return_value=self._settings()):
+            rails = TradingSafetyRails(db)
+            ok, _ = rails.check_order(_make_order(), direction="short", peer_pending=True)
+            assert ok is True  # bear can claim its reserved slots
+
+    def test_ceiling_relaxes_once_peer_floor_filled(self):
+        db = _make_db()
+        self._seed(db, longs=4, shorts=3)  # bear floor (3) met => bulls may use rest
+        with patch("src.services.safety_rails.get_settings", return_value=self._settings()):
+            rails = TradingSafetyRails(db)
+            ok, _ = rails.check_order(_make_order(), direction="long", peer_pending=True)
+            assert ok is True
+
+    def test_hard_cap_still_blocks(self):
+        db = _make_db()
+        self._seed(db, longs=10)  # at hard cap
+        with patch("src.services.safety_rails.get_settings", return_value=self._settings()):
+            rails = TradingSafetyRails(db)
+            ok, reason = rails.check_order(_make_order(), direction="short", peer_pending=True)
+            assert ok is False
+            assert "position limit" in reason.lower()
 
 
 class TestDailyOrderLimit:
