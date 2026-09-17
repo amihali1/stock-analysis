@@ -26,7 +26,13 @@ class TradingSafetyRails:
         self.mode = overrides["trading_mode"]
         self.max_daily_loss = overrides["max_daily_loss"]
         self.max_open_positions = overrides["max_open_positions"]
-        self.per_direction_position_reserve = settings.per_direction_position_reserve
+        # Coerce to a safe float — a missing/non-numeric value disables the
+        # reserve rather than crashing the count-cap check (also guards against
+        # a malformed .env override).
+        reserve = getattr(settings, "per_direction_position_reserve", 0.0)
+        self.per_direction_position_reserve = (
+            float(reserve) if isinstance(reserve, (int, float)) and not isinstance(reserve, bool) else 0.0
+        )
         self.max_single_position = settings.effective_per_trade_cap
         self.max_daily_orders = settings.max_daily_orders
         self.allowed_hours_only = settings.allowed_hours_only
