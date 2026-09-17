@@ -26,13 +26,26 @@ class TradingSafetyRails:
         self.mode = overrides["trading_mode"]
         self.max_daily_loss = overrides["max_daily_loss"]
         self.max_open_positions = overrides["max_open_positions"]
+        self.per_direction_position_reserve = settings.per_direction_position_reserve
         self.max_single_position = settings.effective_per_trade_cap
         self.max_daily_orders = settings.max_daily_orders
         self.allowed_hours_only = settings.allowed_hours_only
         self.blocked_tickers = set(settings.blocked_tickers)
 
-    def check_order(self, order: AlpacaOrderParams, buying_power: float = 0, market_open: bool = True) -> tuple[bool, str]:
+    def check_order(
+        self,
+        order: AlpacaOrderParams,
+        buying_power: float = 0,
+        market_open: bool = True,
+        direction: str | None = None,
+        peer_pending: bool = False,
+    ) -> tuple[bool, str]:
         """Run all safety checks on an order.
+
+        `direction` ("long"/"short") and `peer_pending` (does the opposite
+        direction have pending demand in this batch) drive the per-direction
+        slot reserve on the count cap. Both default to the reserve-off behavior,
+        so manual/single-order callers keep the plain count cap.
 
         Returns (allowed, reason_if_blocked).
         """
@@ -40,7 +53,7 @@ class TradingSafetyRails:
             self._check_mode(),
             self._check_market_hours(market_open),
             self._check_blocked_ticker(order.ticker),
-            self._check_position_limit(),
+            self._check_position_limit(direction, peer_pending),
             self._check_daily_order_limit(),
             self._check_single_position_size(order),
         ]
@@ -67,7 +80,7 @@ class TradingSafetyRails:
             return False, f"Ticker {ticker} is in blocked list"
         return True, ""
 
-    def _check_position_limit(self) -> tuple[bool, str]:
+    def _check_position_limit(self, direction: str | None = None, peer_pending: bool = False) -> tuple[bool, str]:
         # PaperTrade is source of truth — PortfolioSync.sync_positions auto-closes
         # rows whose underlying is no longer live, so this count stays honest.
         # Do NOT add AlpacaPosition.count(): a single PaperTrade can produce
@@ -76,6 +89,33 @@ class TradingSafetyRails:
         open_count = self.db.query(PaperTrade).filter_by(status="open").count()
         if open_count >= self.max_open_positions:
             return False, f"At position limit: {open_count}/{self.max_open_positions}"
+
+        # Per-direction slot reserve. The count cap above is direction-blind, so
+        # score-desc funding lets bulls take every slot and blocks funded bears
+        # at N/N (the capital reserve guards dollars, not slots). Hold a floor of
+        # slots for the peer direction — but only the still-unfilled part, and
+        # only when the peer has pending demand this batch, so a one-sided day
+        # never idles reserved slots.
+        reserve = self.per_direction_position_reserve
+        if direction and reserve > 0 and peer_pending:
+            open_bear = (
+                self.db.query(PaperTrade)
+                .filter_by(status="open", direction="short")
+                .count()
+            )
+            is_bear = direction == "short"
+            open_same = open_bear if is_bear else open_count - open_bear
+            open_peer = open_count - open_same
+            reserved_for_peer = int(self.max_open_positions * reserve)
+            peer_unfilled = max(0, reserved_for_peer - open_peer)
+            ceiling = self.max_open_positions - peer_unfilled
+            if open_same >= ceiling:
+                side = "bear" if is_bear else "bull"
+                peer = "bull" if is_bear else "bear"
+                return False, (
+                    f"Direction slot reserve: {open_same}/{ceiling} {side} slots "
+                    f"(holding {peer_unfilled} for pending {peer})"
+                )
         return True, ""
 
     def _check_daily_order_limit(self) -> tuple[bool, str]:

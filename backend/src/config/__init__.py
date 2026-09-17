@@ -196,6 +196,17 @@ class Settings(BaseSettings):
     # guaranteed floor. 0.30 = each side guaranteed 30%, 40% first-come. 0.0
     # disables (pure score-order, current behavior). Range 0.0-0.5.
     per_direction_capital_reserve: float = 0.0
+    # Per-direction SLOT reservation on the max_open_positions count cap — the
+    # count-cap twin of per_direction_capital_reserve. The count cap is a second,
+    # independent saturation gate (2026-08-13/2026-09-17): even with the capital
+    # reserve funding bears, execution runs score-desc and bulls fill all 30
+    # slots first, so funded bears block at N/N. When >0 AND the peer direction
+    # has pending demand this batch, hold a floor of slots for the peer so bears
+    # can still enter. Reserves only the still-unfilled part of the peer floor,
+    # and only when the peer actually has demand, so a one-sided day never idles
+    # slots. 0.30 = each side guaranteed 30% of the cap. 0.0 disables (pure
+    # count-cap, current behavior). Range 0.0-0.5.
+    per_direction_position_reserve: float = 0.0
     # Spread-vs-options routing in SpreadBuilder. The legacy gates
     # (`directional_signal > 0.6` / `score >= 0.5`) were written when the
     # directional model emitted uncalibrated probs and dir_prob could swing
