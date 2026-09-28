@@ -1581,3 +1581,15 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - live_gate ARMS split: `bull` → `bull_stock` (long+call_options, baseline 7/14, backtest wr 0.58 from P11-001 long_stock) + `bull_credit` (bull_spread, baseline 7/15, backtest wr 0.76 from P11-001 put_credit@vrp1.15). Blended floor would gate both against a number neither owns. Debit-era history excluded by baseline.
 
 **Tests**: 89 pass in order_mapper+options_strategies (5 new credit-mapper tests incl. negative-limit validation, collateral cap/BP; 4 routing tests incl. rollback flag); 12 live_gate. Old "credit spread keeps mid price" test rewritten — behavior deliberately changed.
+
+---
+
+## 2026-09-28 — Backups: third layer to Nextcloud + stale copy removed
+
+**Agent**: Claude Opus 5.5
+**Context**: Homelab lost power 2026-09-20; VMs stayed off until 2026-09-28 (no onboot). Newest dump was 09-20.
+
+- Ran `backup_db.sh` manually (09-28 dump, 21M) + Windows pull task (pulled 2, 54 local).
+- New `scripts/upload_backup_nextcloud.sh` (cron 15 8 * * *): WebDAV upload of every local dump missing from Nextcloud `Backups/stock-analysis/` (catches up missed nights), 30-day remote retention, touches `.last_nextcloud_ok`. Creds only in `/home/proxmox/.config/nextcloud-backup.env` (NC_URL/NC_USER/NC_APP_PASSWORD, chmod 600).
+- `check_backup_replication.sh` alerts when `.last_nextcloud_ok` > 72h.
+- Removed abandoned stock-analysis stack on the Nextcloud VM (10.0.0.45, ~/stock-analysis, created 2026-03-25): DB was empty, backend crash-looped on `No module named 'src'`. `docker compose down -v --rmi local`; source dir left in place.
