@@ -57,4 +57,14 @@ if [ "$pull_age" -gt "$MAX_PULL_AGE_H" ]; then
     fi
 fi
 
-echo "$(date -u +%FT%TZ) dump_age=${dump_age}h pull_age=${pull_age}h"
+# Layer 3: Nextcloud replication (scripts/upload_backup_nextcloud.sh, 08:15 UTC).
+nc_age=$(age_hours "$BACKUP_DIR/.last_nextcloud_ok")
+if [ "$nc_age" -gt "$MAX_PULL_AGE_H" ]; then
+    if [ "$nc_age" -ge 999999 ]; then
+        alert "Nextcloud replication marker .last_nextcloud_ok has never been written — upload cron not installed or failing."
+    else
+        alert "Nextcloud backup replication stale: last clean upload ${nc_age}h ago (threshold ${MAX_PULL_AGE_H}h). See ~/backups/nextcloud-upload.log."
+    fi
+fi
+
+echo "$(date -u +%FT%TZ) dump_age=${dump_age}h pull_age=${pull_age}h nc_age=${nc_age}h"
