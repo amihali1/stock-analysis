@@ -1611,4 +1611,6 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional â€
 
 **Tests:** 9 new in test_options_strategies (TestBullPutDeltaStrikes); full suite 729 pass / 20 skip.
 
-**Not done:** P11-001 sweep has no delta arm; gate baseline for bull_credit should reset if merged (new strike regime).
+**Gate:** bull_credit baseline moved 2026-07-16 â†’ 2026-09-30 (first delta-strike rec run). backtest_win_rate 0.76 kept (legacy-strike, assumed-VRP number) pending a delta-arm backtest.
+
+**Not done:** P11-001 sweep has no delta arm.

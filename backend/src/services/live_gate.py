@@ -66,13 +66,17 @@ ARMS: tuple[ArmSpec, ...] = (
     ArmSpec(
         name="bull_credit",
         strategies=("bull_spread",),
-        # 2026-07-16, not 07-15 (first credit-routed run): the 07-15 fills were
-        # priced off dead pre-market quotes and filled at giveaway limits (MRNA
-        # opened at a DEBIT). Exec-time live quoting shipped that evening; only
-        # honestly-priced fills may count toward the live-money gate.
-        baseline=date(2026, 7, 16),
-        backtest_win_rate=0.76,  # P11-001 sweep put_credit K=10 H=10, vrp 1.15
-        notes="Bull put credit spreads. Debit-era and zero-quote-era bull_spread history excluded by baseline.",
+        # 2026-09-30: first rec run under delta-targeted sell strikes
+        # (bull_put_sell_delta=0.25, PR #58). Legacy 0.98x-spot strikes
+        # (~0.40-0.45 delta, ~33% credit/width) are a different payoff
+        # geometry, so their history is excluded. Previous baseline 2026-07-16
+        # (post exec-time live quoting; 07-15 fills were at giveaway limits).
+        baseline=date(2026, 9, 30),
+        # P11-001 sweep put_credit K=10 H=10, vrp 1.15 — measured at the legacy
+        # 0.98x strikes with the VRP ASSUMED, not observed. Kept as the floor
+        # until a delta-strike backtest or live history replaces it.
+        backtest_win_rate=0.76,
+        notes="Bull put credit spreads, delta-targeted sell leg. Legacy-strike, debit-era and zero-quote-era bull_spread history excluded by baseline.",
     ),
 )
 
