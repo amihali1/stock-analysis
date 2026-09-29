@@ -89,6 +89,10 @@ SELL_DELTAS = [0.20, 0.25, 0.30]
 DELTA_WIDTH_PCT = 0.05
 TENORS = ["expiry", "30dte"]
 OPT_DTE_CAL = 30
+# Bad-data guard: annualized HV above this is a price_history artifact
+# (unadjusted splits — KLAC 10:1 2026-06-12 gave volatility_20d = 32.5, whose
+# BS credit ~= spread width turned three picks into +200..+450x returns).
+MAX_VOL_ANN = 3.0
 
 
 def _bs_call(S, K, T, sigma, r=RISK_FREE):
@@ -227,7 +231,7 @@ def main() -> int:
                         continue
                     row = day_slice.loc[c.extras["row_index"]]
                     vol_ann = float(row["volatility_20d"])
-                    if not np.isfinite(vol_ann) or vol_ann <= 0:
+                    if not np.isfinite(vol_ann) or vol_ann <= 0 or vol_ann > MAX_VOL_ANN:
                         continue
                     bull_picks[k].append({"ticker": c.ticker, "date": d, "vol_ann": vol_ann})
 
