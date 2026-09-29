@@ -72,10 +72,12 @@ ARMS: tuple[ArmSpec, ...] = (
         # geometry, so their history is excluded. Previous baseline 2026-07-16
         # (post exec-time live quoting; 07-15 fills were at giveaway limits).
         baseline=date(2026, 9, 30),
-        # P11-001 sweep put_credit K=10 H=10, vrp 1.15 — measured at the legacy
-        # 0.98x strikes with the VRP ASSUMED, not observed. Kept as the floor
-        # until a delta-strike backtest or live history replaces it.
-        backtest_win_rate=0.76,
+        # sweep_bull_premium put_credit_delta 0.25, 30 DTE, K=10 H=10, vrp 1.0
+        # (no assumed VRP), 2026-09-29 on split-repaired data: win 0.69,
+        # exp +0.029, p5 -0.59 (0.67 before the KLAC/HON repair; 0.67 chosen —
+        # floor 0.57 vs 0.59, slightly more lenient). Replaces P11-001's 0.76, which was
+        # legacy 0.98x strikes, 10-day tenor and an assumed 15% VRP.
+        backtest_win_rate=0.67,
         notes="Bull put credit spreads, delta-targeted sell leg. Legacy-strike, debit-era and zero-quote-era bull_spread history excluded by baseline.",
     ),
 )

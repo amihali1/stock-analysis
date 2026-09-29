@@ -12,6 +12,18 @@ re-simulates the SAME walk-forward rise picks under four structures:
                     return on collateral (width - credit)
   4. csp          — cash-secured put, strike entry*(1-dist), dist {2%, 5%},
                     return on strike (cash securing the put)
+  5. put_credit_delta — bull put credit spread with the sell leg at a target
+                    |put delta| {0.20, 0.25, 0.30} (prod bull_put_sell_delta,
+                    2026-09-29), long leg 5% of entry below; return on
+                    collateral. Strikes are continuous (no chain grid).
+
+Both put-credit arms run under two tenors:
+  expiry — option expires at the hold horizon (T = hold/252), settled at
+           intrinsic on the exit close. The original P11-001 setup.
+  30dte  — prod-like: sell a 30-calendar-day spread, exit at the hold
+           horizon marked with Black-Scholes on the remaining ~30-hold*7/5
+           calendar days at the same sigma. Closer to live, which sells
+           ~30 DTE; still no early stop-outs.
 
 Pricing is Black-Scholes with sigma = HV20 * vrp_mult. CRITICAL CAVEAT:
 at vrp_mult=1.0 the simulation is VRP-NEUTRAL — implied equals realized, so
@@ -25,7 +37,8 @@ Decision criteria are the LEFT-TAIL metrics (p5, worst-5 mean, min), not win
 rate — our own bear-side sweep (2026-07-07) had high-win-rate credit spreads
 with negative expectancy.
 
-Grid: K {5,10} x H {5,10} x vrp_mult {1.0, 1.15} x regime {all, up, down}.
+Grid: K {5,10} x H {5,10} x vrp_mult {1.0, 1.15} x regime {all, up, down}
+(x tenor {expiry, 30dte} x sell_delta for the put-credit arms).
 Output: trained_models/sweep_bull_premium.json
 
 Usage (inside backend container):
@@ -71,6 +84,15 @@ RISK_FREE = 0.04
 # Prod strike discipline (options_strategies.py targets)
 DEBIT_BUY, DEBIT_SELL = 1.02, 1.07
 CREDIT_SELL, CREDIT_BUY = 0.98, 0.93
+# Delta-targeted put credit (options_strategies bull_put_sell_delta)
+SELL_DELTAS = [0.20, 0.25, 0.30]
+DELTA_WIDTH_PCT = 0.05
+TENORS = ["expiry", "30dte"]
+OPT_DTE_CAL = 30
+# Bad-data guard: annualized HV above this is a price_history artifact
+# (unadjusted splits — KLAC 10:1 2026-06-12 gave volatility_20d = 32.5, whose
+# BS credit ~= spread width turned three picks into +200..+450x returns).
+MAX_VOL_ANN = 3.0
 
 
 def _bs_call(S, K, T, sigma, r=RISK_FREE):
@@ -86,6 +108,37 @@ def _bs_put(S, K, T, sigma, r=RISK_FREE):
         return max(0.0, K - S)
     call = _bs_call(S, K, T, sigma, r)
     return float(call - S + K * np.exp(-r * T))
+
+
+def _put_strike_for_delta(S, abs_delta, T, sigma, r=RISK_FREE):
+    """Strike whose put delta N(d1) - 1 equals -abs_delta."""
+    d1 = norm.ppf(1.0 - abs_delta)
+    return float(S * np.exp(-(d1 * sigma * np.sqrt(T) - (r + 0.5 * sigma**2) * T)))
+
+
+def _put_spread_value(S, ksell, kbuy, T, sigma):
+    """Value of the short-put-spread liability (sell leg minus buy leg)."""
+    return _bs_put(S, ksell, T, sigma) - _bs_put(S, kbuy, T, sigma)
+
+
+def _put_credit_ror(entry, exit_, ksell, kbuy, T_open, T_left, sigma):
+    """Return on collateral for a bull put credit spread opened at `entry`
+    with T_open to expiry and closed at `exit_` with T_left remaining
+    (T_left <= 0 settles at intrinsic). None if the spread has no credit."""
+    credit = _put_spread_value(entry, ksell, kbuy, T_open, sigma)
+    collateral = (ksell - kbuy) - credit
+    if credit <= 0 or collateral <= 0:
+        return None
+    close_cost = _put_spread_value(exit_, ksell, kbuy, T_left, sigma)
+    return (credit - close_cost) / collateral
+
+
+def _tenor_times(tenor: str, hold: int) -> tuple[float, float]:
+    """(T at open, T remaining at exit) in years."""
+    if tenor == "expiry":
+        return hold / 252.0, 0.0
+    left_cal = max(OPT_DTE_CAL - hold * 7 / 5, 0.0)
+    return OPT_DTE_CAL / 365.0, left_cal / 365.0
 
 
 def _load_paths() -> dict[str, pd.DataFrame]:
@@ -178,7 +231,7 @@ def main() -> int:
                         continue
                     row = day_slice.loc[c.extras["row_index"]]
                     vol_ann = float(row["volatility_20d"])
-                    if not np.isfinite(vol_ann) or vol_ann <= 0:
+                    if not np.isfinite(vol_ann) or vol_ann <= 0 or vol_ann > MAX_VOL_ANN:
                         continue
                     bull_picks[k].append({"ticker": c.ticker, "date": d, "vol_ann": vol_ann})
 
@@ -205,7 +258,7 @@ def main() -> int:
 
                 long_ret = (exit_ - entry) / entry
                 for reg in regs:
-                    buckets.setdefault(("long_stock", None, 1.0, reg), []).append(long_ret)
+                    buckets.setdefault(("long_stock", None, 1.0, reg, "expiry"), []).append(long_ret)
 
                 for vrp in VRP_MULTS:
                     sigma = tr["vol_ann"] * vrp
@@ -217,18 +270,28 @@ def main() -> int:
                         payoff = max(exit_ - kb, 0.0) - max(exit_ - ks_, 0.0)
                         ror = (payoff - debit) / debit
                         for reg in regs:
-                            buckets.setdefault(("call_debit", None, vrp, reg), []).append(ror)
+                            buckets.setdefault(("call_debit", None, vrp, reg, "expiry"), []).append(ror)
 
-                    # (3) bull put credit spread at prod strikes; return on collateral
-                    ksell, kbuy = entry * CREDIT_SELL, entry * CREDIT_BUY
-                    credit = _bs_put(entry, ksell, T, sigma) - _bs_put(entry, kbuy, T, sigma)
-                    width = ksell - kbuy
-                    collateral = width - credit
-                    if credit > 0 and collateral > 0:
-                        payoff = max(ksell - exit_, 0.0) - max(kbuy - exit_, 0.0)
-                        ror = (credit - payoff) / collateral
-                        for reg in regs:
-                            buckets.setdefault(("put_credit", None, vrp, reg), []).append(ror)
+                    for tenor in TENORS:
+                        T_open, T_left = _tenor_times(tenor, hold)
+
+                        # (3) bull put credit spread at legacy prod strikes
+                        ror = _put_credit_ror(
+                            entry, exit_, entry * CREDIT_SELL, entry * CREDIT_BUY, T_open, T_left, sigma,
+                        )
+                        if ror is not None:
+                            for reg in regs:
+                                buckets.setdefault(("put_credit", None, vrp, reg, tenor), []).append(ror)
+
+                        # (5) bull put credit spread, delta-targeted sell leg
+                        for sd in SELL_DELTAS:
+                            ksell = _put_strike_for_delta(entry, sd, T_open, sigma)
+                            ror = _put_credit_ror(
+                                entry, exit_, ksell, ksell - entry * DELTA_WIDTH_PCT, T_open, T_left, sigma,
+                            )
+                            if ror is not None:
+                                for reg in regs:
+                                    buckets.setdefault(("put_credit_delta", sd, vrp, reg, tenor), []).append(ror)
 
                     # (4) cash-secured put; return on strike (cash collateral)
                     for dist in CSP_DISTS:
@@ -239,20 +302,26 @@ def main() -> int:
                         payoff = max(kp - exit_, 0.0)
                         ror = (credit - payoff) / kp
                         for reg in regs:
-                            buckets.setdefault(("csp", dist, vrp, reg), []).append(ror)
+                            buckets.setdefault(("csp", dist, vrp, reg, "expiry"), []).append(ror)
 
-            for (structure, dist, vrp, reg), rets in sorted(buckets.items()):
+            for (structure, param, vrp, reg, tenor), rets in sorted(
+                buckets.items(), key=lambda kv: tuple(str(x) for x in kv[0]),
+            ):
                 s = _summ(rets)
                 if s:
                     results.append({
                         "k": k, "hold": hold, "structure": structure,
-                        "csp_dist": dist, "vrp_mult": vrp, "regime": reg, **s,
+                        "csp_dist": param if structure == "csp" else None,
+                        "sell_delta": param if structure == "put_credit_delta" else None,
+                        "tenor": tenor, "vrp_mult": vrp, "regime": reg, **s,
                     })
 
     out_path = _resolve_model_dir() / "sweep_bull_premium.json"
     out_path.write_text(json.dumps({
         "note": "vrp_mult=1.0 is VRP-neutral (IV=HV): measures payoff geometry only. "
-                "1.15 prices options ~15% over realized (documented equity VRP).",
+                "1.15 prices options ~15% over realized (documented equity VRP). "
+                "tenor=expiry settles at intrinsic on the hold horizon; 30dte sells 30 "
+                "calendar days and marks at exit with Black-Scholes.",
         "configs": results,
     }, indent=2))
     logger.info("Wrote %s", out_path)
@@ -262,9 +331,10 @@ def main() -> int:
         subset = [r for r in results if r["regime"] == "all" and r["vrp_mult"] in (vrp, 1.0)
                   and (r["vrp_mult"] == vrp or r["structure"] == "long_stock")]
         for r in sorted(subset, key=lambda x: x["expectancy"], reverse=True):
+            param = r["csp_dist"] if r["csp_dist"] is not None else r["sell_delta"]
             logger.info(
-                "  K=%d H=%d %-11s(d=%s): exp=%+.4f win=%.2f p5=%+.3f worst5=%+.3f min=%+.3f n=%d",
-                r["k"], r["hold"], r["structure"], r["csp_dist"],
+                "  K=%d H=%d %-16s(p=%s) %-6s: exp=%+.4f win=%.2f p5=%+.3f worst5=%+.3f min=%+.3f n=%d",
+                r["k"], r["hold"], r["structure"], param, r["tenor"],
                 r["expectancy"], r["win_rate"], r["p5"], r["worst5_mean"], r["min"], r["n"],
             )
     return 0

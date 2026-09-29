@@ -1614,3 +1614,19 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 **Gate:** bull_credit baseline moved 2026-07-16 → 2026-09-30 (first delta-strike rec run). backtest_win_rate 0.76 kept (legacy-strike, assumed-VRP number) pending a delta-arm backtest.
 
 **Not done:** P11-001 sweep has no delta arm.
+
+---
+
+## 2026-09-29 — Sweep delta arm, split repair, bull_credit gate floor (branch feat/sweep-delta-arm)
+
+**Agent**: Claude Opus 5.5
+
+**Sweep:** `sweep_bull_premium.py` gains `put_credit_delta` (|put delta| 0.20/0.25/0.30, long leg 5% of entry below) and a `tenor` axis for both put-credit arms: `expiry` (original: T=hold/252, intrinsic settle) and `30dte` (sell 30 calendar days, BS mark at exit). Legacy expiry path reproduces the old formula exactly. Guard: skip picks with HV > 3.0.
+
+**Data bug found:** price_history never restated after splits (fetcher inserts missing dates only). KLAC 10:1 (6/12) left unadjusted ~2100 rows → volatility_20d 32.5 → three picks at +200..+450x, legacy expectancy +0.38..+0.95. HON 6/26 close 464 vs real 243 (spin-off adj 6/29). MRNA +177% 8/19 is real. One-off repair: deleted + refetched KLAC/HON (3y, trimmed to original start), recomputed indicators; verified 0 jumps. Structural fix not done.
+
+**Clean results, K=10 H=10, all-regime, vrp 1.0, 30dte:** legacy exp +0.044 win 0.63 p5 -0.76; delta 0.25 exp +0.029 win 0.69 p5 -0.59; delta 0.20 +0.023/0.72/-0.51; long_stock +0.013/0.55. Delta trades ~1/3 expectancy for a thinner tail. Positive at vrp 1.0 = pick drift, concentrated in down regime (+0.100 vs +0.016 up for delta 0.25).
+
+**Gate:** bull_credit backtest_win_rate 0.76 → 0.67 (user-chosen; clean sweep says 0.69) → floor 0.57.
+
+Original P11-001 output kept on VM as `trained_models/sweep_bull_premium_p11001_2026-07-14.json`.
