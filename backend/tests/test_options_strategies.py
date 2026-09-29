@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from src.models.ensemble import EnsembleScore
-from src.models.options_strategies import SpreadBuilder, SpreadRecommendation, _snap_strike
+from src.models.options_strategies import SpreadBuilder, SpreadRecommendation, _snap_strike, _snap_strike_down
 
 
 def _make_score(ticker="AAPL", score=0.7, directional=0.7, volatility=0.4, sentiment=0.6):
@@ -351,3 +351,111 @@ class TestFallbackStrikeSnapping:
             for leg in result.legs:
                 # On $0.50 grid: 2 * strike must be integer
                 assert (leg.strike * 2) == int(leg.strike * 2), f"sub-$25 strike not on $0.50: {leg.strike}"
+
+
+def _bs_put_chain(price: float, strikes: list[float], iv: float = 0.35, t: float = 30 / 365) -> list[dict]:
+    """Synthetic put chain priced off Black-Scholes, bid/ask ±2% around fair."""
+    b = SpreadBuilder()
+    rows = []
+    for k in strikes:
+        fair = max(b._estimate_premium(price, k, iv, t, "put"), 0.01)
+        rows.append({
+            "strike": k, "option_type": "put", "bid": round(fair * 0.98, 2),
+            "ask": round(fair * 1.02, 2), "last": round(fair, 2), "implied_vol": iv,
+        })
+    return rows
+
+
+class TestBullPutDeltaStrikes:
+    """Delta-targeted sell leg (audit 2026-09-29: 0.98× spot sat at ~0.40-0.45
+    delta and nearest-strike snapping put some sell legs above spot)."""
+
+    def _builder(self, **kw):
+        return SpreadBuilder(max_position=1000, bull_put_sell_delta=0.25, **kw)
+
+    def _score(self):
+        return _make_score(directional=0.24, volatility=0.3, score=0.40)
+
+    def test_snap_strike_down_never_rounds_up(self):
+        assert _snap_strike_down(18.9) == 18.5
+        assert _snap_strike_down(69.9) == 69.0
+        assert _snap_strike_down(144.99) == 144.0
+        assert _snap_strike_down(209.0) == 205.0
+
+    def test_chain_sell_leg_at_or_below_target_delta(self):
+        price = 100.0
+        chain = _bs_put_chain(price, [float(k) for k in range(80, 106)])
+        builder = self._builder()
+        result = builder.suggest_bull_spread(self._score(), price, chain_data=chain)
+        assert result is not None
+        sell = next(l for l in result.legs if l.action == "sell")
+        buy = next(l for l in result.legs if l.action == "buy")
+        t = 30 / 365
+        d_sell = abs(builder._estimate_delta(price, sell.strike, 0.35, t, "put"))
+        d_next = abs(builder._estimate_delta(price, sell.strike + 1, 0.35, t, "put"))
+        assert d_sell <= 0.25 < d_next  # highest strike not exceeding target
+        assert sell.strike < price
+        assert buy.strike < sell.strike
+        assert sell.strike - buy.strike == pytest.approx(5.0, abs=1.0)
+        assert result.uses_real_data
+
+    def test_chain_coarse_grid_never_sells_above_spot(self):
+        """$5 grid at spot 69.34 — legacy nearest-snap sold the 70 put (FCX 9/15)."""
+        price = 69.34
+        chain = _bs_put_chain(price, [50.0, 55.0, 60.0, 65.0, 70.0, 75.0])
+        result = self._builder().suggest_bull_spread(self._score(), price, chain_data=chain)
+        assert result is not None
+        sell = next(l for l in result.legs if l.action == "sell")
+        assert sell.strike <= 65.0
+
+    def test_legacy_zero_delta_keeps_fixed_percent_targets(self):
+        price = 100.0
+        chain = _bs_put_chain(price, [float(k) for k in range(80, 106)])
+        result = SpreadBuilder(max_position=1000).suggest_bull_spread(self._score(), price, chain_data=chain)
+        assert result is not None
+        strikes = sorted(l.strike for l in result.legs)
+        assert strikes == [93.0, 98.0]
+
+    def test_bad_chain_iv_falls_back_to_default(self):
+        """IV ~1e-5 on a strike would make every OTM put look zero-delta."""
+        price = 100.0
+        chain = _bs_put_chain(price, [float(k) for k in range(80, 106)])
+        for r in chain:
+            r["implied_vol"] = 1e-5
+        builder = self._builder()
+        strike = builder._select_put_strike_by_delta(chain, price, 0.35, 30 / 365, 0.25)
+        assert strike is not None and strike < 98.0
+        expected = builder._select_put_strike_by_delta(
+            [dict(r, implied_vol=0.35) for r in chain], price, 0.35, 30 / 365, 0.25,
+        )
+        assert strike == expected
+
+    def test_no_otm_strike_within_delta_returns_none(self):
+        price = 100.0
+        chain = _bs_put_chain(price, [99.0, 99.5])  # all near-ATM, delta ~0.45
+        assert self._builder().suggest_bull_spread(self._score(), price, chain_data=chain) is None
+
+    def test_no_chain_inverts_black_scholes_and_snaps_down(self):
+        # $10k cap: a 5%-wide spread on a $505 name is ~$2k collateral/contract.
+        builder = SpreadBuilder(max_position=10000, bull_put_sell_delta=0.25)
+        for price in (18.0, 122.78, 505.0):
+            result = builder.suggest_bull_spread(self._score(), price, implied_vol=0.35)
+            assert result is not None, price
+            sell = next(l for l in result.legs if l.action == "sell")
+            buy = next(l for l in result.legs if l.action == "buy")
+            assert buy.strike < sell.strike < price
+            assert _snap_strike_down(sell.strike) == sell.strike
+            d = abs(builder._estimate_delta(price, sell.strike, 0.35, 30 / 365, "put"))
+            assert 0.10 < d <= 0.25
+
+    def test_min_credit_ratio_rejects_thin_credit(self):
+        price = 100.0
+        chain = _bs_put_chain(price, [float(k) for k in range(80, 106)])
+        assert self._builder(bull_put_min_credit_ratio=0.10).suggest_bull_spread(
+            self._score(), price, chain_data=chain) is not None
+        assert self._builder(bull_put_min_credit_ratio=0.60).suggest_bull_spread(
+            self._score(), price, chain_data=chain) is None
+
+    def test_invalid_delta_rejected(self):
+        with pytest.raises(ValueError):
+            SpreadBuilder(bull_put_sell_delta=0.6)

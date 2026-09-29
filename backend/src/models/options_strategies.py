@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from statistics import NormalDist
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -27,6 +28,21 @@ def _snap_strike(target: float) -> float:
     if target < 200:
         return float(round(target))
     return float(round(target / 5) * 5)
+
+
+def _snap_strike_down(target: float) -> float:
+    """Like `_snap_strike` but never rounds up — for a short put, rounding up
+    moves the strike toward (or past) spot and adds directional risk."""
+    if target < 25:
+        return math.floor(target * 2) / 2.0
+    if target < 200:
+        return float(math.floor(target))
+    return float(math.floor(target / 5) * 5)
+
+
+# Chain IVs outside this band are treated as bad quotes (yfinance returns
+# ~1e-5 or several-hundred-percent IVs on stale/illiquid strikes).
+_CHAIN_IV_MIN, _CHAIN_IV_MAX = 0.05, 3.0
 
 
 class SpreadLeg(BaseModel):
@@ -80,18 +96,27 @@ class SpreadBuilder:
         directional_lift: float = 1.3,
         min_score: float = 0.30,
         bull_structure: str = "put_credit",
+        bull_put_sell_delta: float = 0.0,
+        bull_put_width_pct: float = 0.05,
+        bull_put_min_credit_ratio: float = 0.0,
     ):
         # Direction-aware lift gates replaced the legacy absolute
         # `directional_signal > 0.6` threshold (unreachable under sigmoid
         # calibration). See config.spread_* for rationale.
         if bull_structure not in ("put_credit", "call_debit"):
             raise ValueError(f"bull_structure must be put_credit|call_debit, got {bull_structure!r}")
+        if not 0.0 <= bull_put_sell_delta < 0.5:
+            raise ValueError(f"bull_put_sell_delta must be in [0, 0.5), got {bull_put_sell_delta!r}")
         self.max_position = max_position
         self.drop_base_rate = drop_base_rate
         self.rise_base_rate = rise_base_rate
         self.directional_lift = directional_lift
         self.min_score = min_score
         self.bull_structure = bull_structure
+        # 0 = legacy fixed-percent strikes (0.98 / 0.93 of spot).
+        self.bull_put_sell_delta = bull_put_sell_delta
+        self.bull_put_width_pct = bull_put_width_pct
+        self.bull_put_min_credit_ratio = bull_put_min_credit_ratio
 
     @property
     def _drop_lift_floor(self) -> float:
@@ -528,11 +553,31 @@ class SpreadBuilder:
         self, score: EnsembleScore, price: float, iv: float, expiry_days: int,
         earnings_warning: bool, chain_data: list[dict] | None,
     ) -> SpreadRecommendation | None:
-        """Bull put credit spread: sell higher-strike put (near ATM), buy lower-strike put OTM."""
+        """Bull put credit spread: sell an OTM put, buy a further-OTM put.
+
+        Sell-strike placement:
+        - `bull_put_sell_delta > 0`: highest OTM strike whose |delta| is at
+          or below the target (never rounds toward spot). The legacy 0.98×
+          target sat ~0.40-0.45 delta, collecting ~33% of width → ~67%
+          breakeven win rate, which the model's coin-flip direction can't
+          clear (live 2026-09: 4W/12, full max-loss on every loser).
+        - `bull_put_sell_delta == 0`: legacy 0.98 / 0.93 × spot targets,
+          snapped to the nearest chain strike (rollback path).
+        """
         t = expiry_days / 365.0
 
-        target_sell_strike = round(price * 0.98, 2)
-        target_buy_strike = round(price * 0.93, 2)
+        if self.bull_put_sell_delta > 0:
+            target_sell_strike = self._select_put_strike_by_delta(chain_data, price, iv, t, self.bull_put_sell_delta)
+            if target_sell_strike is None:
+                return None
+            target_buy_strike = self._select_put_buy_strike(
+                chain_data, target_sell_strike, target_sell_strike - price * self.bull_put_width_pct,
+            )
+            if target_buy_strike is None:
+                return None
+        else:
+            target_sell_strike = round(price * 0.98, 2)
+            target_buy_strike = round(price * 0.93, 2)
 
         sell_premium, sell_strike, sell_real, sell_bid, sell_ask = self._get_premium(chain_data, target_sell_strike, "put", price, iv, t)
         buy_premium, buy_strike, buy_real, buy_bid, buy_ask = self._get_premium(chain_data, target_buy_strike, "put", price, iv, t)
@@ -544,6 +589,8 @@ class SpreadBuilder:
 
         net_credit_per_share = sell_premium - buy_premium
         if net_credit_per_share <= 0:
+            return None
+        if net_credit_per_share / spread_width < self.bull_put_min_credit_ratio:
             return None
 
         max_loss_per_contract = (spread_width - net_credit_per_share) * 100
@@ -593,6 +640,57 @@ class SpreadBuilder:
             earnings_warning=earnings_warning,
             uses_real_data=uses_real,
         )
+
+    def _select_put_strike_by_delta(
+        self, chain_data: list[dict] | None, price: float, iv: float, t: float, target_delta: float,
+    ) -> float | None:
+        """Short-put strike at or below `target_delta` (absolute put delta).
+
+        With a chain: among strictly-OTM put strikes, the highest one whose
+        delta (from its own IV, falling back to `iv` on bad quotes) is
+        <= target — i.e. the most premium without exceeding the risk target.
+        Without a chain: invert Black-Scholes for the strike and snap DOWN.
+        """
+        if price <= 0 or t <= 0:
+            return None
+
+        puts = [
+            r for r in (chain_data or [])
+            if r.get("option_type") == "put" and 0 < (r.get("strike") or 0) < price
+        ]
+        if puts:
+            eligible = []
+            for r in puts:
+                row_iv = r.get("implied_vol") or 0
+                sigma = row_iv if _CHAIN_IV_MIN <= row_iv <= _CHAIN_IV_MAX else iv
+                if abs(self._estimate_delta(price, r["strike"], sigma, t, "put")) <= target_delta:
+                    eligible.append(r["strike"])
+            return max(eligible) if eligible else None
+
+        if iv <= 0:
+            return None
+        # Put delta = N(d1) - 1  →  d1 = N^-1(1 - |delta|)
+        d1 = NormalDist().inv_cdf(1.0 - target_delta)
+        strike = price * math.exp(-(d1 * iv * math.sqrt(t) - 0.5 * iv**2 * t))
+        snapped = _snap_strike_down(strike)
+        return snapped if 0 < snapped < price else None
+
+    @staticmethod
+    def _select_put_buy_strike(
+        chain_data: list[dict] | None, sell_strike: float, target: float,
+    ) -> float | None:
+        """Long-put strike nearest `target`, strictly below the sell strike."""
+        strikes = sorted({
+            r["strike"] for r in (chain_data or [])
+            if r.get("option_type") == "put" and 0 < (r.get("strike") or 0) < sell_strike
+        })
+        if strikes:
+            return min(strikes, key=lambda k: abs(k - target))
+        snapped = _snap_strike_down(target)
+        if snapped >= sell_strike:
+            # Width rounded to zero on a coarse grid — step down one increment.
+            snapped = _snap_strike_down(sell_strike - (0.5 if sell_strike < 25 else 1.0 if sell_strike < 200 else 5.0))
+        return snapped if snapped > 0 else None
 
     def _estimate_premium(self, S: float, K: float, sigma: float, t: float, option_type: str) -> float:
         """Simplified Black-Scholes premium estimate (no risk-free rate for simplicity)."""
