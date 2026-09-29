@@ -254,6 +254,20 @@ class Settings(BaseSettings):
     # debit book pays the premium sellers harvest. Flag kept for rollback
     # and research comparisons.
     bull_spread_structure: str = "put_credit"
+    # Put-credit sell-leg placement by absolute put delta. 0 = legacy fixed
+    # 0.98×/0.93× spot targets snapped to the nearest chain strike. Audit
+    # 2026-09-29: legacy legs sat ~1.9% OTM (~0.40-0.45 delta), credit ~33% of
+    # width → ~67% breakeven win rate; live went 4W/12 with every loser at full
+    # max loss, and nearest-strike snapping put some sell legs ABOVE spot on $5
+    # grids. At 0.25 delta the leg sits ~4-8% OTM (credit ~17-24% of width).
+    # The strike is chosen at-or-below the target, never rounded toward spot.
+    bull_put_sell_delta: float = 0.25
+    # Long-leg distance below the sell strike, as a fraction of spot (nearest
+    # chain strike). 0.05 matches the legacy 0.98 → 0.93 width.
+    bull_put_width_pct: float = 0.05
+    # Reject put-credit spreads whose credit is below this fraction of width —
+    # guards against stale/junk chain quotes, not an edge filter.
+    bull_put_min_credit_ratio: float = 0.10
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

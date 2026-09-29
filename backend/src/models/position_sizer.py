@@ -149,6 +149,9 @@ class PositionSizer:
         self._spread_directional_lift = settings.spread_directional_lift
         self._spread_min_score = settings.spread_min_score
         self._bull_spread_structure = settings.bull_spread_structure
+        self._bull_put_sell_delta = settings.bull_put_sell_delta
+        self._bull_put_width_pct = settings.bull_put_width_pct
+        self._bull_put_min_credit_ratio = settings.bull_put_min_credit_ratio
 
     def _make_spread_builder(self):
         from src.models.options_strategies import SpreadBuilder
@@ -159,6 +162,9 @@ class PositionSizer:
             directional_lift=self._spread_directional_lift,
             min_score=self._spread_min_score,
             bull_structure=self._bull_spread_structure,
+            bull_put_sell_delta=self._bull_put_sell_delta,
+            bull_put_width_pct=self._bull_put_width_pct,
+            bull_put_min_credit_ratio=self._bull_put_min_credit_ratio,
         )
 
     def _confidence_scale(self, score: EnsembleScore) -> float:

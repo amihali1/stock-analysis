@@ -1593,3 +1593,22 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 - New `scripts/upload_backup_nextcloud.sh` (cron 15 8 * * *): WebDAV upload of every local dump missing from Nextcloud `Backups/stock-analysis/` (catches up missed nights), 30-day remote retention, touches `.last_nextcloud_ok`. Creds only in `/home/proxmox/.config/nextcloud-backup.env` (NC_URL/NC_USER/NC_APP_PASSWORD, chmod 600).
 - `check_backup_replication.sh` alerts when `.last_nextcloud_ok` > 72h.
 - Removed abandoned stock-analysis stack on the Nextcloud VM (10.0.0.45, ~/stock-analysis, created 2026-03-25): DB was empty, backend crash-looped on `No module named 'src'`. `docker compose down -v --rmi local`; source dir left in place.
+
+---
+
+## 2026-09-29 — Bull put credit: delta-targeted sell strike (branch feat/delta-strike-bull-put)
+
+**Agent**: Claude Opus 5.5
+**Context**: 9/28 first post-outage exit run closed 4 bull_spreads at full max loss (losses real — spot below long strikes). Since 9/09 bull_spread 12 closes / -$3,448 / 4W; bull_credit gate wr 33% vs 66% floor.
+
+**Audit:** legacy `_bull_put_credit_spread` sells nearest chain strike to 0.98× spot → median -1.9% OTM (~0.40-0.45 delta), credit ~33% of width → ~67% breakeven win rate ≈ natural P(profit) → zero edge without direction. Nearest-snap sold ABOVE spot on $5 grids (FCX 70 vs 69.34, LEN 80 vs 79.60). P11-001 backtest used the same 0.98/0.93 rule; its +0.144/76% came from ASSUMED VRP (IV = HV×1.15), 10-day tenor settled at intrinsic, no early exits — not from strike placement.
+
+**Change:** `bull_put_sell_delta` (default 0.25; 0 = legacy rollback): sell = highest strictly-OTM chain put with |delta| ≤ target (per-strike IV, fallback on IV outside 0.05-3.0); no chain → BS-inverted strike snapped DOWN (`_snap_strike_down`). Buy leg = nearest chain strike below sell at sell − `bull_put_width_pct`×spot (0.05). `bull_put_min_credit_ratio` 0.10 rejects junk-quote credits. SpreadBuilder defaults stay legacy (0.0) — config enables it.
+
+**Live-chain check (10/30 expiry):** sell legs now -6% to -12% OTM, credit 11-26% of width (legacy 28-52%).
+
+**Also:** backfilled missing 9/21 price_history (159 rows) on VM; deleted intraday 9/29 rows inserted by the same backfill (dedup would block the 16:30 close job).
+
+**Tests:** 9 new in test_options_strategies (TestBullPutDeltaStrikes); full suite 729 pass / 20 skip.
+
+**Not done:** P11-001 sweep has no delta arm; gate baseline for bull_credit should reset if merged (new strike regime).
