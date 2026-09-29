@@ -31,6 +31,7 @@ testcontainers = pytest.importorskip(
 PostgresContainer = testcontainers.PostgresContainer
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from src.db.models import Base, Recommendation, PaperTrade, Stock
@@ -64,7 +65,13 @@ def postgres_engine():
     except Exception as exc:
         pytest.skip(f"Could not start postgres container (docker unreachable?): {exc}")
     try:
-        engine = create_engine(container.get_connection_url())
+        url = make_url(container.get_connection_url())
+        if url.host == "localhost":
+            # Windows resolves localhost to ::1 first, and Docker Desktop's
+            # published ports drop IPv6 connections ("server closed the
+            # connection unexpectedly") — pin IPv4. No-op on remote docker hosts.
+            url = url.set(host="127.0.0.1")
+        engine = create_engine(url)
         Base.metadata.create_all(engine)
         yield engine
     finally:
