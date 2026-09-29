@@ -1630,3 +1630,17 @@ The Phase 4 ranker design (`bullish_side_build_2026-05-12.md`) is intentional �
 **Gate:** bull_credit backtest_win_rate 0.76 → 0.67 (user-chosen; clean sweep says 0.69) → floor 0.57.
 
 Original P11-001 output kept on VM as `trained_models/sweep_bull_premium_p11001_2026-07-14.json`.
+
+---
+
+## 2026-09-29 — Structural fix: restate price history on splits (branch fix/restate-split-history)
+
+**Agent**: Claude Opus 5.5
+**Context**: KLAC 10:1 / HON spin-off left unadjusted rows because `_fetch_ticker` only inserts missing dates (one-off repair done earlier today).
+
+- `_fetch_ticker` now compares yfinance closes to stored closes on overlapping dates; any >2% disagreement (`ADJUSTMENT_TOLERANCE`) means yfinance re-based the history → `_restate_history`: refetch from the ticker's earliest stored date, replace its price_history rows, delete its technical_indicators (next compute_indicators rebuilds them). Refuses to delete when the full refetch comes back empty.
+- No-overlap guard: if the fetch window shares no dates with stored rows (outage), a second call reaches back to last stored date − 10d.
+- `fetcher.restated` → `fetch_prices` telemetry shows `restated KLAC,...`.
+- Split `_fetch_ticker` into `_insert_new_rows` / `_update_metadata`.
+- Tests: 7 new (`test_data_fetcher_split_restate.py`). Dry-run of the detector against all 159 prod tickers: 0 would restate, max overlap deviation 0.0 → no false positives.
+- Not handled: open paper_trades/positions in a split ticker keep pre-split entry prices/strikes.
