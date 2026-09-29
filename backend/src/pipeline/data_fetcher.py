@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import yfinance as yf
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.db.models import Stock, PriceHistory
+from src.db.models import PriceHistory, Stock, TechnicalIndicator
 from src.db.session import SessionLocal
 from src.config import get_settings
 
@@ -21,6 +21,8 @@ class DataFetcher:
     def __init__(self, db: Session | None = None):
         self._owns_db = db is None
         self.db = db or SessionLocal()
+        # Tickers whose stored history was restated this session (splits).
+        self.restated: list[str] = []
 
     def close(self):
         if self._owns_db:
@@ -59,7 +61,12 @@ class DataFetcher:
         return results
 
     def _fetch_ticker(self, ticker: str, period: str) -> int:
-        """Fetch and upsert OHLCV data for a single ticker. Returns rows inserted."""
+        """Fetch and upsert OHLCV data for a single ticker. Returns rows inserted.
+
+        If yfinance's closes on dates already stored disagree with ours, the
+        history was retroactively adjusted (split, spin-off) and the ticker's
+        stored range is restated — see `_restate_history`.
+        """
         self.ensure_stock(ticker)
 
         yf_ticker = yf.Ticker(ticker)
@@ -69,14 +76,57 @@ class DataFetcher:
             logger.warning(f"{ticker}: no data returned from yfinance")
             return 0
 
-        # Get existing dates to avoid duplicates
-        existing_dates = set(
-            row[0]
+        stored_close = {
+            row[0]: row[1]
             for row in self.db.execute(
-                select(PriceHistory.date).where(PriceHistory.ticker == ticker)
+                select(PriceHistory.date, PriceHistory.close).where(PriceHistory.ticker == ticker)
             ).all()
-        )
+        }
 
+        if stored_close:
+            overlap_df = df
+            if not any(d in stored_close for d in _row_dates(df)):
+                # Gap longer than the fetch window (e.g. a week-long outage):
+                # reach back to the last stored date so a split that landed in
+                # the gap is still detected.
+                start = max(stored_close) - timedelta(days=10)
+                overlap_df = yf_ticker.history(start=start.isoformat(), auto_adjust=False)
+            if _history_adjusted(overlap_df, stored_close):
+                inserted = self._restate_history(ticker, yf_ticker, min(stored_close))
+                self._update_metadata(ticker, yf_ticker)
+                return inserted
+
+        inserted = self._insert_new_rows(ticker, df, set(stored_close))
+        self._update_metadata(ticker, yf_ticker)
+        return inserted
+
+    def _restate_history(self, ticker: str, yf_ticker, start: date) -> int:
+        """Replace a ticker's stored prices with yfinance's current (adjusted)
+        history from `start`, and drop its indicators so the next
+        compute_indicators run rebuilds them from the corrected prices.
+
+        Found 2026-09-29: KLAC's 10:1 split left ~2100 pre-split closes next
+        to ~210 post-split ones (volatility_20d = 32.5) because rows are only
+        ever inserted, never rewritten.
+        """
+        full = yf_ticker.history(start=start.isoformat(), auto_adjust=False)
+        if full.empty:
+            logger.error(f"{ticker}: history adjusted but full refetch returned nothing — not restating")
+            return 0
+        n_prices = self.db.query(PriceHistory).filter(PriceHistory.ticker == ticker).delete()
+        n_ind = self.db.query(TechnicalIndicator).filter(TechnicalIndicator.ticker == ticker).delete()
+        inserted = self._insert_new_rows(ticker, full, set(), commit=False)
+        self.db.commit()
+        self.restated.append(ticker)
+        logger.warning(
+            f"{ticker}: split/adjustment detected — restated {n_prices} → {inserted} price rows "
+            f"from {start}, dropped {n_ind} indicator rows for recompute"
+        )
+        return inserted
+
+    def _insert_new_rows(
+        self, ticker: str, df: pd.DataFrame, existing_dates: set[date], commit: bool = True,
+    ) -> int:
         rows_inserted = 0
         skipped_null_close = 0
         for idx, row in df.iterrows():
@@ -111,10 +161,13 @@ class DataFetcher:
                 f"{ticker}: skipped {skipped_null_close} rows with NaN close from yfinance"
             )
 
-        if rows_inserted > 0:
+        if rows_inserted > 0 and commit:
             self.db.commit()
 
-        # Update stock metadata from yfinance info if missing
+        return rows_inserted
+
+    def _update_metadata(self, ticker: str, yf_ticker) -> None:
+        """Fill stock name/sector/exchange from yfinance info if missing."""
         stock = self.db.query(Stock).filter_by(ticker=ticker).first()
         if stock and not stock.name:
             try:
@@ -126,7 +179,26 @@ class DataFetcher:
             except Exception:
                 logger.debug(f"{ticker}: could not fetch info metadata")
 
-        return rows_inserted
+
+# Relative close disagreement on an already-stored date that means yfinance
+# re-based the history. Splits move closes by >= 1/1.5 (3-for-2); HON's
+# 2026-06-29 spin-off factor was 0.9535. Routine data revisions are far below 2%.
+ADJUSTMENT_TOLERANCE = 0.02
+
+
+def _row_dates(df: pd.DataFrame) -> list[date]:
+    return [idx.date() if hasattr(idx, "date") else idx for idx in df.index]
+
+
+def _history_adjusted(df: pd.DataFrame, stored_close: dict[date, float | None]) -> bool:
+    """True if any overlapping date's close differs from ours by more than
+    ADJUSTMENT_TOLERANCE — i.e. yfinance retroactively adjusted the series."""
+    for row_date, raw in zip(_row_dates(df), df["Close"] if "Close" in df else []):
+        ours = stored_close.get(row_date)
+        theirs = _safe_float(raw)
+        if ours and theirs and abs(ours / theirs - 1.0) > ADJUSTMENT_TOLERANCE:
+            return True
+    return False
 
 
 def _safe_float(val) -> float | None:

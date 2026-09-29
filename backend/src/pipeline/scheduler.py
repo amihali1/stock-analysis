@@ -154,11 +154,17 @@ def job_fetch_prices(label: str = "fetch_prices"):
         Base.metadata.create_all(engine)
         fetcher = DataFetcher()
         results = fetcher.fetch_daily(period="5d")
+        restated = fetcher.restated
         fetcher.close()
         total = sum(v for v in results.values() if v > 0)
         pipeline_prices_fetched_total.inc(total)
         logger.info(f"Scheduler: price fetch complete — {total} new rows across {len(results)} tickers")
-        _record_run(label, f"ok ({total} rows)")
+        detail = f"ok ({total} rows"
+        if restated:
+            # Split/adjustment restates — indicators for these are rebuilt by
+            # the next compute_indicators run.
+            detail += f", restated {','.join(restated)}"
+        _record_run(label, detail + ")")
     except Exception:
         logger.exception("Scheduler: price fetch failed")
         _record_run(label, "error")
