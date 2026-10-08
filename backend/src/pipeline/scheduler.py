@@ -1205,7 +1205,13 @@ def job_evaluate_paper_exits(label: str = "paper_exits"):
 
         db = SessionLocal()
         try:
-            results = evaluate_paper_exits(db)
+            quoter = None
+            try:
+                from src.services.alpaca_client import AlpacaClient
+                quoter = AlpacaClient().get_option_quotes
+            except ValueError:
+                logger.info("paper exits: no Alpaca credentials, take-profit marks use Black-Scholes")
+            results = evaluate_paper_exits(db, quoter=quoter)
             closed = sum(1 for r in results if r["status"] == "closed")
             held = sum(1 for r in results if r["status"] == "held")
             errors = sum(1 for r in results if r["status"] == "error")

@@ -184,6 +184,12 @@ class Settings(BaseSettings):
     # nets across legs so it has no OTM full-loss artifact. 0.60 = exit at 60%
     # of max risk. 0.0 disables the spread catastrophic exit.
     catastrophic_spread_loss_fraction: float = 0.60
+    # Take-profit for CREDIT spreads (bull_spread put credit): close once the
+    # spread has captured this fraction of its entry credit, marked at live
+    # option mids (Black-Scholes on 20d realized vol when unquoted — never
+    # intrinsic, which reads an OTM credit spread as 100% profit on day 1).
+    # 0.0 disables. Chosen from sweep_bull_premium's exit-management arm.
+    spread_take_profit_fraction: float = 0.0
     # Regime funding tilt. The 2026-07-27 regime split found both monetized
     # strategies POSITIVE in both SPY-50dSMA regimes, but rise's per-$ edge
     # jumps in down-tape (~+3.3%/10d vs +1.0% up; bear pair +0.73% vs +0.41%).
