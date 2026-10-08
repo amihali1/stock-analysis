@@ -1644,3 +1644,21 @@ Original P11-001 output kept on VM as `trained_models/sweep_bull_premium_p11001_
 - Split `_fetch_ticker` into `_insert_new_rows` / `_update_metadata`.
 - Tests: 7 new (`test_data_fetcher_split_restate.py`). Dry-run of the detector against all 159 prod tickers: 0 would restate, max overlap deviation 0.0 → no false positives.
 - Not handled: open paper_trades/positions in a split ticker keep pre-split entry prices/strikes.
+
+---
+
+## 2026-10-08 — Capacity, take-profit, data/liquidity/concentration fixes (branch feat/take-profit-spreads)
+
+**Agent**: Claude Opus 5.5
+**Context**: 9/30-10/08 execution mostly blocked by the 30-position cap and the bull slot reserve (capital only $22k/$50k used); 5 delta-strike spreads dropped for no live quotes; ^VIX restated every evening.
+
+- **Ops (DB, no deploy):** `system_settings.max_open_positions` 30 → 100 (user-approved; Alpaca paper equity $77k, cash $81k). Deleted the partial 10/08 ^VIX bar.
+- **Partial bars:** `DataFetcher` never persists a bar for the session in progress (before 16:15 ET). The 06:00 ET fetch had stored a pre-market ^VIX bar daily → split detector restated ^VIX at 16:30 (10/02-10/08).
+- **Liquidity:** `bull_put_min_open_interest` 100 on both put-credit legs (dropped strikes had OI 4-54; filled 130-4400).
+- **Concentration:** safety_rails `max_open_per_ticker` 2, `max_sector_fraction` 0.20 of slots (book had 4x LMT, 10/30 Consumer Cyclical). Hedge legs not railed; option orders counted by underlying.
+- **Take-profit:** credit spreads close at `spread_take_profit_fraction` 0.50 of entry credit, marked at live Alpaca option mids (BS on HV20 fallback — spread MTM elsewhere is intrinsic-only and would read 100% profit on day 1). Catastrophic stop still first.
+- **Sweep exit arm** (delta 0.25, 30 DTE walked daily, K=10, vrp 1.0, with 0.60 stop): hold +0.109/trade, 19.7 sessions, 0.0055/session, win 0.82; TP 0.50 +0.074, 9.0 sessions, 0.0082/session (+48%), win 0.87, p5 -0.69. Same-sigma marks — no IV dynamics, no bid/ask cost on early closes.
+
+Tests: full suite 755 pass / 20 skip (Postgres, Docker down). New: 4 fetcher, 4 OI, 6 concentration, 7 take-profit.
+
+**Next:** raise `daily_capital_cap` to ~$70k after the 10/16 expiries (binds at ~65-70 positions).

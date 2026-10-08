@@ -479,9 +479,10 @@ def test_take_profit_bs_fallback_fires_when_far_otm(db):
     assert "bs mark" in results[0]["reason"]
 
 
-def test_take_profit_disabled_by_default(db):
+def test_take_profit_zero_disables(db):
     _tp_trade(db)
-    results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(0.05, 0.01))
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.0)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(0.05, 0.01))
     assert results[0]["status"] == "held"
 
 

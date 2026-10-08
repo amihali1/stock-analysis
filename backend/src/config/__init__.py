@@ -188,8 +188,12 @@ class Settings(BaseSettings):
     # spread has captured this fraction of its entry credit, marked at live
     # option mids (Black-Scholes on 20d realized vol when unquoted — never
     # intrinsic, which reads an OTM credit spread as 100% profit on day 1).
-    # 0.0 disables. Chosen from sweep_bull_premium's exit-management arm.
-    spread_take_profit_fraction: float = 0.0
+    # 0.0 disables. sweep_bull_premium exit-management arm (2026-10-08, delta
+    # 0.25, 30 DTE walked daily, K=10, vrp 1.0, with the 0.60 stop): hold-to-
+    # expiry +0.109/trade over 19.7 sessions (0.0055/session) vs TP 0.50
+    # +0.074 over 9.0 (0.0082/session, +48%), win 0.82 -> 0.87, p5 -0.75 ->
+    # -0.69. TP 0.75 matched per-session (0.0081) but holds 3 sessions longer.
+    spread_take_profit_fraction: float = 0.50
     # Regime funding tilt. The 2026-07-27 regime split found both monetized
     # strategies POSITIVE in both SPY-50dSMA regimes, but rise's per-$ edge
     # jumps in down-tape (~+3.3%/10d vs +1.0% up; bear pair +0.73% vs +0.41%).
