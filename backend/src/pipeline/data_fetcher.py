@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 import pandas as pd
@@ -129,9 +130,17 @@ class DataFetcher:
     ) -> int:
         rows_inserted = 0
         skipped_null_close = 0
+        unsettled = _unsettled_session_date()
         for idx, row in df.iterrows():
             row_date = idx.date() if hasattr(idx, "date") else idx
             if row_date in existing_dates:
+                continue
+            # A bar for the session still in progress is partial. Indices trade
+            # pre-market (^VIX), so the 06:00 ET fetch stored a partial bar
+            # every morning; the 16:30 close then differed by >2% and the split
+            # detector restated ^VIX's whole history daily (2026-10-02..08).
+            # Mid-session backfills hit the same thing for every ticker.
+            if unsettled is not None and row_date >= unsettled:
                 continue
 
             # Yahoo sometimes returns partial-day rows with NaN close (OHLV present,
@@ -178,6 +187,20 @@ class DataFetcher:
                 self.db.commit()
             except Exception:
                 logger.debug(f"{ticker}: could not fetch info metadata")
+
+
+ET = ZoneInfo("America/New_York")
+# Daily bars are final once the 16:00 ET close prints and settles; 16:15 gives
+# index settlement (VIX) and late prints time to land before we persist.
+SESSION_SETTLED_AT = time(16, 15)
+
+
+def _unsettled_session_date(now: datetime | None = None) -> date | None:
+    """Today's ET date while its session is still unsettled, else None."""
+    now_et = (now or datetime.now(ET)).astimezone(ET)
+    if now_et.time() < SESSION_SETTLED_AT:
+        return now_et.date()
+    return None
 
 
 # Relative close disagreement on an already-stored date that means yfinance

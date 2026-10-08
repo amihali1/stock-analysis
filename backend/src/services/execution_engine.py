@@ -302,6 +302,7 @@ class ExecutionEngine:
         allowed, rail_reason = rails.check_order(
             order_params, market_open=market_open,
             direction=rec.direction, peer_pending=peer_pending,
+            underlying=rec.ticker,
         )
         if not allowed:
             return {
@@ -391,6 +392,7 @@ class ExecutionEngine:
         allowed, rail_reason = rails.check_order(
             short_params, market_open=market_open,
             direction=rec.direction, peer_pending=peer_pending,
+            underlying=rec.ticker,
         )
         if not allowed:
             return {

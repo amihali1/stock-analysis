@@ -161,3 +161,39 @@ def test_new_ticker_without_history_just_inserts(db_session):
     with patch("src.pipeline.data_fetcher.yf.Ticker", return_value=_mock_ticker(_df(DAYS, [50.0] * 10))):
         assert fetcher._fetch_ticker("NEW", period="2y") == 10
     assert fetcher.restated == []
+
+
+# --- Unsettled same-day bars (2026-10-08: ^VIX partial pre-market bar) ------
+
+from datetime import datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from src.pipeline.data_fetcher import _unsettled_session_date  # noqa: E402
+
+ET = ZoneInfo("America/New_York")
+
+
+def test_unsettled_session_date_by_time_of_day():
+    assert _unsettled_session_date(datetime(2026, 10, 8, 6, 0, tzinfo=ET)) == date(2026, 10, 8)
+    assert _unsettled_session_date(datetime(2026, 10, 8, 16, 14, tzinfo=ET)) == date(2026, 10, 8)
+    assert _unsettled_session_date(datetime(2026, 10, 8, 16, 30, tzinfo=ET)) is None
+    # 02:00 UTC on 10/09 is still 10/08 22:00 ET — settled
+    assert _unsettled_session_date(datetime(2026, 10, 9, 2, 0, tzinfo=ZoneInfo("UTC"))) is None
+
+
+def test_partial_today_bar_not_persisted(db_session):
+    """Morning fetch: yesterday's settled bar is stored, today's partial is not,
+    so the 16:30 run inserts the real close instead of tripping the restate."""
+    fetcher = DataFetcher(db_session)
+    window = _df(DAYS[-3:], [15.0, 15.2, 15.7])  # last row = 'today', partial
+    with patch("src.pipeline.data_fetcher.yf.Ticker", return_value=_mock_ticker(window)), \
+         patch("src.pipeline.data_fetcher._unsettled_session_date", return_value=DAYS[-1].date()):
+        assert fetcher._fetch_ticker("^VIX", period="5d") == 2
+    assert DAYS[-1].date() not in _closes(db_session, "^VIX")
+
+    final = _df(DAYS[-3:], [15.0, 15.2, 15.35])
+    with patch("src.pipeline.data_fetcher.yf.Ticker", return_value=_mock_ticker(final)), \
+         patch("src.pipeline.data_fetcher._unsettled_session_date", return_value=None):
+        assert fetcher._fetch_ticker("^VIX", period="5d") == 1
+    assert _closes(db_session, "^VIX")[DAYS[-1].date()] == 15.35
+    assert fetcher.restated == []

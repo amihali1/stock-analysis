@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     # can still override.
     max_open_positions: int = 30
     max_daily_orders: int = 20
+    # Concentration caps checked by safety_rails before any submit. Per
+    # underlying: open PaperTrades on one ticker (2026-10-08 book had 4x LMT).
+    # Per sector: fraction of max_open_positions in one yfinance sector — bull
+    # put spreads in one sector all hit max loss together in a selloff. 0
+    # disables either. Tickers without a sector (ETFs) are not sector-capped.
+    max_open_per_ticker: int = 2
+    max_sector_fraction: float = 0.20
     allowed_hours_only: bool = True
     blocked_tickers: list[str] = []
     auto_execute_enabled: bool = False
@@ -268,6 +275,12 @@ class Settings(BaseSettings):
     # Reject put-credit spreads whose credit is below this fraction of width —
     # guards against stale/junk chain quotes, not an edge filter.
     bull_put_min_credit_ratio: float = 0.10
+    # Minimum chain open interest on BOTH put-credit legs. Delta-0.25 strikes
+    # sit 5-10% OTM; on thin names they had no live market at the 10:00 ET
+    # submit and order_mapper dropped them (2026-10-05..07: LYFT x3, CHTR x2,
+    # OI 4-54 per leg; legs that filled had OI 130-4400). 0 disables. Chain
+    # bid/ask can't be used here — they are 0 at the 07:30 ET rec run.
+    bull_put_min_open_interest: int = 100
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

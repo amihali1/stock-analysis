@@ -459,3 +459,41 @@ class TestBullPutDeltaStrikes:
     def test_invalid_delta_rejected(self):
         with pytest.raises(ValueError):
             SpreadBuilder(bull_put_sell_delta=0.6)
+
+
+class TestBullPutOpenInterestFilter:
+    """2026-10-05..07: delta strikes with OI 4-54 had no live market at submit."""
+
+    def _chain(self, oi_by_strike: dict[float, int], price: float = 100.0):
+        rows = _bs_put_chain(price, sorted(oi_by_strike))
+        for r in rows:
+            r["open_interest"] = oi_by_strike[r["strike"]]
+        return rows
+
+    def _score(self):
+        return _make_score(directional=0.24, volatility=0.3, score=0.40)
+
+    def test_illiquid_sell_strike_skipped_for_next_liquid_one(self):
+        oi = {float(k): 500 for k in range(80, 106)}
+        builder = SpreadBuilder(max_position=1000, bull_put_sell_delta=0.25)
+        best = builder._select_put_strike_by_delta(self._chain(oi), 100.0, 0.35, 30 / 365, 0.25)
+        oi[best] = 10
+        filtered = SpreadBuilder(max_position=1000, bull_put_sell_delta=0.25, bull_put_min_open_interest=100)
+        nxt = filtered._select_put_strike_by_delta(self._chain(oi), 100.0, 0.35, 30 / 365, 0.25)
+        assert nxt is not None and nxt < best
+
+    def test_illiquid_buy_leg_picks_liquid_neighbor(self):
+        oi = {float(k): 500 for k in range(80, 106)}
+        oi[89.0] = 5
+        builder = SpreadBuilder(max_position=1000, bull_put_min_open_interest=100)
+        assert builder._select_put_buy_strike(self._chain(oi), 94.0, 89.0) in (88.0, 90.0)
+
+    def test_no_liquid_strikes_returns_none(self):
+        oi = {float(k): 20 for k in range(80, 106)}
+        builder = SpreadBuilder(max_position=1000, bull_put_sell_delta=0.25, bull_put_min_open_interest=100)
+        assert builder.suggest_bull_spread(self._score(), 100.0, chain_data=self._chain(oi)) is None
+
+    def test_filter_off_by_default(self):
+        oi = {float(k): 0 for k in range(80, 106)}
+        builder = SpreadBuilder(max_position=1000, bull_put_sell_delta=0.25)
+        assert builder.suggest_bull_spread(self._score(), 100.0, chain_data=self._chain(oi)) is not None

@@ -99,6 +99,7 @@ class SpreadBuilder:
         bull_put_sell_delta: float = 0.0,
         bull_put_width_pct: float = 0.05,
         bull_put_min_credit_ratio: float = 0.0,
+        bull_put_min_open_interest: int = 0,
     ):
         # Direction-aware lift gates replaced the legacy absolute
         # `directional_signal > 0.6` threshold (unreachable under sigmoid
@@ -117,6 +118,7 @@ class SpreadBuilder:
         self.bull_put_sell_delta = bull_put_sell_delta
         self.bull_put_width_pct = bull_put_width_pct
         self.bull_put_min_credit_ratio = bull_put_min_credit_ratio
+        self.bull_put_min_open_interest = bull_put_min_open_interest
 
     @property
     def _drop_lift_floor(self) -> float:
@@ -659,6 +661,9 @@ class SpreadBuilder:
             if r.get("option_type") == "put" and 0 < (r.get("strike") or 0) < price
         ]
         if puts:
+            puts = [r for r in puts if (r.get("open_interest") or 0) >= self.bull_put_min_open_interest]
+            if not puts:
+                return None
             eligible = []
             for r in puts:
                 row_iv = r.get("implied_vol") or 0
@@ -675,16 +680,22 @@ class SpreadBuilder:
         snapped = _snap_strike_down(strike)
         return snapped if 0 < snapped < price else None
 
-    @staticmethod
     def _select_put_buy_strike(
-        chain_data: list[dict] | None, sell_strike: float, target: float,
+        self, chain_data: list[dict] | None, sell_strike: float, target: float,
     ) -> float | None:
-        """Long-put strike nearest `target`, strictly below the sell strike."""
-        strikes = sorted({
-            r["strike"] for r in (chain_data or [])
+        """Long-put strike nearest `target`, strictly below the sell strike,
+        among strikes meeting `bull_put_min_open_interest`."""
+        below = [
+            r for r in (chain_data or [])
             if r.get("option_type") == "put" and 0 < (r.get("strike") or 0) < sell_strike
-        })
-        if strikes:
+        ]
+        if below:
+            strikes = sorted({
+                r["strike"] for r in below
+                if (r.get("open_interest") or 0) >= self.bull_put_min_open_interest
+            })
+            if not strikes:
+                return None
             return min(strikes, key=lambda k: abs(k - target))
         snapped = _snap_strike_down(target)
         if snapped >= sell_strike:
