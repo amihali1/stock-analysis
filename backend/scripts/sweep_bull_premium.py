@@ -37,6 +37,17 @@ Decision criteria are the LEFT-TAIL metrics (p5, worst-5 mean, min), not win
 rate — our own bear-side sweep (2026-07-07) had high-win-rate credit spreads
 with negative expectancy.
 
+Exit-management arm (put_credit_exits): 30 DTE spreads at the legacy and
+delta-0.25 strikes walked DAILY to expiry, marked with Black-Scholes at the
+remaining time each session. Exits: take-profit when the spread has captured
+TP x credit (TP {none, 0.25, 0.50, 0.75}); stop when the mark-to-market loss
+reaches STOP x max loss (STOP {off, 0.60} — 0.60 is prod
+catastrophic_spread_loss_fraction); otherwise settle at intrinsic on expiry.
+Reports ror_per_day (return on collateral / sessions held) because early
+exits free the slot for the next trade. Same-sigma marks ignore IV moves —
+real IV usually rises into selloffs (stops fire earlier) and decays in
+rallies (take-profits fire earlier).
+
 Grid: K {5,10} x H {5,10} x vrp_mult {1.0, 1.15} x regime {all, up, down}
 (x tenor {expiry, 30dte} x sell_delta for the put-credit arms).
 Output: trained_models/sweep_bull_premium.json
@@ -89,6 +100,10 @@ SELL_DELTAS = [0.20, 0.25, 0.30]
 DELTA_WIDTH_PCT = 0.05
 TENORS = ["expiry", "30dte"]
 OPT_DTE_CAL = 30
+# Exit-management sweep: 30 calendar days ~= 21 sessions
+EXIT_SESSIONS = 21
+TAKE_PROFITS = [None, 0.25, 0.50, 0.75]
+STOP_FRACTIONS = [None, 0.60]
 # Bad-data guard: annualized HV above this is a price_history artifact
 # (unadjusted splits — KLAC 10:1 2026-06-12 gave volatility_20d = 32.5, whose
 # BS credit ~= spread width turned three picks into +200..+450x returns).
@@ -139,6 +154,34 @@ def _tenor_times(tenor: str, hold: int) -> tuple[float, float]:
         return hold / 252.0, 0.0
     left_cal = max(OPT_DTE_CAL - hold * 7 / 5, 0.0)
     return OPT_DTE_CAL / 365.0, left_cal / 365.0
+
+
+def _managed_put_credit(closes, ksell, kbuy, sigma, take_profit, stop_frac):
+    """Walk a 30-DTE bull put credit spread day by day.
+
+    `closes[0]` is the entry close, `closes[i]` the close i sessions later.
+    Returns (return on collateral, sessions held, exit reason) or None if the
+    spread has no credit.
+    """
+    entry = closes[0]
+    T_open = OPT_DTE_CAL / 365.0
+    credit = _put_spread_value(entry, ksell, kbuy, T_open, sigma)
+    collateral = (ksell - kbuy) - credit
+    if credit <= 0 or collateral <= 0:
+        return None
+    last = len(closes) - 1
+    for i in range(1, last + 1):
+        T_left = max(OPT_DTE_CAL - i * 7 / 5, 0.0) / 365.0
+        if i == last:
+            T_left = 0.0
+        pnl = credit - _put_spread_value(closes[i], ksell, kbuy, T_left, sigma)
+        if take_profit is not None and pnl >= take_profit * credit:
+            return pnl / collateral, i, "tp"
+        if stop_frac is not None and -pnl >= stop_frac * collateral:
+            return pnl / collateral, i, "stop"
+        if T_left <= 0:
+            return pnl / collateral, i, "expiry"
+    return None
 
 
 def _load_paths() -> dict[str, pd.DataFrame]:
@@ -316,6 +359,59 @@ def main() -> int:
                         "tenor": tenor, "vrp_mult": vrp, "regime": reg, **s,
                     })
 
+    # Exit-management arm: daily walk to expiry with take-profit / stop rules.
+    for k in KS:
+        buckets_x: dict[tuple, list[tuple[float, int, str]]] = {}
+        for tr in bull_picks[k]:
+            path = paths.get(tr["ticker"])
+            if path is None:
+                continue
+            try:
+                loc = path.index.get_loc(tr["date"])
+            except KeyError:
+                continue
+            if loc + EXIT_SESSIONS >= len(path):
+                continue
+            closes = [float(c) for c in path["close"].iloc[loc: loc + EXIT_SESSIONS + 1]]
+            if not all(np.isfinite(c) and c > 0 for c in closes):
+                continue
+            entry = closes[0]
+            sma = spy.loc[tr["date"], "sma50"] if tr["date"] in spy.index else np.nan
+            spy_close = float(spy.loc[tr["date"], "close"]) if tr["date"] in spy.index else np.nan
+            regime = "up" if (np.isfinite(sma) and np.isfinite(spy_close) and spy_close > sma) else "down"
+            for vrp in VRP_MULTS:
+                sigma = tr["vol_ann"] * vrp
+                T_open = OPT_DTE_CAL / 365.0
+                ksell_d = _put_strike_for_delta(entry, 0.25, T_open, sigma)
+                strikes = {
+                    "legacy": (entry * CREDIT_SELL, entry * CREDIT_BUY),
+                    "delta0.25": (ksell_d, ksell_d - entry * DELTA_WIDTH_PCT),
+                }
+                for strike_rule, (ks, kb) in strikes.items():
+                    for tp in TAKE_PROFITS:
+                        for stop in STOP_FRACTIONS:
+                            res = _managed_put_credit(closes, ks, kb, sigma, tp, stop)
+                            if res is None:
+                                continue
+                            for reg in ("all", regime):
+                                buckets_x.setdefault((strike_rule, tp, stop, vrp, reg), []).append(res)
+        for (strike_rule, tp, stop, vrp, reg), rows in buckets_x.items():
+            rets = [r[0] for r in rows]
+            days = np.array([r[1] for r in rows], dtype=float)
+            s = _summ(rets)
+            if not s:
+                continue
+            reasons = pd.Series([r[2] for r in rows]).value_counts(normalize=True).round(3).to_dict()
+            results.append({
+                "k": k, "hold": EXIT_SESSIONS, "structure": "put_credit_exits",
+                "strike_rule": strike_rule, "take_profit": tp, "stop_frac": stop,
+                "csp_dist": None, "sell_delta": 0.25 if strike_rule == "delta0.25" else None,
+                "tenor": "30dte_managed", "vrp_mult": vrp, "regime": reg, **s,
+                "avg_sessions": round(float(days.mean()), 2),
+                "ror_per_session": round(float(np.mean(rets) / days.mean()), 5),
+                "exit_mix": reasons,
+            })
+
     out_path = _resolve_model_dir() / "sweep_bull_premium.json"
     out_path.write_text(json.dumps({
         "note": "vrp_mult=1.0 is VRP-neutral (IV=HV): measures payoff geometry only. "
@@ -326,11 +422,24 @@ def main() -> int:
     }, indent=2))
     logger.info("Wrote %s", out_path)
 
+    logger.info("=== EXIT MANAGEMENT (K=10, all-regime, 30 DTE walked to expiry) ===")
+    for r in sorted(
+        [r for r in results if r["structure"] == "put_credit_exits" and r["k"] == 10 and r["regime"] == "all"],
+        key=lambda x: (x["vrp_mult"], x["strike_rule"], -x["ror_per_session"]),
+    ):
+        logger.info(
+            "  vrp=%.2f %-9s tp=%-4s stop=%-4s: exp=%+.4f win=%.2f p5=%+.3f days=%.1f exp/day=%+.5f mix=%s n=%d",
+            r["vrp_mult"], r["strike_rule"], r["take_profit"], r["stop_frac"], r["expectancy"],
+            r["win_rate"], r["p5"], r["avg_sessions"], r["ror_per_session"], r["exit_mix"], r["n"],
+        )
+
     for vrp in VRP_MULTS:
         logger.info("=== ALL-REGIME, vrp_mult=%.2f ===", vrp)
         subset = [r for r in results if r["regime"] == "all" and r["vrp_mult"] in (vrp, 1.0)
                   and (r["vrp_mult"] == vrp or r["structure"] == "long_stock")]
         for r in sorted(subset, key=lambda x: x["expectancy"], reverse=True):
+            if r["structure"] == "put_credit_exits":
+                continue
             param = r["csp_dist"] if r["csp_dist"] is not None else r["sell_delta"]
             logger.info(
                 "  K=%d H=%d %-16s(p=%s) %-6s: exp=%+.4f win=%.2f p5=%+.3f worst5=%+.3f min=%+.3f n=%d",
