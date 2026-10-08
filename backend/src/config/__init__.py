@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     # can still override.
     max_open_positions: int = 30
     max_daily_orders: int = 20
+    # Concentration caps checked by safety_rails before any submit. Per
+    # underlying: open PaperTrades on one ticker (2026-10-08 book had 4x LMT).
+    # Per sector: fraction of max_open_positions in one yfinance sector — bull
+    # put spreads in one sector all hit max loss together in a selloff. 0
+    # disables either. Tickers without a sector (ETFs) are not sector-capped.
+    max_open_per_ticker: int = 2
+    max_sector_fraction: float = 0.20
     allowed_hours_only: bool = True
     blocked_tickers: list[str] = []
     auto_execute_enabled: bool = False
@@ -177,6 +184,16 @@ class Settings(BaseSettings):
     # nets across legs so it has no OTM full-loss artifact. 0.60 = exit at 60%
     # of max risk. 0.0 disables the spread catastrophic exit.
     catastrophic_spread_loss_fraction: float = 0.60
+    # Take-profit for CREDIT spreads (bull_spread put credit): close once the
+    # spread has captured this fraction of its entry credit, marked at live
+    # option mids (Black-Scholes on 20d realized vol when unquoted — never
+    # intrinsic, which reads an OTM credit spread as 100% profit on day 1).
+    # 0.0 disables. sweep_bull_premium exit-management arm (2026-10-08, delta
+    # 0.25, 30 DTE walked daily, K=10, vrp 1.0, with the 0.60 stop): hold-to-
+    # expiry +0.109/trade over 19.7 sessions (0.0055/session) vs TP 0.50
+    # +0.074 over 9.0 (0.0082/session, +48%), win 0.82 -> 0.87, p5 -0.75 ->
+    # -0.69. TP 0.75 matched per-session (0.0081) but holds 3 sessions longer.
+    spread_take_profit_fraction: float = 0.50
     # Regime funding tilt. The 2026-07-27 regime split found both monetized
     # strategies POSITIVE in both SPY-50dSMA regimes, but rise's per-$ edge
     # jumps in down-tape (~+3.3%/10d vs +1.0% up; bear pair +0.73% vs +0.41%).
@@ -268,6 +285,12 @@ class Settings(BaseSettings):
     # Reject put-credit spreads whose credit is below this fraction of width —
     # guards against stale/junk chain quotes, not an edge filter.
     bull_put_min_credit_ratio: float = 0.10
+    # Minimum chain open interest on BOTH put-credit legs. Delta-0.25 strikes
+    # sit 5-10% OTM; on thin names they had no live market at the 10:00 ET
+    # submit and order_mapper dropped them (2026-10-05..07: LYFT x3, CHTR x2,
+    # OI 4-54 per leg; legs that filled had OI 130-4400). 0 disables. Chain
+    # bid/ask can't be used here — they are 0 at the 07:30 ET rec run.
+    bull_put_min_open_interest: int = 100
     # Absolute composite-score floor applied by rec_ranker.select_candidates before
     # the top-K cap. The 2026-05-14 joint backtest at top_k=10 with no floor had
     # mean hit rate 25-30% (vs 60% break-even at -1.5/+1.0 payoffs) because slots

@@ -251,3 +251,66 @@ class TestLogging:
         assert len(logs) == 1
         assert logs[0].action == "submit"
         assert logs[0].order_id == "order-123"
+
+
+class TestConcentration:
+    """Per-ticker and per-sector open-position caps (2026-10-08)."""
+
+    def _seed(self, db, rows):
+        from src.db.models import Stock
+        for ticker, sector, n in rows:
+            db.add(Stock(ticker=ticker, sector=sector))
+            for _ in range(n):
+                db.add(PaperTrade(ticker=ticker, direction="long", strategy="bull_spread",
+                                  status="open", entry_price=100))
+        db.commit()
+
+    def _settings(self, **kw):
+        s = _make_settings(max_open_positions=10, **kw)
+        s.max_open_per_ticker = kw.get("max_open_per_ticker", 2)
+        s.max_sector_fraction = kw.get("max_sector_fraction", 0.30)
+        return s
+
+    def _check(self, db, settings, ticker, underlying=None):
+        with patch("src.services.safety_rails.get_settings", return_value=settings), \
+             patch("src.services.trading_settings.get_settings", return_value=settings):
+            rails = TradingSafetyRails(db)
+            return rails.check_order(_make_order(ticker=ticker), direction="long", underlying=underlying)
+
+    def test_ticker_cap_blocks_third_position(self):
+        db = _make_db()
+        self._seed(db, [("LMT", "Industrials", 2)])
+        ok, reason = self._check(db, self._settings(), "LMT")
+        assert ok is False and "Ticker concentration: 2/2" in reason
+
+    def test_ticker_cap_uses_underlying_for_option_orders(self):
+        db = _make_db()
+        self._seed(db, [("LMT", "Industrials", 2)])
+        ok, reason = self._check(db, self._settings(), "LMT261016C00565000", underlying="LMT")
+        assert ok is False and "LMT" in reason
+
+    def test_sector_cap_blocks_at_fraction_of_slots(self):
+        db = _make_db()
+        # 10 slots x 0.30 = 3 per sector
+        self._seed(db, [("LMT", "Industrials", 1), ("NOC", "Industrials", 1), ("HON", "Industrials", 1),
+                        ("GE", "Industrials", 0)])
+        ok, reason = self._check(db, self._settings(), "GE")
+        assert ok is False and "Sector concentration: 3/3 open in Industrials" in reason
+
+    def test_other_sector_allowed(self):
+        db = _make_db()
+        self._seed(db, [("LMT", "Industrials", 1), ("NOC", "Industrials", 2), ("AAPL", "Technology", 0)])
+        ok, _ = self._check(db, self._settings(), "AAPL")
+        assert ok is True
+
+    def test_no_sector_not_capped(self):
+        db = _make_db()
+        self._seed(db, [("XLE", None, 1), ("XLF", None, 1), ("XLK", None, 1), ("XLV", None, 0)])
+        ok, _ = self._check(db, self._settings(), "XLV")
+        assert ok is True
+
+    def test_zero_disables(self):
+        db = _make_db()
+        self._seed(db, [("LMT", "Industrials", 3)])
+        ok, _ = self._check(db, self._settings(max_open_per_ticker=0, max_sector_fraction=0.0), "LMT")
+        assert ok is True

@@ -152,6 +152,7 @@ class PositionSizer:
         self._bull_put_sell_delta = settings.bull_put_sell_delta
         self._bull_put_width_pct = settings.bull_put_width_pct
         self._bull_put_min_credit_ratio = settings.bull_put_min_credit_ratio
+        self._bull_put_min_open_interest = settings.bull_put_min_open_interest
 
     def _make_spread_builder(self):
         from src.models.options_strategies import SpreadBuilder
@@ -165,6 +166,7 @@ class PositionSizer:
             bull_put_sell_delta=self._bull_put_sell_delta,
             bull_put_width_pct=self._bull_put_width_pct,
             bull_put_min_credit_ratio=self._bull_put_min_credit_ratio,
+            bull_put_min_open_interest=self._bull_put_min_open_interest,
         )
 
     def _confidence_scale(self, score: EnsembleScore) -> float:

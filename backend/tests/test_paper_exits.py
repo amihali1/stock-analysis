@@ -407,3 +407,102 @@ def test_pair_short_in_band_stays_open(db):
 
     closed = [r for r in results if r.get("ticker") == "TEST"]
     assert closed[0]["status"] == "held"
+
+
+# --- Credit-spread take-profit (2026-10-08) ---------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+from src.config import get_settings  # noqa: E402
+
+TP_LEGS = json.dumps([
+    {"option_type": "put", "action": "sell", "strike": 95.0, "premium": 2.00, "contracts": 2},
+    {"option_type": "put", "action": "buy", "strike": 90.0, "premium": 0.80, "contracts": 2},
+])  # credit 1.20/share x 2 contracts = $240
+
+
+def _tp_settings(frac):
+    return get_settings().model_copy(update={"spread_take_profit_fraction": frac})
+
+
+def _tp_trade(db, close=104.0, days_to_expiry=20):
+    _seed_price(db, "TEST", close)
+    db.add(_trade(strategy="bull_spread", direction="long", entry_price=100.0,
+                  legs_json=TP_LEGS, contracts=2, position_size=240.0, max_loss=760.0,
+                  expiry=TODAY + timedelta(days=days_to_expiry)))
+    db.commit()
+
+
+def _quoter(sell_mid, buy_mid):
+    def q(symbols):
+        sell, buy = symbols
+        return {sell: {"bid": sell_mid - 0.05, "ask": sell_mid + 0.05},
+                buy: {"bid": buy_mid - 0.05, "ask": buy_mid + 0.05}}
+    return q
+
+
+def test_take_profit_closes_at_quote_mark(db):
+    """Close cost 0.50 - 0.15 = 0.35 -> captured (1.20-0.35)/1.20 = 71% >= 50%."""
+    _tp_trade(db)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(0.50, 0.15))
+    assert results[0]["status"] == "closed"
+    assert "take profit 71%" in results[0]["reason"] and "quote mark" in results[0]["reason"]
+    assert db.query(PaperTrade).one().pnl == pytest.approx((1.20 - 0.35) * 100 * 2)
+
+
+def test_take_profit_holds_below_threshold(db):
+    """Close cost 1.00 - 0.30 = 0.70 -> captured 42% < 50% -> hold."""
+    _tp_trade(db)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(1.00, 0.30))
+    assert results[0]["status"] == "held"
+
+
+def test_take_profit_not_fooled_by_intrinsic(db):
+    """No quotes, spot well above the short strike: intrinsic says 100% profit,
+    but with 20 days left the BS mark keeps real time value. At 98 (3% above
+    the 95 short strike) the spread is nowhere near 50% captured."""
+    _tp_trade(db, close=98.0)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)), \
+         patch("src.services.paper_exits._hv20", return_value=0.40):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=lambda syms: {})
+    assert results[0]["status"] == "held"
+
+
+def test_take_profit_bs_fallback_fires_when_far_otm(db):
+    _tp_trade(db, close=130.0, days_to_expiry=5)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)), \
+         patch("src.services.paper_exits._hv20", return_value=0.30):
+        results = evaluate_paper_exits(db, today=TODAY)
+    assert results[0]["status"] == "closed"
+    assert "bs mark" in results[0]["reason"]
+
+
+def test_take_profit_zero_disables(db):
+    _tp_trade(db)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.0)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(0.05, 0.01))
+    assert results[0]["status"] == "held"
+
+
+def test_take_profit_ignores_debit_spreads(db):
+    legs = json.dumps([
+        {"option_type": "put", "action": "buy", "strike": 100.0, "premium": 3.00, "contracts": 1},
+        {"option_type": "put", "action": "sell", "strike": 90.0, "premium": 1.00, "contracts": 1},
+    ])
+    _seed_price(db, "TEST", 80.0)
+    db.add(_trade(strategy="spread", direction="short", entry_price=100.0, legs_json=legs,
+                  contracts=1, position_size=200.0, max_loss=200.0, expiry=TODAY + timedelta(days=20)))
+    db.commit()
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(0.5, 0.5))
+    assert results[0]["status"] == "held"
+
+
+def test_catastrophic_stop_still_wins_over_take_profit(db):
+    """Order matters: a deep loss must hit the stop even if a quoter is present."""
+    _tp_trade(db, close=88.0)
+    with patch("src.services.paper_exits.get_settings", return_value=_tp_settings(0.5)):
+        results = evaluate_paper_exits(db, today=TODAY, quoter=_quoter(7.0, 2.0))
+    assert "catastrophic" in results[0]["reason"]

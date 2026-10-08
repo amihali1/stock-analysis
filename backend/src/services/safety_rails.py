@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.db.models import TradingLog, PaperTrade
+from src.db.models import PaperTrade, Stock, TradingLog
 from src.services.order_mapper import AlpacaOrderParams
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,16 @@ class TradingSafetyRails:
             float(reserve) if isinstance(reserve, (int, float)) and not isinstance(reserve, bool) else 0.0
         )
         self.max_single_position = settings.effective_per_trade_cap
+        # Concentration caps (0 disables). Non-numeric values (malformed .env,
+        # test mocks) disable rather than crash, same as the reserve above.
+        per_ticker = getattr(settings, "max_open_per_ticker", 0)
+        self.max_open_per_ticker = (
+            int(per_ticker) if isinstance(per_ticker, (int, float)) and not isinstance(per_ticker, bool) else 0
+        )
+        sector_frac = getattr(settings, "max_sector_fraction", 0.0)
+        self.max_sector_fraction = (
+            float(sector_frac) if isinstance(sector_frac, (int, float)) and not isinstance(sector_frac, bool) else 0.0
+        )
         self.max_daily_orders = settings.max_daily_orders
         self.allowed_hours_only = settings.allowed_hours_only
         self.blocked_tickers = set(settings.blocked_tickers)
@@ -45,6 +56,7 @@ class TradingSafetyRails:
         market_open: bool = True,
         direction: str | None = None,
         peer_pending: bool = False,
+        underlying: str | None = None,
     ) -> tuple[bool, str]:
         """Run all safety checks on an order.
 
@@ -53,6 +65,9 @@ class TradingSafetyRails:
         slot reserve on the count cap. Both default to the reserve-off behavior,
         so manual/single-order callers keep the plain count cap.
 
+        `underlying` is the stock the position is on (an option order's ticker
+        may be an OCC symbol); defaults to `order.ticker`.
+
         Returns (allowed, reason_if_blocked).
         """
         checks = [
@@ -60,6 +75,7 @@ class TradingSafetyRails:
             self._check_market_hours(market_open),
             self._check_blocked_ticker(order.ticker),
             self._check_position_limit(direction, peer_pending),
+            self._check_concentration(underlying or order.ticker),
             self._check_daily_order_limit(),
             self._check_single_position_size(order),
         ]
@@ -122,6 +138,34 @@ class TradingSafetyRails:
                     f"Direction slot reserve: {open_same}/{ceiling} {side} slots "
                     f"(holding {peer_unfilled} for pending {peer})"
                 )
+        return True, ""
+
+    def _check_concentration(self, ticker: str) -> tuple[bool, str]:
+        """Cap open positions per underlying and per sector.
+
+        Bull put spreads across one sector all lose together in a selloff
+        (2026-09-28: four spreads at max loss in one batch) and the open book
+        had 4x LMT + 2x NOC and 10/30 Consumer Cyclical on 2026-10-08. With the
+        count cap raised to 100, nothing else stops a single theme filling it.
+        """
+        if self.max_open_per_ticker > 0:
+            n = self.db.query(PaperTrade).filter_by(status="open", ticker=ticker).count()
+            if n >= self.max_open_per_ticker:
+                return False, f"Ticker concentration: {n}/{self.max_open_per_ticker} open on {ticker}"
+
+        if self.max_sector_fraction > 0:
+            stock = self.db.query(Stock).filter_by(ticker=ticker).first()
+            sector = stock.sector if stock else None
+            if sector:  # ETFs / unmapped tickers have no sector — not capped
+                cap = max(1, math.ceil(self.max_open_positions * self.max_sector_fraction))
+                n = (
+                    self.db.query(PaperTrade)
+                    .join(Stock, Stock.ticker == PaperTrade.ticker)
+                    .filter(PaperTrade.status == "open", Stock.sector == sector)
+                    .count()
+                )
+                if n >= cap:
+                    return False, f"Sector concentration: {n}/{cap} open in {sector}"
         return True, ""
 
     def _check_daily_order_limit(self) -> tuple[bool, str]:

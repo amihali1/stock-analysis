@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date, datetime
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -295,6 +297,112 @@ def _evaluate_catastrophic(trade: PaperTrade, db: Session, current: float) -> di
     return _close(trade, current, pnl, f"catastrophic underlying move {move:+.1%}")
 
 
+OptionQuoter = Callable[[list[str]], dict[str, dict]]
+
+
+def _bs_put_call(S: float, K: float, T: float, sigma: float, option_type: str) -> float:
+    """Black-Scholes value (r = 0, matching SpreadBuilder's estimates)."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return max(0.0, S - K) if option_type == "call" else max(0.0, K - S)
+    d1 = (math.log(S / K) + 0.5 * sigma**2 * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    n = lambda x: 0.5 * (1 + math.erf(x / math.sqrt(2)))  # noqa: E731
+    if option_type == "call":
+        return S * n(d1) - K * n(d2)
+    return K * n(-d2) - S * n(-d1)
+
+
+def _hv20(db: Session, ticker: str) -> float:
+    from src.models.directional import annualized_vol_20d
+    closes = [
+        r[0] for r in db.query(PriceHistory.close)
+        .filter(PriceHistory.ticker == ticker)
+        .order_by(PriceHistory.date.desc())
+        .limit(21)
+        .all()
+    ]
+    return annualized_vol_20d(closes)
+
+
+def _spread_close_cost(
+    db: Session, trade: PaperTrade, legs: list[dict], current: float, today: date,
+    quoter: OptionQuoter | None,
+) -> tuple[float, str] | None:
+    """Per-share net DEBIT to close the spread now, and the mark source.
+
+    Prefers live option mids (Alpaca); falls back to Black-Scholes on the
+    underlying's 20d realized vol. Intrinsic value is NOT usable here: an OTM
+    credit spread is worth ~0 intrinsically from day 1, which would read as
+    100% profit immediately.
+    """
+    if quoter is not None and trade.expiry is not None:
+        from src.services.order_mapper import build_occ_symbol
+        try:
+            occ = [
+                build_occ_symbol(trade.ticker, trade.expiry, l.get("option_type", "put"), float(l["strike"]))
+                for l in legs
+            ]
+        except (KeyError, TypeError, ValueError):
+            occ = []
+        quotes = quoter(occ) if occ else {}
+        if occ and all(sym in quotes for sym in occ):
+            cost = 0.0
+            for leg, sym in zip(legs, occ):
+                mid = (quotes[sym]["bid"] + quotes[sym]["ask"]) / 2.0
+                # closing: buy back the short legs, sell the long legs
+                cost += mid if leg.get("action") == "sell" else -mid
+            return cost, "quote"
+
+    if trade.expiry is None:
+        return None
+    T = max((trade.expiry - today).days, 0) / 365.0
+    sigma = _hv20(db, trade.ticker)
+    cost = 0.0
+    for leg in legs:
+        value = _bs_put_call(current, float(leg["strike"]), T, sigma, leg.get("option_type", "put"))
+        cost += value if leg.get("action") == "sell" else -value
+    return cost, "bs"
+
+
+def _evaluate_take_profit(
+    trade: PaperTrade, db: Session, current: float, today: date,
+    quoter: OptionQuoter | None = None,
+) -> dict | None:
+    """Close a CREDIT spread once it has captured `spread_take_profit_fraction`
+    of its entry credit.
+
+    Credit spreads earn most of their premium early and carry their tail risk
+    to the end; banking the bulk of the credit frees the slot and the
+    collateral for the next trade (sweep_bull_premium exit-management arm,
+    2026-10-08). Debit spreads (net debit at entry) are left alone.
+    """
+    frac = get_settings().spread_take_profit_fraction
+    if frac <= 0 or not trade.legs_json:
+        return None
+    try:
+        legs = json.loads(trade.legs_json)
+        credit = sum(
+            (l.get("premium") or 0.0) * (1 if l.get("action") == "sell" else -1) for l in legs
+        )
+    except (ValueError, TypeError):
+        return None
+    if credit <= 0:
+        return None
+    marked = _spread_close_cost(db, trade, legs, current, today, quoter)
+    if marked is None:
+        return None
+    cost, source = marked
+    contracts = (legs[0].get("contracts") if legs else None) or trade.contracts or 1
+    captured = (credit - cost) / credit
+    if captured < frac:
+        return None
+    pnl = (credit - cost) * 100 * contracts
+    return _close(
+        trade, current, pnl,
+        f"take profit {captured:.0%} of credit (>= {frac:.0%}, {source} mark)",
+    )
+
+
 def _evaluate_single_leg(trade: PaperTrade, current: float, today: date) -> dict | None:
     """Expiry exit for single-leg long options (debit = position_size)."""
     if trade.expiry is None or today < trade.expiry:
@@ -322,8 +430,14 @@ def _evaluate_spread(trade: PaperTrade, current: float, today: date) -> dict | N
     return _close(trade, current, pnl, f"expired {trade.expiry.isoformat()}")
 
 
-def evaluate_paper_exits(db: Session, today: date | None = None) -> list[dict]:
+def evaluate_paper_exits(
+    db: Session, today: date | None = None, quoter: OptionQuoter | None = None,
+) -> list[dict]:
     """Evaluate all open paper trades, close the ones that hit an exit rule.
+
+    `quoter` (OCC symbols -> {sym: {bid, ask}}) supplies live option quotes for
+    the spread take-profit mark; without it the mark falls back to
+    Black-Scholes on realized vol.
 
     Returns one dict per open trade evaluated (closed, held, or skipped).
     Commits once at the end; a per-trade failure rolls back only that
@@ -357,6 +471,7 @@ def evaluate_paper_exits(db: Session, today: date | None = None) -> list[dict]:
             elif trade.strategy in ("spread", "bull_spread"):
                 outcome = (
                     _evaluate_catastrophic(trade, db, current)
+                    or _evaluate_take_profit(trade, db, current, today, quoter)
                     or _evaluate_spread(trade, current, today)
                 )
             else:
