@@ -439,6 +439,60 @@ class TestSyncOrders:
         count = sync.sync_orders()
         assert count == 0
 
+    def _add_stale(self, db, oid="old-1", ticker="DOCU261113C00075000", status="new"):
+        db.add(AlpacaOrder(
+            alpaca_order_id=oid, ticker=ticker, side="buy", qty=1.0,
+            order_type="limit", status=status,
+            submitted_at=datetime(2026, 10, 12, 14, 0),
+        ))
+        db.commit()
+
+    def test_refreshes_open_order_outside_recent_window(self):
+        # 2026-11-16: rows past the get_orders(limit=50) window kept `new`
+        # forever and hid exercised stock from residue detection.
+        db = _make_db()
+        self._add_stale(db)
+        client = _mock_client(orders=SAMPLE_ORDERS)
+        client.get_order.return_value = {
+            "order_id": "old-1", "status": "filled", "filled_price": 2.15,
+            "filled_at": "2026-10-12T14:00:05",
+        }
+        PortfolioSync(db, client=client).sync_orders()
+
+        client.get_order.assert_called_once_with("old-1")
+        row = db.query(AlpacaOrder).filter_by(alpaca_order_id="old-1").one()
+        assert row.status == "filled"
+        assert row.filled_price == 2.15
+
+    def test_order_in_recent_window_not_refetched(self):
+        db = _make_db()
+        db.add(AlpacaOrder(
+            alpaca_order_id="ord-001", ticker="AAPL", side="buy",
+            qty=10.0, order_type="limit", status="new",
+        ))
+        db.commit()
+        client = _mock_client(orders=SAMPLE_ORDERS[:1])
+        PortfolioSync(db, client=client).sync_orders()
+        client.get_order.assert_not_called()
+
+    def test_unknown_order_marked_not_found(self):
+        db = _make_db()
+        self._add_stale(db, ticker="TSM", status="held")
+        client = _mock_client(orders=[])
+        client.get_order.side_effect = Exception(
+            '{"code":40410000,"message":"order not found for old-1"}'
+        )
+        PortfolioSync(db, client=client).sync_orders()
+        assert db.query(AlpacaOrder).one().status == "not_found"
+
+    def test_transient_refresh_error_keeps_status(self):
+        db = _make_db()
+        self._add_stale(db)
+        client = _mock_client(orders=[])
+        client.get_order.side_effect = Exception("503 service unavailable")
+        PortfolioSync(db, client=client).sync_orders()
+        assert db.query(AlpacaOrder).one().status == "new"
+
 
 class TestSyncAccount:
     def test_returns_account_data(self):
@@ -551,6 +605,25 @@ class TestResidueDetection:
         assert self._sync(db).detect_residue_positions() == []
 
     @patch("src.services.portfolio_sync.httpx")
+    def test_order_on_expired_contract_does_not_mark_owned(self, mock_httpx):
+        # 2026-11-16: a stale `new` row for an 11/13 call kept 700 exercised
+        # DOCU shares ($57k) out of residue → capital cap jammed, 0 recs.
+        db = _make_db()
+        db.add(AlpacaOrder(alpaca_order_id="o1", ticker="DOCU261113C00075000", status="new"))
+        db.commit()
+        self._add_position(db, "DOCU", qty=700.0, mkt=56826.0)
+        residue = self._sync(db).detect_residue_positions(now=datetime(2026, 11, 16, 16, 0))
+        assert [r["ticker"] for r in residue] == ["DOCU"]
+
+    @patch("src.services.portfolio_sync.httpx")
+    def test_order_on_live_contract_marks_owned(self, mock_httpx):
+        db = _make_db()
+        db.add(AlpacaOrder(alpaca_order_id="o1", ticker="SHOP261204C00150000", status="new"))
+        db.commit()
+        self._add_position(db, "SHOP261204C00150000", qty=1.0, mkt=760.0)
+        assert self._sync(db).detect_residue_positions(now=datetime(2026, 11, 16, 16, 0)) == []
+
+    @patch("src.services.portfolio_sync.httpx")
     def test_alert_throttled_once_per_day(self, mock_httpx):
         db = _make_db()
         self._add_position(db, "DOCU")
@@ -600,6 +673,22 @@ class TestLiquidateResidue:
         assert calls["MRNA260814P00066000"]["qty"] == 4.0
         assert calls["SOFI"]["side"] == "sell"
         assert calls["SOFI"]["qty"] == 16.0
+
+    def test_shorts_closed_before_longs(self):
+        # 2026-11-16 MRNA put spread: long leg sold first → short became a
+        # cash-secured put, Alpaca 403 "insufficient options buying power".
+        db = _make_db()
+        client = _mock_client()
+        sync = PortfolioSync(db, client=client)
+        residue = [
+            {"ticker": "MRNA261120P00190000", "qty": 1.0, "market_value": 120.0},
+            {"ticker": "MRNA261120P00200000", "qty": -1.0, "market_value": -315.0},
+        ]
+        with patch("src.services.portfolio_sync.get_settings") as gs:
+            gs.return_value.auto_liquidate_residue = True
+            sync.liquidate_residue(residue)
+        order = [c.kwargs["ticker"] for c in client.submit_order.call_args_list]
+        assert order == ["MRNA261120P00200000", "MRNA261120P00190000"]
 
     def test_empty_residue_noop(self):
         db = _make_db()
