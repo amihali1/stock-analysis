@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta
 
 import httpx
@@ -39,7 +40,45 @@ def _to_underlying(ticker: str | None) -> str | None:
     return _underlying_from_occ(ticker) or ticker
 
 
-def owned_underlyings(db: Session) -> set[str]:
+_OCC_EXPIRY_RE = re.compile(r"^[A-Z]{1,6}(\d{6})[CP]\d{8}$")
+
+
+def _occ_expiry(ticker: str | None) -> date | None:
+    """Expiry date of an OCC option symbol, or None for non-option tickers."""
+    m = _OCC_EXPIRY_RE.match(ticker or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%y%m%d").date()
+    except ValueError:
+        return None
+
+
+def in_flight_orders(db: Session, today: date | None = None) -> list[AlpacaOrder]:
+    """Local order rows that are still working at the broker.
+
+    Status alone is not trusted: a row whose status never got refreshed stays
+    `new`/`held` forever, and every such row marks its underlying as owned /
+    active. An option order on a contract already past expiry cannot still be
+    working, so it is skipped. 2026-11-16: stale `new` rows for 11/13 calls kept
+    $96k of exercised stock (DOCU/TMUS/CHTR/LEN) out of residue detection →
+    open capital $91.6k > $50k cap → 0 recs.
+    """
+    today = today or datetime.utcnow().date()
+    out = []
+    for order in (
+        db.query(AlpacaOrder)
+        .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
+        .all()
+    ):
+        expiry = _occ_expiry(order.ticker)
+        if expiry is not None and expiry < today:
+            continue
+        out.append(order)
+    return out
+
+
+def owned_underlyings(db: Session, today: date | None = None) -> set[str]:
     """Underlyings currently owned by a strategy.
 
     A broker position's underlying is "owned" when an open PaperTrade carries
@@ -55,11 +94,7 @@ def owned_underlyings(db: Session) -> set[str]:
         owned.add(pt.ticker)
     if any(pt.strategy == "pair_short" for pt in open_trades):
         owned.add(get_settings().pair_hedge_symbol)
-    for order in (
-        db.query(AlpacaOrder)
-        .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
-        .all()
-    ):
+    for order in in_flight_orders(db, today):
         u = _to_underlying(order.ticker)
         if u:
             owned.add(u)
@@ -126,12 +161,7 @@ class PortfolioSync:
             u = _to_underlying(pos.ticker)
             if u:
                 active.add(u)
-        in_flight = (
-            self.db.query(AlpacaOrder)
-            .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
-            .all()
-        )
-        for order in in_flight:
+        for order in in_flight_orders(self.db, now.date()):
             u = _to_underlying(order.ticker)
             if u:
                 active.add(u)
@@ -216,7 +246,7 @@ class PortfolioSync:
         stays a human decision.
         """
         now = now or datetime.utcnow()
-        owned = owned_underlyings(self.db)
+        owned = owned_underlyings(self.db, now.date())
 
         residue: list[dict] = []
         for pos in self.db.query(AlpacaPosition).all():
@@ -255,7 +285,11 @@ class PortfolioSync:
         if not get_settings().auto_liquidate_residue or not residue:
             return 0
         submitted = 0
-        for r in residue:
+        # Close shorts first: selling the long leg of an orphaned put spread
+        # while the short is still open turns the short into a cash-secured
+        # put (2026-11-16 MRNA: "insufficient options buying power ...
+        # required: 20000"). Python's sort is stable, so ties keep order.
+        for r in sorted(residue, key=lambda r: (r.get("qty") or 0.0) >= 0):
             ticker = r.get("ticker")
             qty = r.get("qty") or 0.0
             if not ticker or not qty:
@@ -339,9 +373,68 @@ class PortfolioSync:
                 ))
                 count += 1
 
+        refreshed = self._refresh_stale_open_orders(
+            {o["order_id"] for o in orders if o.get("order_id")}
+        )
         self.db.commit()
-        logger.info(f"Synced {len(orders)} orders ({count} new)")
+        logger.info(
+            f"Synced {len(orders)} orders ({count} new, {refreshed} stale refreshed)"
+        )
         return count
+
+    # Max per-order lookups per sync run (sync runs every 5 min).
+    STALE_REFRESH_LIMIT = 50
+
+    def _refresh_stale_open_orders(self, seen_ids: set[str]) -> int:
+        """Re-fetch local rows still marked open that the recent-orders window
+        did not cover.
+
+        `get_orders(limit=50)` only returns the newest orders, so a row whose
+        fill/cancel happened after it scrolled out of that window kept its
+        submit-time status forever (45 rows stuck `new`/`held`, oldest
+        2026-07-20). Those phantom in-flight orders marked their underlyings as
+        owned and hid exercised stock from residue detection. Orders Alpaca no
+        longer knows (404) are marked `not_found` so they stop counting.
+        """
+        stale = (
+            self.db.query(AlpacaOrder)
+            .filter(AlpacaOrder.status.in_(_ALPACA_OPEN_ORDER_STATUSES))
+            .filter(AlpacaOrder.alpaca_order_id.isnot(None))
+            .filter(AlpacaOrder.alpaca_order_id.notin_(seen_ids))
+            .order_by(AlpacaOrder.submitted_at)
+            .limit(self.STALE_REFRESH_LIMIT)
+            .all()
+        )
+        refreshed = 0
+        now = datetime.utcnow()
+        for row in stale:
+            try:
+                o = self.client.get_order(row.alpaca_order_id)
+            except Exception as e:
+                if getattr(e, "status_code", None) == 404 or "40410000" in str(e):
+                    logger.warning(
+                        "Order %s (%s) not found at Alpaca — marking not_found",
+                        row.alpaca_order_id, row.ticker,
+                    )
+                    row.status = "not_found"
+                    row.synced_at = now
+                    refreshed += 1
+                else:
+                    logger.warning(
+                        "Stale order refresh failed for %s: %s",
+                        row.alpaca_order_id, e,
+                    )
+                continue
+            status = o.get("status") if isinstance(o, dict) else None
+            if not isinstance(status, str):
+                continue
+            row.status = status
+            row.filled_price = o.get("filled_price")
+            filled_at = o.get("filled_at")
+            row.filled_at = datetime.fromisoformat(filled_at) if filled_at else None
+            row.synced_at = now
+            refreshed += 1
+        return refreshed
 
     def sync_account(self) -> dict:
         """Pull account summary from Alpaca.
